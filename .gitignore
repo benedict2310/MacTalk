@@ -1,0 +1,302 @@
+# MacTalk .gitignore
+
+## macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon files
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+## Xcode
+# Build artifacts
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.xcscheme
+!*.xcscheme.shared
+
+# Xcode Workspace
+*.xcworkspace
+!default.xcworkspace
+
+# AppCode
+.idea/
+
+# SwiftPM
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/
+
+# CocoaPods
+Pods/
+!Podfile
+!Podfile.lock
+
+# Carthage
+Carthage/Build/
+Carthage/Checkouts/
+
+# Accio
+Dependencies/
+.accio/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+fastlane/README.md
+
+## Swift
+# Swift Package Manager
+.swiftpm/config/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+
+# Playground
+timeline.xctimeline
+playground.xcworkspace
+
+# Swift compiled files
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Obj-C/Swift specific
+*.moved-aside
+*.swp
+!.gitkeep
+
+## Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## MacTalk Specific
+
+# Downloaded Whisper models (too large for git)
+MacTalk/Resources/Models/*.bin
+MacTalk/Resources/Models/*.gguf
+
+# Compiled whisper.cpp library
+MacTalk/Libraries/libwhisper.a
+MacTalk/Libraries/*.a
+MacTalk/Libraries/*.dylib
+
+# Metal compiled shaders (generated)
+MacTalk/Resources/*.metallib
+
+# User data and logs
+MacTalk/Logs/
+MacTalk/Cache/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+
+# macOS Keychain (never commit!)
+*.keychain
+*.keychain-db
+
+# Provisioning profiles
+*.mobileprovision
+*.provisionprofile
+
+# Code signing
+*.p12
+*.cer
+*.certSigningRequest
+
+# App archives
+*.ipa
+*.app.zip
+*.pkg
+*.dmg
+
+## CMake (for whisper.cpp build)
+Vendor/whisper.cpp/build/
+Vendor/whisper.cpp/cmake-build-*/
+Vendor/libfvad/build/
+
+## Editor files
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+## Testing
+*.gcno
+*.gcda
+*.coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+*.log
+
+# XCTest results
+*.xcresult
+
+## Documentation
+docs/.build/
+docs/_build/
+*.playground
+
+## Environment
+.env
+.env.local
+.env.*.local
+
+## Misc
+*.bak
+*.orig
+*.rej
+*~.nib
+local.properties
+.project
+.classpath
+.settings/
+.loadpath
+
+# Ignore bundler config
+/.bundle
+
+# Ignore temporary API keys (if any)
+api_keys.plist
+secrets.plist
+config/secrets.yml
+
+# User-specific files
+*.suo
+*.user
+*.sln.docstates
+
+# Build results specific to MacTalk
+MacTalk.app/
+MacTalk.dSYM/
+MacTalk.app.dSYM.zip
+
+# Distribution files
+dist/
+release/
+MacTalk-*.dmg
+
+# Documentation build artifacts
+docs/site/
+site/
+
+# Jupyter Notebook (if used for analysis)
+.ipynb_checkpoints
+
+# pyenv (if using Python tools)
+.python-version
+
+# Node modules (if using any JS tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ruby (if using fastlane extensively)
+*.gem
+*.rbc
+/.config
+/coverage/
+/InstalledFiles
+/pkg/
+/spec/reports/
+/spec/examples.txt
+/test/tmp/
+/test/version_tmp/
+/tmp/
+
+# RVM
+.rvmrc
+
+# Performance profiling
+*.trace
+*.speedscope
+
+# Instruments data
+*.trace/
+*.dtps
+
+# Screenshots and recordings (unless explicitly added)
+screenshots/
+recordings/
+
+# Backup files
+*.backup
+
+# Auto-generated files
+*-Bridging-Header.h.bak
