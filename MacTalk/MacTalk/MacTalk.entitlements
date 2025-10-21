@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Audio Input (Microphone) -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Screen Recording (for ScreenCaptureKit) -->
+	<key>com.apple.security.device.camera</key>
+	<false/>
+
+	<!-- Hardened Runtime -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!-- Disable Library Validation (for whisper.cpp) -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- Allow unsigned executable memory (for Metal JIT) -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- Allow JIT (for Metal shaders) -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- Apple Events (for accessibility/auto-paste) -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

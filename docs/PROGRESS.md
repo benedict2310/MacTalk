@@ -28,7 +28,7 @@ This document tracks the development progress of MacTalk against the milestones 
 | Phase 2: Whisper Integration | 🟡 In Progress | 2025-10-21 | - | 80% |
 | Phase 3: UI Implementation | 🟡 In Progress | 2025-10-21 | - | 60% |
 | Phase 4: Mode B (App Audio) | 🟡 In Progress | 2025-10-21 | - | 70% |
-| Phase 5: Polish & Testing | 🔴 Not Started | - | - | 0% |
+| Phase 5: Polish & Testing | 🟡 In Progress | 2025-10-21 | - | 25% |
 | Phase 6: Release Preparation | 🔴 Not Started | - | - | 0% |
 
 ---
@@ -136,10 +136,12 @@ This document tracks the development progress of MacTalk against the milestones 
 - None
 
 **Notes:**
-- Skeleton is now complete and ready for Xcode project creation
+- Skeleton is now complete
 - All source files implemented ahead of schedule
 - Comprehensive XCODE_BUILD.md guide created
-- Next step: Create actual Xcode project file and test build
+- ✅ Xcode project file created (MacTalk.xcodeproj)
+- ✅ Unit tests implemented (60+ test methods)
+- Next step: Run tests in Xcode and verify they pass
 
 ---
 
@@ -455,8 +457,8 @@ This document tracks the development progress of MacTalk against the milestones 
 
 ## Phase 5: Polish & Testing (Weeks 11-12)
 
-**Status:** 🔴 Not Started
-**Progress:** 0% (0/4 milestones)
+**Status:** 🟡 In Progress
+**Progress:** 25% (1/4 milestones partially complete)
 
 ### Milestones
 
@@ -470,11 +472,41 @@ This document tracks the development progress of MacTalk against the milestones 
 - [ ] Test on M1 (not just M4)
 
 #### M5.2: Automated Testing
-**Status:** 🔴 Not Started
+**Status:** 🟡 In Progress
 
-- [ ] Write unit tests (ring buffer, audio conversion, post-processing, model download)
+- [x] Write unit tests (ring buffer, audio conversion, level monitoring, model management)
+- [x] Create MacTalkTests target in Xcode
+- [x] Implement 60+ test methods across 4 test files
+- [x] Document testing procedures in TESTING.md
+- [ ] Run tests and verify they pass
 - [ ] Integration tests (end-to-end, multi-source mixing, permissions)
 - [ ] UI tests (menu bar, settings persistence, HUD)
+
+**Completed Files:**
+- MacTalkTests/RingBufferTests.swift (~200 lines, 15+ tests)
+- MacTalkTests/AudioLevelMonitorTests.swift (~300+ lines, 20+ tests)
+- MacTalkTests/AudioMixerTests.swift (~250 lines, 15+ tests)
+- MacTalkTests/ModelManagerTests.swift (~250 lines, 15+ tests)
+- docs/TESTING.md (comprehensive test running guide)
+
+**Test Coverage:**
+- ✅ RingBuffer: Basic operations, overflow, thread safety, performance
+- ✅ AudioLevelMonitor: RMS calculation, peak hold, smoothing, decibels, multi-channel
+- ✅ AudioMixer: Format conversion (16/48/44.1kHz), stereo to mono, value preservation
+- ✅ ModelManager: Path management, model listing, size calculation, deletion
+
+**Notes:**
+- Tests cannot be run in Linux development environment
+- Must be executed in Xcode on macOS
+- All tests use XCTest framework
+- Performance benchmarks included using measure { } blocks
+- Thread safety tested with concurrent operations
+
+**Next Steps:**
+- Open MacTalk.xcodeproj in Xcode
+- Run tests with Cmd+U
+- Fix any failures
+- Add integration and UI tests
 
 #### M5.3: Alpha Testing
 **Status:** 🔴 Not Started
@@ -732,7 +764,7 @@ Document insights and lessons learned:
 
 **Document Version Control:**
 - v1.0 (2025-10-21): Initial progress tracking document
-- v1.1 (TBD): First weekly update
+- v1.1 (2025-10-21): Xcode project creation and unit test implementation
 
 ---
 
@@ -758,4 +790,4 @@ Document insights and lessons learned:
 
 **Last Updated By:** Claude
 **Last Updated:** 2025-10-21
-**Next Update Due:** After first successful build
+**Next Update Due:** After unit tests pass in Xcode

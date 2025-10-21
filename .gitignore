@@ -60,7 +60,8 @@ xcuserdata/
 Packages/
 Package.pins
 Package.resolved
-*.xcodeproj/
+# Note: We track MacTalk.xcodeproj since it's our main project
+# *.xcodeproj/
 
 # CocoaPods
 Pods/
