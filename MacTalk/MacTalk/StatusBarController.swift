@@ -198,6 +198,26 @@ final class StatusBarController {
             }
         }
 
+        transcriptionController.onMicLevel = { [weak self] levelData in
+            DispatchQueue.main.async {
+                self?.hudController?.updateMicLevel(
+                    rms: levelData.rms,
+                    peak: levelData.peak,
+                    peakHold: levelData.peakHold
+                )
+            }
+        }
+
+        transcriptionController.onAppLevel = { [weak self] levelData in
+            DispatchQueue.main.async {
+                self?.hudController?.updateAppLevel(
+                    rms: levelData.rms,
+                    peak: levelData.peak,
+                    peakHold: levelData.peakHold
+                )
+            }
+        }
+
         transcriber = transcriptionController
 
         Task {
@@ -206,6 +226,7 @@ final class StatusBarController {
                 DispatchQueue.main.async {
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
+                    self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
             } catch {

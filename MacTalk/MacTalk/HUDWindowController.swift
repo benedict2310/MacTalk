@@ -10,11 +10,13 @@ import AppKit
 final class HUDWindowController: NSWindowController {
     private let textView = NSTextField(labelWithString: "…")
     private let backgroundView = NSVisualEffectView()
+    private let levelMeterView = DualChannelLevelMeterView()
+    private let containerStack = NSStackView()
 
     convenience init() {
         // Create a borderless, floating panel
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 100),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 140),
             styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -60,14 +62,25 @@ final class HUDWindowController: NSWindowController {
         textView.maximumNumberOfLines = 3
         textView.translatesAutoresizingMaskIntoConstraints = false
 
-        backgroundView.addSubview(textView)
+        // Setup container stack
+        containerStack.orientation = .vertical
+        containerStack.spacing = 12
+        containerStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        containerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        containerStack.addArrangedSubview(levelMeterView)
+        containerStack.addArrangedSubview(textView)
+
+        backgroundView.addSubview(containerStack)
 
         // Constraints
         NSLayoutConstraint.activate([
-            textView.leadingAnchor.constraint(equalTo: backgroundView.leadingAnchor, constant: 16),
-            textView.trailingAnchor.constraint(equalTo: backgroundView.trailingAnchor, constant: -16),
-            textView.topAnchor.constraint(equalTo: backgroundView.topAnchor, constant: 16),
-            textView.bottomAnchor.constraint(equalTo: backgroundView.bottomAnchor, constant: -16)
+            containerStack.leadingAnchor.constraint(equalTo: backgroundView.leadingAnchor),
+            containerStack.trailingAnchor.constraint(equalTo: backgroundView.trailingAnchor),
+            containerStack.topAnchor.constraint(equalTo: backgroundView.topAnchor),
+            containerStack.bottomAnchor.constraint(equalTo: backgroundView.bottomAnchor),
+
+            levelMeterView.heightAnchor.constraint(equalToConstant: 50)
         ])
     }
 
@@ -90,11 +103,28 @@ final class HUDWindowController: NSWindowController {
         window?.animator().alphaValue = 1.0
     }
 
+    func updateMicLevel(rms: Float, peak: Float, peakHold: Float) {
+        levelMeterView.updateMic(rms: rms, peak: peak, peakHold: peakHold)
+    }
+
+    func updateAppLevel(rms: Float, peak: Float, peakHold: Float) {
+        levelMeterView.updateApp(rms: rms, peak: peak, peakHold: peakHold)
+    }
+
+    func setAppMeterVisible(_ visible: Bool) {
+        levelMeterView.setAppMeterVisible(visible)
+    }
+
+    func resetLevels() {
+        levelMeterView.reset()
+    }
+
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(nil)
         window?.alphaValue = 0.0
         window?.animator().alphaValue = 1.0
+        resetLevels()
     }
 
     override func close() {

@@ -24,7 +24,7 @@ This document tracks the development progress of MacTalk against the milestones 
 | Phase | Status | Start Date | Completion Date | Progress |
 |-------|--------|------------|-----------------|----------|
 | Phase 0: Foundation | 🟢 Completed | 2025-10-21 | 2025-10-21 | 100% |
-| Phase 1: Core Audio | 🟡 In Progress | 2025-10-21 | - | 80% |
+| Phase 1: Core Audio | 🟢 Completed | 2025-10-21 | 2025-10-21 | 100% |
 | Phase 2: Whisper Integration | 🟡 In Progress | 2025-10-21 | - | 80% |
 | Phase 3: UI Implementation | 🟡 In Progress | 2025-10-21 | - | 60% |
 | Phase 4: Mode B (App Audio) | 🟡 In Progress | 2025-10-21 | - | 70% |
@@ -145,8 +145,9 @@ This document tracks the development progress of MacTalk against the milestones 
 
 ## Phase 1: Core Audio (Weeks 3-4)
 
-**Status:** 🟡 In Progress (Implementation Complete, Testing Pending)
-**Progress:** 80% (4/4 milestones implemented)
+**Status:** 🟢 Completed
+**Progress:** 100% (4/4 milestones)
+**Completed:** 2025-10-21
 
 ### Milestones
 
@@ -201,17 +202,30 @@ This document tracks the development progress of MacTalk against the milestones 
 - Circular buffer with overwrite on full
 
 #### M1.4: Audio Level Monitoring
-**Status:** 🟡 Deferred to Testing Phase
+**Status:** 🟢 Completed
 
-- [ ] Calculate RMS levels for display
-- [ ] Implement peak hold detection
-- [ ] Add smoothing filter for UI updates
-- [ ] Create AudioLevelMonitor utility class
+- [x] Calculate RMS levels for display
+- [x] Implement peak hold detection
+- [x] Add smoothing filter for UI updates
+- [x] Create AudioLevelMonitor utility class
+- [x] Integrate level meters into HUD
+- [x] Multi-channel monitoring (mic + app audio)
+
+**Completed Files:**
+- Audio/AudioLevelMonitor.swift (RMS, peak hold, smoothing)
+- UI/AudioLevelMeterView.swift (visual level meters with gradient)
+- Updated HUDWindowController.swift (integrated level meters)
+- Updated TranscriptionController.swift (level callbacks)
+- Updated StatusBarController.swift (level data routing)
 
 **Notes:**
-- Basic level monitoring via AVAudioEngine.volume
-- Full implementation deferred to Phase 5 (polish)
-- Can use existing audio buffers for RMS calculation
+- Uses Accelerate framework for performance (vDSP)
+- RMS calculation with smoothing filter
+- Peak hold with decay
+- Decibel conversion (-60 to 0 dB range)
+- Color-coded meters (green/yellow/red)
+- Dual-channel support (mic + app audio)
+- Level meters update in real-time during recording
 
 ---
 

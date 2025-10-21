@@ -20,6 +20,7 @@ final class TranscriptionController {
     private let screenCapture = ScreenAudioCapture()
     private let mixer = AudioMixer()
     private let engine: WhisperEngine
+    private let levelMonitor = MultiChannelLevelMonitor()
 
     private let chunkDurationMs: Int = 750  // 0.75 seconds
     private let samplesPerMs = 16  // 16kHz sample rate
@@ -29,6 +30,8 @@ final class TranscriptionController {
 
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
+    var onMicLevel: ((AudioLevelMonitor.LevelData) -> Void)?
+    var onAppLevel: ((AudioLevelMonitor.LevelData) -> Void)?
     var language: String?
     var autoPasteEnabled = false
 
@@ -90,6 +93,10 @@ final class TranscriptionController {
             return
         }
 
+        // Update microphone level
+        let micLevel = levelMonitor.update(channel: .microphone, buffer: samples)
+        onMicLevel?(micLevel)
+
         appendSamples(samples)
     }
 
@@ -97,6 +104,10 @@ final class TranscriptionController {
         guard let samples = mixer.convertSampleBuffer(sampleBuffer) else {
             return
         }
+
+        // Update app audio level
+        let appLevel = levelMonitor.update(channel: .application, buffer: samples)
+        onAppLevel?(appLevel)
 
         appendSamples(samples)
     }
