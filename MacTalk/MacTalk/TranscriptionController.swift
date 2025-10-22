@@ -42,10 +42,22 @@ final class TranscriptionController {
     private var appAudioRetryCount = 0
     private let maxAppAudioRetries = 3
 
+    // Performance optimization
+    private var adaptiveQualityEnabled = true
+    private var currentChunkDuration: Int
+    private var lastUIUpdateTime: TimeInterval = 0
+    private let uiUpdateThrottle: TimeInterval = 0.1  // 100ms
+
     // MARK: - Initialization
 
     init(engine: WhisperEngine) {
         self.engine = engine
+        self.currentChunkDuration = chunkDurationMs
+
+        // Adapt to battery mode if enabled
+        if adaptiveQualityEnabled && PerformanceMonitor.shared.isBatteryMode {
+            configureBatteryMode(true)
+        }
     }
 
     // MARK: - Control
@@ -152,7 +164,7 @@ final class TranscriptionController {
 
     private func processChunk() {
         chunkLock.lock()
-        let threshold = samplesPerMs * chunkDurationMs
+        let threshold = samplesPerMs * currentChunkDuration
         guard audioChunk.count >= threshold else {
             chunkLock.unlock()
             return
@@ -162,18 +174,22 @@ final class TranscriptionController {
         audioChunk.removeFirst(threshold)
         chunkLock.unlock()
 
-        // Transcribe chunk on background queue
+        // Transcribe chunk on background queue with performance monitoring
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            if let result = self.engine.transcribeStreaming(
-                samples: chunkSamples,
-                language: self.language
-            ) {
+            let result = PerformanceMonitor.shared.measure("WhisperInference") {
+                return self.engine.transcribeStreaming(
+                    samples: chunkSamples,
+                    language: self.language
+                )
+            }
+
+            if let result = result {
                 let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
                     self.fullTranscript.append(trimmedText)
-                    self.onPartial?(trimmedText)
+                    self.throttledUIUpdate(trimmedText)
                 }
             }
         }
@@ -281,5 +297,28 @@ final class TranscriptionController {
         DispatchQueue.main.async { [weak self] in
             self?.onFallbackToMicOnly?()
         }
+    }
+
+    // MARK: - Adaptive Quality
+
+    private func configureBatteryMode(_ enabled: Bool) {
+        if enabled {
+            // Increase chunk duration to reduce inference frequency
+            currentChunkDuration = 1000  // 1 second instead of 750ms
+            print("Battery mode enabled: Reduced inference frequency")
+        } else {
+            // Restore normal chunk duration
+            currentChunkDuration = chunkDurationMs
+            print("Battery mode disabled: Normal inference frequency")
+        }
+    }
+
+    private func throttledUIUpdate(_ text: String) {
+        let now = CACurrentMediaTime()
+        guard now - lastUIUpdateTime >= uiUpdateThrottle else {
+            return  // Throttle UI updates
+        }
+        lastUIUpdateTime = now
+        onPartial?(text)
     }
 }
