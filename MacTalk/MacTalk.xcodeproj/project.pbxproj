@@ -10,6 +10,7 @@
 		A1000001000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001 /* AppDelegate.swift */; };
 		A1000002000000000000001 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002000000000000001 /* StatusBarController.swift */; };
 		A1000003000000000000001 /* HUDWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003000000000000001 /* HUDWindowController.swift */; };
+		A1000003100000000000001 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003100000000000001 /* SettingsWindowController.swift */; };
 		A1000004000000000000001 /* TranscriptionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004000000000000001 /* TranscriptionController.swift */; };
 		A1000005000000000000001 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005000000000000001 /* Permissions.swift */; };
 		A1000006000000000000001 /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006000000000000001 /* ClipboardManager.swift */; };
@@ -44,6 +45,7 @@
 		A2000001000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A2000002000000000000001 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		A2000003000000000000001 /* HUDWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowController.swift; sourceTree = "<group>"; };
+		A2000003100000000000001 /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		A2000004000000000000001 /* TranscriptionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionController.swift; sourceTree = "<group>"; };
 		A2000005000000000000001 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		A2000006000000000000001 /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
@@ -100,6 +102,7 @@
 				A2000001000000000000001 /* AppDelegate.swift */,
 				A2000002000000000000001 /* StatusBarController.swift */,
 				A2000003000000000000001 /* HUDWindowController.swift */,
+				A2000003100000000000001 /* SettingsWindowController.swift */,
 				A2000004000000000000001 /* TranscriptionController.swift */,
 				A2000005000000000000001 /* Permissions.swift */,
 				A2000006000000000000001 /* ClipboardManager.swift */,
@@ -265,6 +268,7 @@
 				A1000001000000000000001 /* AppDelegate.swift in Sources */,
 				A1000002000000000000001 /* StatusBarController.swift in Sources */,
 				A1000003000000000000001 /* HUDWindowController.swift in Sources */,
+				A1000003100000000000001 /* SettingsWindowController.swift in Sources */,
 				A1000004000000000000001 /* TranscriptionController.swift in Sources */,
 				A1000005000000000000001 /* Permissions.swift in Sources */,
 				A1000006000000000000001 /* ClipboardManager.swift in Sources */,

@@ -12,6 +12,7 @@ final class StatusBarController {
     private var engine: WhisperEngine?
     private var transcriber: TranscriptionController?
     private var hudController: HUDWindowController?
+    private var settingsController: SettingsWindowController?
 
     private var autoPaste = false
     private var mode: TranscriptionController.Mode = .micOnly
@@ -64,6 +65,9 @@ final class StatusBarController {
         menu.addItem(modelItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        // Settings
+        menu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",").target = self
 
         // Permissions
         menu.addItem(withTitle: "Check Permissions", action: #selector(checkPermissions), keyEquivalent: "").target = self
@@ -145,6 +149,14 @@ final class StatusBarController {
                 alert.runModal()
             }
         }
+    }
+
+    @objc private func showSettings() {
+        if settingsController == nil {
+            settingsController = SettingsWindowController()
+        }
+        settingsController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func showAbout() {
