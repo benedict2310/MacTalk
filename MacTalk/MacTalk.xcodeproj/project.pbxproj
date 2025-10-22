@@ -33,6 +33,8 @@
 		A1000025000000000000001 /* HUDWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025000000000000001 /* HUDWindowControllerTests.swift */; };
 		A1000026000000000000001 /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026000000000000001 /* HotkeyManagerTests.swift */; };
 		A1000027000000000000001 /* StatusBarControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027000000000000001 /* StatusBarControllerTests.swift */; };
+		A1000028000000000000001 /* WhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028000000000000001 /* WhisperEngineTests.swift */; };
+		A1000029000000000000001 /* TranscriptionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000029000000000000001 /* TranscriptionControllerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -73,6 +75,8 @@
 		A2000025000000000000001 /* HUDWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowControllerTests.swift; sourceTree = "<group>"; };
 		A2000026000000000000001 /* HotkeyManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManagerTests.swift; sourceTree = "<group>"; };
 		A2000027000000000000001 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
+		A2000028000000000000001 /* WhisperEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngineTests.swift; sourceTree = "<group>"; };
+		A2000029000000000000001 /* TranscriptionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionControllerTests.swift; sourceTree = "<group>"; };
 		A5000001000000000000001 /* MacTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5000002000000000000001 /* MacTalkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacTalkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -134,6 +138,8 @@
 				A2000025000000000000001 /* HUDWindowControllerTests.swift */,
 				A2000026000000000000001 /* HotkeyManagerTests.swift */,
 				A2000027000000000000001 /* StatusBarControllerTests.swift */,
+				A2000028000000000000001 /* WhisperEngineTests.swift */,
+				A2000029000000000000001 /* TranscriptionControllerTests.swift */,
 			);
 			path = MacTalkTests;
 			sourceTree = "<group>";
@@ -309,6 +315,8 @@
 				A1000025000000000000001 /* HUDWindowControllerTests.swift in Sources */,
 				A1000026000000000000001 /* HotkeyManagerTests.swift in Sources */,
 				A1000027000000000000001 /* StatusBarControllerTests.swift in Sources */,
+				A1000028000000000000001 /* WhisperEngineTests.swift in Sources */,
+				A1000029000000000000001 /* TranscriptionControllerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
