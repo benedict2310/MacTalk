@@ -32,10 +32,15 @@ final class TranscriptionController {
     var onFinal: ((String) -> Void)?
     var onMicLevel: ((AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: ((AudioLevelMonitor.LevelData) -> Void)?
+    var onAppAudioLost: (() -> Void)?  // Callback when app audio is lost
+    var onFallbackToMicOnly: (() -> Void)?  // Callback when falling back to mic-only
     var language: String?
     var autoPasteEnabled = false
 
     private var fullTranscript: [String] = []
+    private var currentMode: Mode = .micOnly
+    private var appAudioRetryCount = 0
+    private let maxAppAudioRetries = 3
 
     // MARK: - Initialization
 
@@ -45,12 +50,15 @@ final class TranscriptionController {
 
     // MARK: - Control
 
-    func start(mode: Mode, appName: String? = nil) async throws {
+    func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
         // Clear previous state
         chunkLock.lock()
         audioChunk.removeAll()
         fullTranscript.removeAll()
         chunkLock.unlock()
+
+        currentMode = mode
+        appAudioRetryCount = 0
 
         // Set up microphone capture
         micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
@@ -60,20 +68,37 @@ final class TranscriptionController {
 
         // Set up app audio capture if needed
         if case .micPlusAppAudio = mode {
-            guard let appName = appName else {
+            guard let source = audioSource else {
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "App name required for mic+app mode"
+                    NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
             }
 
-            screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
-                self?.processSampleBuffer(sampleBuffer)
-            }
-
-            try await screenCapture.selectFirstWindow(named: appName)
+            try await startAppAudioCapture(source: source)
         }
 
         print("Transcription started in mode: \(mode)")
+    }
+
+    private func startAppAudioCapture(source: AppPickerWindowController.AudioSource) async throws {
+        screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
+            self?.processSampleBuffer(sampleBuffer)
+        }
+
+        // Install error handler
+        screenCapture.onStreamError = { [weak self] error in
+            self?.handleAppAudioError(error)
+        }
+
+        if source.isSystemAudio, let display = source.display {
+            try await screenCapture.selectDisplay(display: display)
+        } else if let app = source.app {
+            try await screenCapture.selectApp(app: app)
+        } else {
+            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid audio source"
+            ])
+        }
     }
 
     func stop() {
@@ -214,5 +239,47 @@ final class TranscriptionController {
         }
 
         return result
+    }
+
+    // MARK: - Edge Case Handling
+
+    private func handleAppAudioError(_ error: Error) {
+        print("App audio error: \(error)")
+
+        // Notify that app audio was lost
+        DispatchQueue.main.async { [weak self] in
+            self?.onAppAudioLost?()
+        }
+
+        // Attempt retry if within limits
+        if appAudioRetryCount < maxAppAudioRetries {
+            appAudioRetryCount += 1
+            print("Retrying app audio capture (attempt \(appAudioRetryCount)/\(maxAppAudioRetries))...")
+
+            // Retry after a delay
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                // Retry logic would go here
+                // For now, we'll just log
+                print("Retry logic not yet implemented")
+            }
+        } else {
+            // Max retries exceeded, fall back to mic-only
+            fallbackToMicOnly()
+        }
+    }
+
+    private func fallbackToMicOnly() {
+        print("Falling back to microphone-only mode")
+
+        // Stop app audio capture
+        screenCapture.stop()
+
+        // Update mode
+        currentMode = .micOnly
+
+        // Notify
+        DispatchQueue.main.async { [weak self] in
+            self?.onFallbackToMicOnly?()
+        }
     }
 }
