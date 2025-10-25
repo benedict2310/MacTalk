@@ -15,10 +15,16 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     func selectFirstWindow(named name: String) async throws {
         let content = try await SCShareableContent.current
 
-        guard let app = content.applications.first(where: { $0.applicationName == name }),
-              let window = app.windows.first else {
+        guard let app = content.applications.first(where: { $0.applicationName == name }) else {
             throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Could not find app named '\(name)' or it has no windows"
+                NSLocalizedDescriptionKey: "Could not find app named '\(name)'"
+            ])
+        }
+
+        // In macOS 15+, windows are accessed directly from content, filtered by app
+        guard let window = content.windows.first(where: { $0.owningApplication == app }) else {
+            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App '\(name)' has no windows"
             ])
         }
 

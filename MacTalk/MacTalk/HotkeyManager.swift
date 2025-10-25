@@ -46,7 +46,7 @@ final class HotkeyManager {
         let status = RegisterEventHotKey(
             keyCode,
             modifiers,
-            EventHotKeyID(signature: OSType(kEventHotKeySignature), id: hotkeyID),
+            EventHotKeyID(signature: OSType(kEventHotKeySignature ?? FourCharCode("htky".utf8.reduce(0) { $0 << 8 + FourCharCode($1) })), id: hotkeyID),
             GetEventDispatcherTarget(),
             0,
             &eventHotkey

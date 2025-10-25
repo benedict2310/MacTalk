@@ -89,8 +89,8 @@ char * wt_whisper_transcribe(
         params.language = "auto";  // Auto-detect
     }
 
-    // Speed up processing
-    params.speed_up = true;
+    // Note: speed_up parameter was removed in newer whisper.cpp versions
+    // params.speed_up = true;  // Deprecated
 
     // Audio splitting
     params.audio_ctx = 0;  // Use default

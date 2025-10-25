@@ -248,15 +248,17 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for performance optimization strateg
 
 ### v1.0 (MVP) - Target: Q2 2025
 - ✅ Project foundation and architecture
-- ✅ Xcode project setup with test target
+- ✅ Xcode project setup with test target (XcodeGen)
 - ✅ Core audio processing components (RingBuffer, AudioMixer, AudioLevelMonitor)
 - ✅ Comprehensive unit tests (100% core logic coverage)
-- 🏗️ Mic-only transcription (Mode A) - Implementation complete, testing pending
-- 🏗️ Mic + app audio transcription (Mode B) - Implementation complete, testing pending
-- 🏗️ Streaming inference with partials - Implementation complete, testing pending
-- 🏗️ Clipboard + auto-paste - Implementation complete, testing pending
-- 🏗️ Menu bar UI + HUD overlay - Implementation complete, testing pending
-- 🏗️ Model management (tiny → large-v3-turbo) - Implementation complete, testing pending
+- ✅ **whisper.cpp integration with Metal acceleration**
+- ✅ **Project builds on Xcode 26 / macOS 15+**
+- 🏗️ Mic-only transcription (Mode A) - Implementation complete, integration testing pending
+- 🏗️ Mic + app audio transcription (Mode B) - Implementation complete, integration testing pending
+- 🏗️ Streaming inference with partials - Implementation complete, integration testing pending
+- 🏗️ Clipboard + auto-paste - Implementation complete, integration testing pending
+- 🏗️ Menu bar UI + HUD overlay - Implementation complete, integration testing pending
+- 🏗️ Model management (tiny → large-v3-turbo) - Implementation complete, integration testing pending
 
 ### v1.1 - Target: Q3 2025
 - Per-app presets (model, language)
@@ -288,18 +290,20 @@ MacTalk is currently in **active development** (Phase 3: Complete, Phase 5: Test
 
 **What's Done:**
 - ✅ Complete Swift implementation (~3,000 lines)
-- ✅ Xcode project with test target
+- ✅ Xcode project with test target (XcodeGen-based)
 - ✅ 60+ comprehensive unit tests
 - ✅ Core audio processing pipeline
 - ✅ Audio level monitoring
 - ✅ Model management system
 - ✅ Full UI implementation (menu bar, HUD, Settings window, level meters)
+- ✅ **whisper.cpp built with Metal support** (v1.8.2)
+- ✅ **Project builds successfully on Xcode 26**
 
 **What's Next:**
-- ⏳ Run and validate all unit tests
-- ⏳ Build whisper.cpp with Metal support
-- ⏳ First end-to-end test
+- ⏳ Fix and validate all unit tests
+- ⏳ First end-to-end test with Whisper integration
 - ⏳ Add integration and UI tests
+- ⏳ Download and test with Whisper models
 
 See [PROGRESS.md](docs/PROGRESS.md) for detailed status and [ROADMAP.md](docs/ROADMAP.md) for planned milestones.
 
@@ -375,16 +379,18 @@ MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for detail
 
 ## Project Status
 
-**Current Phase:** Phase 3 Complete - UI Implementation Finished
-**Next Milestone:** M5.2 - Run and validate unit tests
-**Progress:** 50% (3/6 phases complete, 3 in progress)
+**Current Phase:** Phase 5 In Progress - Build System & Integration
+**Next Milestone:** M5.3 - First end-to-end test with Whisper
+**Progress:** 55% (3/6 phases complete, whisper.cpp integrated)
 
 **Recent Achievements:**
+- ✅ **whisper.cpp v1.8.2 built with Metal acceleration** (October 2025)
+- ✅ **Project builds successfully on Xcode 26**
+- ✅ Migrated to XcodeGen for better project management
+- ✅ Fixed API compatibility issues for macOS 15/16 (ScreenCaptureKit, NSColor, Whisper)
 - ✅ Phase 3 Complete: Full UI implementation with Settings Window
 - ✅ Complete Xcode project with test target
 - ✅ 60+ unit tests (100% core logic coverage)
-- ✅ Audio level monitoring with visual meters
-- ✅ Comprehensive 5-tab settings interface
 - ✅ All core components implemented
 
 **Lines of Code:**

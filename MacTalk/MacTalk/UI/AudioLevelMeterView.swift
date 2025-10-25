@@ -172,7 +172,7 @@ final class AudioLevelMeterView: NSView {
     private func createGradient(for color: NSColor) -> CGGradient? {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-        guard let cgColor = color.cgColor else { return nil }
+        let cgColor = color.cgColor
 
         let colors = [
             cgColor.copy(alpha: 0.8) as Any,

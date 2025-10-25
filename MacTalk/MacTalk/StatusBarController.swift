@@ -232,17 +232,17 @@ final class StatusBarController {
 
         transcriber = transcriptionController
 
-        Task {
+        Task { [self] in
             do {
                 try await transcriptionController.start(mode: mode, appName: "Zoom")
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [self] in
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
             } catch {
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [self] in
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
             }
