@@ -82,6 +82,9 @@ char * wt_whisper_transcribe(
     params.translate = translate;
     params.no_context = noContext;
 
+    // Suppress blank audio output
+    params.suppress_blank = true;
+
     // Language setting
     if (lang && strlen(lang) > 0) {
         params.language = lang;

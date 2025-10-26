@@ -64,9 +64,12 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     func stop() {
+        // Capture stream locally to avoid retaining self in async task
+        guard let stream = stream else { return }
+        self.stream = nil
+
         Task {
-            try? await stream?.stopCapture()
-            stream = nil
+            try? await stream.stopCapture()
         }
     }
 

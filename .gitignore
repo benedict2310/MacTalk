@@ -301,3 +301,6 @@ recordings/
 
 # Auto-generated files
 *-Bridging-Header.h.bak
+
+# Claude Code configuration (contains project-specific instructions)
+CLAUDE.md

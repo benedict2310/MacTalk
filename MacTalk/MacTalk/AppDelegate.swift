@@ -8,14 +8,49 @@
 
 import AppKit
 
-@main
+// Note: Entry point is now in main.swift (explicit initialization)
+// This fixes macOS 26 initialization issues with @main attribute
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController!
 
+    override init() {
+        // FIRST THING: Initialize debug logger
+        _ = DebugLogger.shared
+        DLOG("=== AppDelegate.init() START ===")
+
+        super.init()
+
+        DLOG("AppDelegate.init() - super.init() completed")
+        NSLog("🚀 [MacTalk] AppDelegate.init() called")
+        DLOG("=== AppDelegate.init() END ===")
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        DLOG("=== applicationWillFinishLaunching START ===")
+        NSLog("🚀 [MacTalk] applicationWillFinishLaunching called")
+        DLOG("=== applicationWillFinishLaunching END ===")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Initialize status bar controller (menu bar app)
+        DLOG("=== applicationDidFinishLaunching START ===")
+        NSLog("🚀 [MacTalk] applicationDidFinishLaunching called")
+
+        // Note: Activation policy is now set in main.swift before app.run()
+        // This ensures proper initialization order for macOS 26
+
+        // Initialize status bar controller
+        DLOG("About to create StatusBarController...")
+        NSLog("🚀 [MacTalk] Creating StatusBarController...")
         statusBarController = StatusBarController()
+        DLOG("StatusBarController created")
+
+        DLOG("About to call statusBarController.show()...")
+        NSLog("🚀 [MacTalk] Calling statusBarController.show()...")
         statusBarController.show()
+        DLOG("statusBarController.show() completed")
+
+        NSLog("🚀 [MacTalk] StatusBarController.show() completed")
+        DLOG("=== applicationDidFinishLaunching END ===")
 
         // Request microphone permission on first launch
         Permissions.ensureMic { granted in

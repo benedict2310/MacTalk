@@ -29,7 +29,6 @@ targets:
         NSAppleEventsUsageDescription: "MacTalk needs accessibility permission to auto-paste transcriptions."
         LSApplicationCategoryType: "public.app-category.productivity"
         NSHumanReadableCopyright: "Copyright © 2025 MacTalk Development Team"
-        NSMainNibFile: "MainMenu"
         NSPrincipalClass: "NSApplication"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.mactalk.app
@@ -51,7 +50,10 @@ targets:
         - -framework AVFoundation
         - -framework AppKit
         - -framework ScreenCaptureKit
-      ENABLE_HARDENED_RUNTIME: YES
+      LD_RUNPATH_SEARCH_PATHS:
+        - "@executable_path/../Frameworks"
+        - "@loader_path/../Frameworks"
+      ENABLE_HARDENED_RUNTIME: NO
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: ""
       GENERATE_INFOPLIST_FILE: NO
@@ -62,7 +64,75 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: AppKit.framework
       - sdk: ScreenCaptureKit.framework
-      - sdk: libc++.tbd
+    postBuildScripts:
+      - name: Copy Whisper Libraries
+        inputFiles:
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/src/libwhisper.1.dylib
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml.dylib
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libwhisper.1.dylib
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml.dylib
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-base.dylib
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-cpu.dylib
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-metal.dylib
+        script: |
+          # Create Frameworks directory
+          mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+
+          # Copy whisper.cpp libraries
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/src/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+
+          # Fix install names
+          install_name_tool -id "@rpath/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib" || true
+          install_name_tool -id "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml.dylib" || true
+          install_name_tool -id "@rpath/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-base.dylib" || true
+          install_name_tool -id "@rpath/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-cpu.dylib" || true
+          install_name_tool -id "@rpath/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-metal.dylib" || true
+
+          # Update dependencies in libwhisper
+          install_name_tool -change "@rpath/libggml.dylib" "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib" || true
+
+          # Fix library references in the debug dylib (CRITICAL for macOS 26)
+          if [ -f "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" ]; then
+            install_name_tool -change "@rpath/libwhisper.1.dylib" "@loader_path/../Frameworks/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            install_name_tool -change "@rpath/libggml.dylib" "@loader_path/../Frameworks/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            install_name_tool -change "@rpath/libggml-base.dylib" "@loader_path/../Frameworks/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            install_name_tool -change "@rpath/libggml-cpu.dylib" "@loader_path/../Frameworks/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            install_name_tool -change "@rpath/libggml-metal.dylib" "@loader_path/../Frameworks/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            echo "Fixed library paths in ${PRODUCT_NAME}.debug.dylib"
+          fi
+
+          echo "Copied whisper libraries to ${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+      - name: Re-sign Libraries and App Bundle
+        basedOnDependencyAnalysis: false
+        runOnlyForDeploymentPostprocessing: false
+        script: |
+          #!/bin/bash
+          # CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch
+          # This must run AFTER Xcode's CodeSign phase
+
+          echo "🔐 [Post-Build] Re-signing whisper.cpp libraries..."
+
+          # Re-sign all dylibs in Frameworks
+          for lib in "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"/*.dylib; do
+            if [ -f "$lib" ]; then
+              codesign --force --sign - "$lib" 2>&1 | grep -v "replacing existing signature" || true
+              echo "   ✅ Signed: $(basename $lib)"
+            fi
+          done
+
+          # Re-sign the app bundle with deep option
+          echo "🔐 [Post-Build] Re-signing app bundle..."
+          codesign --force --deep --sign - "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
+
+          echo "✅ [Post-Build] Code signing complete!"
 
   MacTalkTests:
     type: bundle.unit-test

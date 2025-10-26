@@ -8,7 +8,8 @@
 import AppKit
 
 final class StatusBarController {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
+    private var statusItem: NSStatusItem!
     private var engine: WhisperEngine?
     private var transcriber: TranscriptionController?
     private var hudController: HUDWindowController?
@@ -17,16 +18,68 @@ final class StatusBarController {
     private var autoPaste = false
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
-    private var currentModelName = "ggml-large-v3-turbo-q5_0.gguf"
+    private var currentModelName = "ggml-small-q5_1.bin"
+
+    init() {
+        DLOG("=== StatusBarController.init() START ===")
+        NSLog("🔧 [MacTalk] StatusBarController.init() called")
+        DLOG("=== StatusBarController.init() END ===")
+    }
 
     func show() {
-        guard let button = statusItem.button else { return }
+        DLOG("=== StatusBarController.show() START ===")
+        NSLog("🔧 [MacTalk] StatusBarController.show() called")
 
-        // Set menu bar icon
-        button.title = "🎙️"
+        // MUST be called from main thread (applicationDidFinishLaunching)
+        assert(Thread.isMainThread, "StatusBarController.show() must be called from main thread")
+        NSLog("🔧 [MacTalk] Thread check passed - on main thread")
+
+        // Create status item on main thread (critical for macOS 26 Tahoe)
+        // Use squareLength as recommended in the checklist
+        NSLog("🔧 [MacTalk] Creating status item...")
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        NSLog("🔧 [MacTalk] Status item created: %@", statusItem)
+
+        // Make status item visible (macOS 26.0.1 workaround)
+        statusItem.isVisible = true
+        NSLog("🔧 [MacTalk] Status item visibility set to true")
+
+        guard let button = statusItem.button else {
+            NSLog("❌ [MacTalk] ERROR: Status item button is nil!")
+            return
+        }
+        NSLog("🔧 [MacTalk] Status item button obtained: %@", button)
+
+        // Set menu bar icon with SF Symbol for macOS 26 Tahoe transparency
+        if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+            image.isTemplate = true  // Critical for visibility with Tahoe's transparent menu bar
+            button.image = image
+            button.imagePosition = .imageOnly
+            NSLog("✅ [MacTalk] Set mic.fill icon (template: %d)", image.isTemplate)
+        } else {
+            // Fallback to emoji for older macOS
+            button.title = "🎙️"
+            NSLog("✅ [MacTalk] Set emoji icon as fallback")
+        }
+
+        button.toolTip = "MacTalk - Voice Transcription"
         button.action = #selector(statusBarButtonClicked)
         button.target = self
 
+        // Force the button to be visible
+        button.isHidden = false
+        NSLog("🔧 [MacTalk] Button isHidden set to false")
+
+        NSLog("🔧 [MacTalk] About to call setupMenu()...")
+        setupMenu()
+        NSLog("🔧 [MacTalk] setupMenu() completed")
+
+        NSLog("✅ [MacTalk] Status bar setup complete. Button frame: %@", NSStringFromRect(button.frame))
+        NSLog("✅ [MacTalk] Status item isVisible: %d", statusItem.isVisible)
+        NSLog("✅ [MacTalk] Status item length: %f", statusItem.length)
+    }
+
+    private func setupMenu() {
         // Create menu
         let menu = NSMenu()
 
@@ -47,11 +100,11 @@ final class StatusBarController {
         // Model selection submenu
         let modelMenu = NSMenu()
         let modelNames = [
-            "ggml-tiny-q5_0.gguf",
-            "ggml-base-q5_0.gguf",
-            "ggml-small-q5_0.gguf",
-            "ggml-medium-q5_0.gguf",
-            "ggml-large-v3-turbo-q5_0.gguf"
+            "ggml-tiny-q5_1.bin",
+            "ggml-base-q5_1.bin",
+            "ggml-small-q5_1.bin",
+            "ggml-medium-q5_0.bin",
+            "ggml-large-v3-turbo-q5_0.bin"
         ]
         for modelName in modelNames {
             let item = NSMenuItem(title: modelName, action: #selector(selectModel(_:)), keyEquivalent: "")
@@ -83,8 +136,10 @@ final class StatusBarController {
         // Initialize HUD
         hudController = HUDWindowController()
 
-        // Load default model
-        prepareModel()
+        // Load default model (async to avoid blocking menu bar icon)
+        DispatchQueue.main.async { [weak self] in
+            self?.prepareModel()
+        }
     }
 
     @objc private func statusBarButtonClicked() {
@@ -250,7 +305,27 @@ final class StatusBarController {
     }
 
     private func updateMenuBarIcon(recording: Bool) {
-        statusItem.button?.title = recording ? "🔴" : "🎙️"
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let button = self.statusItem.button else { return }
+
+            if recording {
+                if let image = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
+                    image.isTemplate = true
+                    button.image = image
+                    button.imagePosition = .imageOnly
+                } else {
+                    button.title = "🔴"
+                }
+            } else {
+                if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+                    image.isTemplate = true
+                    button.image = image
+                    button.imagePosition = .imageOnly
+                } else {
+                    button.title = "🎙️"
+                }
+            }
+        }
     }
 
     private func showModelMissingAlert(modelName: String, path: String) {

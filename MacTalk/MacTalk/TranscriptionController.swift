@@ -113,6 +113,14 @@ final class TranscriptionController {
     }
 
     private func appendSamples(_ samples: [Float]) {
+        // Calculate RMS to check if we're actually getting audio
+        let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
+        let peak = samples.map { abs($0) }.max() ?? 0
+
+        if samples.count > 0 && (rms > 0.001 || peak > 0.001) {
+            print("📊 Audio samples: count=\(samples.count), RMS=\(String(format: "%.4f", rms)), Peak=\(String(format: "%.4f", peak))")
+        }
+
         chunkLock.lock()
         audioChunk.append(contentsOf: samples)
         let chunkCount = audioChunk.count
@@ -136,6 +144,17 @@ final class TranscriptionController {
         let chunkSamples = Array(audioChunk.prefix(threshold))
         audioChunk.removeFirst(threshold)
         chunkLock.unlock()
+
+        // Simple Voice Activity Detection (VAD) - skip if chunk is too quiet
+        let rms = sqrt(chunkSamples.map { $0 * $0 }.reduce(0, +) / Float(chunkSamples.count))
+        let silenceThreshold: Float = 0.01  // Adjust based on testing
+
+        if rms < silenceThreshold {
+            print("🔇 Skipping silent chunk (RMS: \(String(format: "%.4f", rms)))")
+            return
+        }
+
+        print("🎤 Processing chunk with RMS: \(String(format: "%.4f", rms))")
 
         // Transcribe chunk on background queue
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -165,6 +184,18 @@ final class TranscriptionController {
             emitFinalTranscript()
             return
         }
+
+        // Check if remaining audio is mostly silent
+        let rms = sqrt(remainingSamples.map { $0 * $0 }.reduce(0, +) / Float(remainingSamples.count))
+        let silenceThreshold: Float = 0.01
+
+        if rms < silenceThreshold {
+            print("🔇 Skipping silent final chunk (RMS: \(String(format: "%.4f", rms)))")
+            emitFinalTranscript()
+            return
+        }
+
+        print("🎤 Processing final chunk with RMS: \(String(format: "%.4f", rms))")
 
         // Transcribe remaining audio
         if let result = engine.transcribeFinal(

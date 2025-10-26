@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0462E9547F556371A242B595 /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */; };
 		05896975E8FFB01AD53265C2 /* WhisperEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84150222B014F04E94D7B6B5 /* WhisperEngine.swift */; };
 		22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */; };
 		26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = F8BDC86480E09233F303814D /* WhisperBridge.mm */; };
@@ -20,9 +21,9 @@
 		495A7EE5106782C8767941CD /* WhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D973D4AAE3C8E8F6BA67C87D /* WhisperEngineTests.swift */; };
 		4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */; };
 		5F1333172A225DFE267FC2AE /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17A686CDEF44401730A9967E /* Metal.framework */; };
-		658FB9A200D947607BD0EC01 /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = D955A618D36FA35E33E559A0 /* libc++.tbd */; };
 		6DF8C9E51C8CF1146A192820 /* ModelManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8ED5B1124AF544E69B234D2 /* ModelManagerTests.swift */; };
 		7486E5D8E45604B26A540018 /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76FC409C68F7574C43B90B4 /* ClipboardManager.swift */; };
+		74885DC000A12417A4D290BF /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 170191E05BBF77579A873511 /* main.swift */; };
 		78C03577C5DF441A3E20842D /* ScreenAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0CB0C822E590700DC92674D /* ScreenAudioCapture.swift */; };
 		7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */; };
 		7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */; };
@@ -57,6 +58,7 @@
 		02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMonitorTests.swift; sourceTree = "<group>"; };
 		09A2146139DC4C5E50571381 /* AudioMixer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixer.swift; sourceTree = "<group>"; };
 		135F815473A57D696974319C /* AudioLevelMeterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMeterView.swift; sourceTree = "<group>"; };
+		170191E05BBF77579A873511 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		17A686CDEF44401730A9967E /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		35F50A54ADED08971D0A193F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -66,6 +68,7 @@
 		59E9EED0C012BA63AE29807D /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 		6715914C4DF7FFB0CF653B4D /* MacTalk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacTalk.entitlements; sourceTree = "<group>"; };
 		6E458427B2F013B3D86FF976 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
 		84150222B014F04E94D7B6B5 /* WhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngine.swift; sourceTree = "<group>"; };
 		99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowControllerTests.swift; sourceTree = "<group>"; };
@@ -79,7 +82,6 @@
 		CC13B415ED06C97834D8484E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		CC4F33E65DF8138019C37275 /* RingBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBufferTests.swift; sourceTree = "<group>"; };
 		D16C4E018975F87D9DE6D45F /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
-		D955A618D36FA35E33E559A0 /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
 		D973D4AAE3C8E8F6BA67C87D /* WhisperEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngineTests.swift; sourceTree = "<group>"; };
 		DF15AD5D6AC92C434EB036F8 /* HUDWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowControllerTests.swift; sourceTree = "<group>"; };
 		E29FD80FD4655CCCEB58F754 /* MacTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -106,7 +108,6 @@
 				E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */,
 				FDA1357E6499774BF197B5EF /* AppKit.framework in Frameworks */,
 				FCB78911B3F69224381E5FEB /* ScreenCaptureKit.framework in Frameworks */,
-				658FB9A200D947607BD0EC01 /* libc++.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -166,10 +167,12 @@
 			children = (
 				F032A713515F1C44CE66DF56 /* AppDelegate.swift */,
 				E76FC409C68F7574C43B90B4 /* ClipboardManager.swift */,
+				739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */,
 				59E9EED0C012BA63AE29807D /* HotkeyManager.swift */,
 				9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */,
 				35F50A54ADED08971D0A193F /* Info.plist */,
 				6715914C4DF7FFB0CF653B4D /* MacTalk.entitlements */,
+				170191E05BBF77579A873511 /* main.swift */,
 				EF01E16D9F042ED0D5426CE5 /* Permissions.swift */,
 				1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */,
 				6E458427B2F013B3D86FF976 /* StatusBarController.swift */,
@@ -189,7 +192,6 @@
 				FF9641A5E0843D73310B25FF /* AppKit.framework */,
 				3BD2E91B633537326157C2EC /* AVFoundation.framework */,
 				CC13B415ED06C97834D8484E /* Foundation.framework */,
-				D955A618D36FA35E33E559A0 /* libc++.tbd */,
 				17A686CDEF44401730A9967E /* Metal.framework */,
 				392B5C1EE24551C4C7BA55FB /* ScreenCaptureKit.framework */,
 			);
@@ -243,6 +245,8 @@
 			buildPhases = (
 				9C035754F244D13DF5DA149A /* Sources */,
 				4D4F0275467B05E518737FCE /* Frameworks */,
+				2EE36195649FEA5AE40C0B76 /* Copy Whisper Libraries */,
+				60F7E2B0320C16F9A5513D38 /* Re-sign Libraries and App Bundle */,
 			);
 			buildRules = (
 			);
@@ -290,6 +294,56 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		2EE36195649FEA5AE40C0B76 /* Copy Whisper Libraries */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/Vendor/whisper.cpp/build/src/libwhisper.1.dylib",
+				"$(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml.dylib",
+				"$(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib",
+				"$(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib",
+				"$(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib",
+			);
+			name = "Copy Whisper Libraries";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libwhisper.1.dylib",
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml.dylib",
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-base.dylib",
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-cpu.dylib",
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-metal.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Create Frameworks directory\nmkdir -p \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\n\n# Copy whisper.cpp libraries\ncp -f \"${PROJECT_DIR}/Vendor/whisper.cpp/build/src/libwhisper.1.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" || true\ncp -f \"${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" || true\ncp -f \"${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" || true\ncp -f \"${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" || true\ncp -f \"${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" || true\n\n# Fix install names\ninstall_name_tool -id \"@rpath/libwhisper.1.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib\" || true\ninstall_name_tool -id \"@rpath/libggml.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml.dylib\" || true\ninstall_name_tool -id \"@rpath/libggml-base.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-base.dylib\" || true\ninstall_name_tool -id \"@rpath/libggml-cpu.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-cpu.dylib\" || true\ninstall_name_tool -id \"@rpath/libggml-metal.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-metal.dylib\" || true\n\n# Update dependencies in libwhisper\ninstall_name_tool -change \"@rpath/libggml.dylib\" \"@rpath/libggml.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib\" || true\n\n# Fix library references in the debug dylib (CRITICAL for macOS 26)\nif [ -f \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" ]; then\n  install_name_tool -change \"@rpath/libwhisper.1.dylib\" \"@loader_path/../Frameworks/libwhisper.1.dylib\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" || true\n  install_name_tool -change \"@rpath/libggml.dylib\" \"@loader_path/../Frameworks/libggml.dylib\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" || true\n  install_name_tool -change \"@rpath/libggml-base.dylib\" \"@loader_path/../Frameworks/libggml-base.dylib\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" || true\n  install_name_tool -change \"@rpath/libggml-cpu.dylib\" \"@loader_path/../Frameworks/libggml-cpu.dylib\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" || true\n  install_name_tool -change \"@rpath/libggml-metal.dylib\" \"@loader_path/../Frameworks/libggml-metal.dylib\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib\" || true\n  echo \"Fixed library paths in ${PRODUCT_NAME}.debug.dylib\"\nfi\n\necho \"Copied whisper libraries to ${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\n";
+		};
+		60F7E2B0320C16F9A5513D38 /* Re-sign Libraries and App Bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Re-sign Libraries and App Bundle";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "#!/bin/bash\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries...\"\n\n# Re-sign all dylibs in Frameworks\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    codesign --force --sign - \"$lib\" 2>&1 | grep -v \"replacing existing signature\" || true\n    echo \"   ✅ Signed: $(basename $lib)\"\n  fi\ndone\n\n# Re-sign the app bundle with deep option\necho \"🔐 [Post-Build] Re-signing app bundle...\"\ncodesign --force --deep --sign - \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" 2>&1 | grep -v \"replacing existing signature\" || true\n\necho \"✅ [Post-Build] Code signing complete!\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		9C035754F244D13DF5DA149A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -301,6 +355,7 @@
 				BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */,
 				9117504B467C3D18350E67A9 /* AudioMixer.swift in Sources */,
 				7486E5D8E45604B26A540018 /* ClipboardManager.swift in Sources */,
+				0462E9547F556371A242B595 /* DebugLogger.swift in Sources */,
 				7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */,
 				4743AF96C26282668AE7107A /* HotkeyManager.swift in Sources */,
 				DB47CCD04FB7C1B3419C7F33 /* ModelManager.swift in Sources */,
@@ -312,6 +367,7 @@
 				7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */,
 				26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */,
 				05896975E8FFB01AD53265C2 /* WhisperEngine.swift in Sources */,
+				74885DC000A12417A4D290BF /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -367,7 +423,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vendor/whisper.cpp",
@@ -377,8 +433,8 @@
 				);
 				INFOPLIST_FILE = MacTalk/MacTalk/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
 					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vendor/whisper.cpp/build/src",
@@ -525,7 +581,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vendor/whisper.cpp",
@@ -535,8 +591,8 @@
 				);
 				INFOPLIST_FILE = MacTalk/MacTalk/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
 					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vendor/whisper.cpp/build/src",
