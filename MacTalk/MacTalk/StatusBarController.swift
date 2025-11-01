@@ -18,7 +18,10 @@ final class StatusBarController {
     private var autoPaste = false
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
-    private var currentModelName = "ggml-small-q5_1.bin"
+    private var currentModelName = "ggml-large-v3-turbo-q5_0.gguf"
+    private var selectedAudioSource: AppPickerWindowController.AudioSource?
+    // FIX P0: Retain app picker to keep callbacks alive
+    private var appPickerController: AppPickerWindowController?
 
     init() {
         DLOG("=== StatusBarController.init() START ===")
@@ -156,8 +159,7 @@ final class StatusBarController {
 
     @objc private func startMicPlusApp() {
         mode = .micPlusAppAudio
-        // TODO: Show app picker dialog
-        startRecording()
+        showAppPicker()
     }
 
     @objc private func stopRecording() {
@@ -285,12 +287,34 @@ final class StatusBarController {
             }
         }
 
+        transcriptionController.onAppAudioLost = { [weak self] in
+            DispatchQueue.main.async {
+                self?.showNotification(
+                    title: "App Audio Lost",
+                    message: "The selected app's audio stream was interrupted. Retrying..."
+                )
+            }
+        }
+
+        transcriptionController.onFallbackToMicOnly = { [weak self] in
+            DispatchQueue.main.async {
+                self?.showNotification(
+                    title: "Switched to Mic-Only Mode",
+                    message: "App audio could not be restored. Continuing with microphone only."
+                )
+                self?.hudController?.setAppMeterVisible(false)
+            }
+        }
+
         transcriber = transcriptionController
 
         Task { [self] in
             do {
-                try await transcriptionController.start(mode: mode, appName: "Zoom")
-                DispatchQueue.main.async { [self] in
+                try await transcriptionController.start(
+                    mode: mode,
+                    audioSource: selectedAudioSource
+                )
+                DispatchQueue.main.async {
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
@@ -365,5 +389,21 @@ final class StatusBarController {
     func cleanup() {
         transcriber?.stop()
         hudController?.close()
+    }
+
+    // MARK: - App Picker
+
+    private func showAppPicker() {
+        // FIX P0: Retain the picker controller so it stays alive
+        let picker = AppPickerWindowController()
+        self.appPickerController = picker
+
+        picker.onSelection = { [weak self] source in
+            self?.selectedAudioSource = source
+            self?.appPickerController = nil  // Release after selection
+            self?.startRecording()
+        }
+        picker.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

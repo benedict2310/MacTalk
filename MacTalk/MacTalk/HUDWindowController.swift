@@ -35,6 +35,7 @@ final class HUDWindowController: NSWindowController {
         self.init(window: panel)
 
         setupUI()
+        setupAccessibility()
         centerWindow()
     }
 
@@ -134,5 +135,29 @@ final class HUDWindowController: NSWindowController {
         }, completionHandler: {
             super.close()
         })
+    }
+
+    // MARK: - Accessibility
+
+    private func setupAccessibility() {
+        guard let window = window else { return }
+
+        // Window accessibility
+        window.setAccessibilityLabel("MacTalk HUD")
+        window.setAccessibilityRole(.window)
+        window.setAccessibilityHelp("Live transcription overlay showing partial transcripts and audio levels")
+
+        // Text view accessibility
+        textView.setAccessibilityLabel("Live Transcript")
+        textView.setAccessibilityRole(.staticText)
+        textView.setAccessibilityHelp("Shows the current transcription in real-time")
+
+        // Level meter accessibility
+        levelMeterView.setAccessibilityLabel("Audio Level Meters")
+        levelMeterView.setAccessibilityRole(.levelIndicator)
+        levelMeterView.setAccessibilityHelp("Displays microphone and application audio levels")
+
+        // Enable keyboard navigation
+        window.initialFirstResponder = textView
     }
 }

@@ -11,6 +11,7 @@ import AVFoundation
 final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     private var stream: SCStream?
     var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
+    var onStreamError: ((Error) -> Void)?
 
     func selectFirstWindow(named name: String) async throws {
         let content = try await SCShareableContent.current
@@ -29,6 +30,22 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
         }
 
         try await startCapture(filter: SCContentFilter(desktopIndependentWindow: window))
+    }
+
+    func selectApp(app: SCRunningApplication) async throws {
+        let content = try await SCShareableContent.current
+
+        guard let window = content.windows.first(where: { $0.owningApplication == app }) else {
+            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App '\(app.applicationName)' has no windows"
+            ])
+        }
+
+        try await startCapture(filter: SCContentFilter(desktopIndependentWindow: window))
+    }
+
+    func selectDisplay(display: SCDisplay) async throws {
+        try await startCapture(filter: SCContentFilter(display: display, excludingWindows: []))
     }
 
     func selectDisplay() async throws {
@@ -88,6 +105,7 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("ScreenCaptureKit stream stopped with error: \(error)")
+        onStreamError?(error)
     }
 
     deinit {
