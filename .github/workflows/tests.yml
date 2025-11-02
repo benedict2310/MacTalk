@@ -23,7 +23,7 @@ jobs:
 
       - name: List available schemes
         run: |
-          xcodebuild -list -project MacTalk/MacTalk.xcodeproj || true
+          xcodebuild -list -project MacTalk/MacTalk.xcodeproj
           echo "Continuing with available configuration..."
 
       - name: Run unit tests
@@ -36,7 +36,6 @@ jobs:
             -enableCodeCoverage YES \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
-        continue-on-error: true
 
       - name: Upload test results
         if: always()
@@ -72,7 +71,6 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
-        continue-on-error: true
 
       - name: Upload build log
         if: always()
@@ -170,5 +168,3 @@ jobs:
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Documentation: ${{ needs.documentation.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Note: Some checks may show as succeeded even if steps failed due to continue-on-error flags." >> $GITHUB_STEP_SUMMARY
