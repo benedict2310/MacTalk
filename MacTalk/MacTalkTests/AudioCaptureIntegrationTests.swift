@@ -289,7 +289,10 @@ final class AudioCaptureIntegrationTests: XCTestCase {
     func testIntegrationWithTranscriptionController() {
         // Test that AudioCapture can be used with TranscriptionController
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else {
+            XCTFail("Failed to create WhisperEngine")
+            return
+        }
         let controller = TranscriptionController(engine: engine)
 
         XCTAssertNotNil(controller, "TranscriptionController should work with AudioCapture")

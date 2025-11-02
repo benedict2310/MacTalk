@@ -26,7 +26,7 @@ final class AudioLevelMonitor {
 
     // MARK: - Public Interface
 
-    struct LevelData {
+    struct LevelData: Equatable {
         let rms: Float           // Root Mean Square (0.0 - 1.0)
         let peak: Float          // Current peak (0.0 - 1.0)
         let peakHold: Float      // Peak hold value (0.0 - 1.0)

@@ -99,7 +99,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testTranscriptionControllerInitialization() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         XCTAssertNotNil(controller, "Controller should initialize with engine")
@@ -107,7 +107,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testTranscriptionControllerCallbacks() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         let partialExpectation = XCTestExpectation(description: "Partial callback")
@@ -122,11 +122,11 @@ final class Phase4IntegrationTests: XCTestCase {
         let fallbackExpectation = XCTestExpectation(description: "Fallback to mic-only")
         fallbackExpectation.isInverted = true
 
-        controller.onPartial = { text in
+        controller.onPartial = { (text: String) in
             partialExpectation.fulfill()
         }
 
-        controller.onFinal = { text in
+        controller.onFinal = { (text: String) in
             finalExpectation.fulfill()
         }
 
@@ -149,7 +149,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testTranscriptionControllerStopWithoutStart() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         // Should not crash
@@ -160,7 +160,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testAppAudioErrorHandling() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         let audioLostExpectation = XCTestExpectation(description: "Audio lost callback")
@@ -178,7 +178,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testFallbackToMicOnly() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         var fallbackCalled = false
@@ -314,7 +314,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
         autoreleasepool {
             let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-            let engine = WhisperEngine(modelURL: modelURL)
+            guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
             let controller = TranscriptionController(engine: engine)
 
             controller.onPartial = { [weak controller] text in
@@ -377,7 +377,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testRecoveryAfterAppAudioFailure() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         var recoveryAttempts = 0
@@ -414,7 +414,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testTranscriptionControllerLanguageConfiguration() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         // Test language setting
@@ -430,7 +430,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testTranscriptionControllerAutoPasteConfiguration() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         XCTAssertFalse(controller.autoPasteEnabled, "Auto-paste should be disabled by default")
@@ -446,7 +446,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
     func testControllerStateAfterStop() {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        let engine = WhisperEngine(modelURL: modelURL)
+        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
         let controller = TranscriptionController(engine: engine)
 
         // Stop without starting

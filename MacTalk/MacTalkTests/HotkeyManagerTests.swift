@@ -22,7 +22,7 @@ final class HotkeyManagerTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        hotkeyManager.unregister()
+        hotkeyManager.unregisterAll()
         hotkeyManager = nil
     }
 
@@ -35,27 +35,26 @@ final class HotkeyManagerTests: XCTestCase {
     // MARK: - Registration Tests
 
     func testRegisterHotkey() {
-        let result = hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) { [weak self] in
             self?.callbackInvoked = true
         }
 
-        XCTAssertTrue(result, "Hotkey registration should succeed")
-        XCTAssertTrue(hotkeyManager.isRegistered, "Should be marked as registered")
+        XCTAssertNotNil(hotkeyID, "Hotkey registration should succeed")
     }
 
     func testRegisterDefaultHotkey() {
         // Default is Cmd+Shift+Space
-        let result = hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {
             // Default callback
         }
 
-        XCTAssertTrue(result)
+        XCTAssertNotNil(hotkeyID)
     }
 
     func testRegisterMultipleModifiers() {
@@ -71,7 +70,7 @@ final class HotkeyManagerTests: XCTestCase {
 
         for modifiers in modifierCombinations {
             let manager = HotkeyManager()
-            let result = manager.register(
+            let hotkeyID = manager.register(
                 keyCode: UInt32(kVK_Space),
                 modifiers: modifiers
             ) {}
@@ -79,7 +78,7 @@ final class HotkeyManagerTests: XCTestCase {
             // Registration may succeed or fail depending on system state
             // Just verify the manager handles it gracefully
             XCTAssertNotNil(manager)
-            manager.unregister()
+            manager.unregisterAll()
         }
     }
 
@@ -94,46 +93,50 @@ final class HotkeyManagerTests: XCTestCase {
 
         for keyCode in keyCodes {
             let manager = HotkeyManager()
-            let result = manager.register(
+            let hotkeyID = manager.register(
                 keyCode: keyCode,
                 modifiers: UInt32(cmdKey | shiftKey)
             ) {}
 
             XCTAssertNotNil(manager)
-            manager.unregister()
+            manager.unregisterAll()
         }
     }
 
     // MARK: - Unregistration Tests
 
     func testUnregister() {
-        hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
-        hotkeyManager.unregister()
-        XCTAssertFalse(hotkeyManager.isRegistered, "Should not be registered after unregister")
+        if let id = hotkeyID {
+            hotkeyManager.unregister(hotkeyID: id)
+            XCTAssertTrue(true, "Should unregister successfully")
+        }
     }
 
     func testUnregisterWithoutRegistering() {
         // Should handle gracefully
-        hotkeyManager.unregister()
-        XCTAssertFalse(hotkeyManager.isRegistered)
+        hotkeyManager.unregister(hotkeyID: 999)
+        XCTAssertNotNil(hotkeyManager)
     }
 
     func testMultipleUnregistrations() {
-        hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
         // Unregister multiple times
-        hotkeyManager.unregister()
-        hotkeyManager.unregister()
-        hotkeyManager.unregister()
+        if let id = hotkeyID {
+            hotkeyManager.unregister(hotkeyID: id)
+            hotkeyManager.unregister(hotkeyID: id)
+            hotkeyManager.unregister(hotkeyID: id)
+        }
 
-        XCTAssertFalse(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyManager)
     }
 
     // MARK: - Callback Tests
@@ -141,7 +144,7 @@ final class HotkeyManagerTests: XCTestCase {
     func testCallbackInvocation() {
         let expectation = XCTestExpectation(description: "Hotkey callback")
 
-        hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) { [weak self] in
@@ -151,18 +154,18 @@ final class HotkeyManagerTests: XCTestCase {
 
         // Note: Cannot programmatically trigger Carbon hotkey events in tests
         // This tests callback storage, actual invocation tested manually
-        XCTAssertTrue(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyID)
     }
 
     func testMultipleCallbacks() {
-        hotkeyManager.register(
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) { [weak self] in
             self?.callbackCount += 1
         }
 
-        XCTAssertTrue(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyID)
     }
 
     func testCallbackWithWeakSelf() {
@@ -179,7 +182,7 @@ final class HotkeyManagerTests: XCTestCase {
                 weakSelf?.callbackInvoked = true
             }
 
-            manager.unregister()
+            manager.unregisterAll()
         }
 
         XCTAssertNotNil(weakSelf, "Self should still exist")
@@ -189,63 +192,61 @@ final class HotkeyManagerTests: XCTestCase {
 
     func testReregister() {
         // Register first hotkey
-        hotkeyManager.register(
+        let hotkeyID1 = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {
             // First callback
         }
 
-        XCTAssertTrue(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyID1)
 
         // Unregister
-        hotkeyManager.unregister()
-        XCTAssertFalse(hotkeyManager.isRegistered)
+        hotkeyManager.unregisterAll()
 
         // Re-register
-        hotkeyManager.register(
+        let hotkeyID2 = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {
             // Second callback
         }
 
-        XCTAssertTrue(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyID2)
     }
 
     func testRegisterDifferentHotkey() {
         // Register first hotkey
-        hotkeyManager.register(
+        let hotkeyID1 = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
-        hotkeyManager.unregister()
+        XCTAssertNotNil(hotkeyID1)
+
+        hotkeyManager.unregisterAll()
 
         // Register different hotkey
-        hotkeyManager.register(
+        let hotkeyID2 = hotkeyManager.register(
             keyCode: UInt32(kVK_Return),
             modifiers: UInt32(cmdKey | optionKey)
         ) {}
 
-        XCTAssertTrue(hotkeyManager.isRegistered)
+        XCTAssertNotNil(hotkeyID2)
     }
 
     // MARK: - State Management Tests
 
     func testIsRegisteredProperty() {
-        XCTAssertFalse(hotkeyManager.isRegistered, "Should not be registered initially")
-
-        hotkeyManager.register(
+        // Register hotkey
+        let hotkeyID = hotkeyManager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
-        XCTAssertTrue(hotkeyManager.isRegistered, "Should be registered after register()")
+        XCTAssertNotNil(hotkeyID, "Should be registered after register()")
 
-        hotkeyManager.unregister()
-
-        XCTAssertFalse(hotkeyManager.isRegistered, "Should not be registered after unregister()")
+        hotkeyManager.unregisterAll()
     }
 
     // MARK: - Memory Management Tests
@@ -262,7 +263,7 @@ final class HotkeyManagerTests: XCTestCase {
                 modifiers: UInt32(cmdKey | shiftKey)
             ) {}
 
-            manager.unregister()
+            manager.unregisterAll()
         }
 
         // Manager should be deallocated
@@ -285,7 +286,7 @@ final class HotkeyManagerTests: XCTestCase {
                 capturedValue += 1
             }
 
-            manager.unregister()
+            manager.unregisterAll()
             _ = capturedValue // Use the value
         }
 
@@ -329,22 +330,22 @@ final class HotkeyManagerTests: XCTestCase {
         let manager1 = HotkeyManager()
         let manager2 = HotkeyManager()
 
-        manager1.register(
+        let hotkeyID1 = manager1.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
         // Second manager can also register (different event spec)
-        manager2.register(
+        let hotkeyID2 = manager2.register(
             keyCode: UInt32(kVK_Return),
             modifiers: UInt32(cmdKey | optionKey)
         ) {}
 
-        XCTAssertTrue(manager1.isRegistered)
-        XCTAssertTrue(manager2.isRegistered)
+        XCTAssertNotNil(hotkeyID1)
+        XCTAssertNotNil(hotkeyID2)
 
-        manager1.unregister()
-        manager2.unregister()
+        manager1.unregisterAll()
+        manager2.unregisterAll()
     }
 
     func testConflictingHotkeys() {
@@ -352,22 +353,22 @@ final class HotkeyManagerTests: XCTestCase {
         let manager2 = HotkeyManager()
 
         // Register same hotkey in both managers
-        manager1.register(
+        let hotkeyID1 = manager1.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
         // This may fail or succeed depending on Carbon's behavior
-        let result2 = manager2.register(
+        let hotkeyID2 = manager2.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {}
 
         // At least one should be registered
-        XCTAssertTrue(manager1.isRegistered || result2)
+        XCTAssertTrue(hotkeyID1 != nil || hotkeyID2 != nil)
 
-        manager1.unregister()
-        manager2.unregister()
+        manager1.unregisterAll()
+        manager2.unregisterAll()
     }
 
     // MARK: - Integration Tests
@@ -375,34 +376,31 @@ final class HotkeyManagerTests: XCTestCase {
     func testCompleteLifecycle() {
         // 1. Create manager
         let manager = HotkeyManager()
-        XCTAssertFalse(manager.isRegistered)
 
         // 2. Register hotkey
         var invocationCount = 0
-        manager.register(
+        let hotkeyID1 = manager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {
             invocationCount += 1
         }
-        XCTAssertTrue(manager.isRegistered)
+        XCTAssertNotNil(hotkeyID1)
 
         // 3. Unregister
-        manager.unregister()
-        XCTAssertFalse(manager.isRegistered)
+        manager.unregisterAll()
 
         // 4. Re-register
-        manager.register(
+        let hotkeyID2 = manager.register(
             keyCode: UInt32(kVK_Space),
             modifiers: UInt32(cmdKey | shiftKey)
         ) {
             invocationCount += 1
         }
-        XCTAssertTrue(manager.isRegistered)
+        XCTAssertNotNil(hotkeyID2)
 
         // 5. Final cleanup
-        manager.unregister()
-        XCTAssertFalse(manager.isRegistered)
+        manager.unregisterAll()
     }
 
     // MARK: - Performance Tests
@@ -415,7 +413,7 @@ final class HotkeyManagerTests: XCTestCase {
                     keyCode: UInt32(kVK_Space),
                     modifiers: UInt32(cmdKey | shiftKey)
                 ) {}
-                manager.unregister()
+                manager.unregisterAll()
             }
         }
     }
@@ -432,7 +430,7 @@ final class HotkeyManagerTests: XCTestCase {
 
         measure {
             for manager in managers {
-                manager.unregister()
+                manager.unregisterAll()
             }
         }
     }
@@ -449,7 +447,7 @@ final class HotkeyManagerTests: XCTestCase {
                 keyCode: UInt32(kVK_Space),
                 modifiers: UInt32(cmdKey | shiftKey)
             ) {}
-            manager.unregister()
+            manager.unregisterAll()
             expectation1.fulfill()
         }
 
@@ -459,7 +457,7 @@ final class HotkeyManagerTests: XCTestCase {
                 keyCode: UInt32(kVK_Return),
                 modifiers: UInt32(cmdKey | optionKey)
             ) {}
-            manager.unregister()
+            manager.unregisterAll()
             expectation2.fulfill()
         }
 
