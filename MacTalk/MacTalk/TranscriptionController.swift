@@ -25,6 +25,9 @@ final class TranscriptionController {
     private let chunkDurationMs: Int = 750  // 0.75 seconds
     private let samplesPerMs = 16  // 16kHz sample rate
 
+    // Separate buffers for each audio source to enable proper mixing
+    private var micBuffer: [Float] = []
+    private var appBuffer: [Float] = []
     private var audioChunk: [Float] = []
     private let chunkLock = NSLock()
 
@@ -65,6 +68,8 @@ final class TranscriptionController {
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
         // Clear previous state
         chunkLock.lock()
+        micBuffer.removeAll()
+        appBuffer.removeAll()
         audioChunk.removeAll()
         fullTranscript.removeAll()
         chunkLock.unlock()
@@ -134,7 +139,17 @@ final class TranscriptionController {
         let micLevel = levelMonitor.update(channel: .microphone, buffer: samples)
         onMicLevel?(micLevel)
 
-        appendSamples(samples)
+        chunkLock.lock()
+        micBuffer.append(contentsOf: samples)
+        mixAndAppendSamples()
+        let chunkCount = audioChunk.count
+        chunkLock.unlock()
+
+        // Check if we have enough samples for a chunk
+        let threshold = samplesPerMs * chunkDurationMs
+        if chunkCount >= threshold {
+            processChunk()
+        }
     }
 
     private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
@@ -146,12 +161,9 @@ final class TranscriptionController {
         let appLevel = levelMonitor.update(channel: .application, buffer: samples)
         onAppLevel?(appLevel)
 
-        appendSamples(samples)
-    }
-
-    private func appendSamples(_ samples: [Float]) {
         chunkLock.lock()
-        audioChunk.append(contentsOf: samples)
+        appBuffer.append(contentsOf: samples)
+        mixAndAppendSamples()
         let chunkCount = audioChunk.count
         chunkLock.unlock()
 
@@ -159,6 +171,43 @@ final class TranscriptionController {
         let threshold = samplesPerMs * chunkDurationMs
         if chunkCount >= threshold {
             processChunk()
+        }
+    }
+
+    /// Mix audio samples from microphone and app sources
+    /// Called with chunkLock held
+    ///
+    /// In mic-only mode: Transfers mic samples directly to audioChunk
+    /// In mic+app mode: Mixes samples from both sources by averaging them per frame.
+    /// This ensures proper time-alignment and prevents the concatenation issue where
+    /// samples would be appended sequentially (causing time-stretching/desync).
+    private func mixAndAppendSamples() {
+        // Must be called with chunkLock held
+
+        if currentMode == .micOnly {
+            // In mic-only mode, just move mic samples to audioChunk
+            audioChunk.append(contentsOf: micBuffer)
+            micBuffer.removeAll()
+            return
+        }
+
+        // Mode B: Mix both sources
+        // Only mix the samples we have from BOTH sources to maintain time alignment
+        let availableSamples = min(micBuffer.count, appBuffer.count)
+
+        if availableSamples > 0 {
+            // Mix samples by averaging them to prevent clipping
+            // Each sample is the average of mic and app at that time position
+            audioChunk.reserveCapacity(audioChunk.count + availableSamples)
+
+            for i in 0..<availableSamples {
+                let mixed = (micBuffer[i] + appBuffer[i]) / 2.0
+                audioChunk.append(mixed)
+            }
+
+            // Remove the mixed samples from source buffers
+            micBuffer.removeFirst(availableSamples)
+            appBuffer.removeFirst(availableSamples)
         }
     }
 
@@ -197,6 +246,23 @@ final class TranscriptionController {
 
     private func flushFinalChunk() {
         chunkLock.lock()
+        // Mix any remaining buffered samples before flushing
+        mixAndAppendSamples()
+
+        // For mic-only mode or when one buffer still has data,
+        // append any remaining samples directly
+        if currentMode == .micOnly {
+            audioChunk.append(contentsOf: micBuffer)
+            micBuffer.removeAll()
+        } else {
+            // In mixed mode, there may be unmatched samples in either buffer
+            // Append them as-is (better than discarding them)
+            audioChunk.append(contentsOf: micBuffer)
+            audioChunk.append(contentsOf: appBuffer)
+            micBuffer.removeAll()
+            appBuffer.removeAll()
+        }
+
         let remainingSamples = audioChunk
         audioChunk.removeAll()
         chunkLock.unlock()
