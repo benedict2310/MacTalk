@@ -21,6 +21,12 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
       - name: List available schemes
         run: |
           xcodebuild -list -project MacTalk.xcodeproj
@@ -59,6 +65,12 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Build for Release
         run: |
