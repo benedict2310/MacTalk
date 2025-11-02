@@ -30,6 +30,13 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Build whisper.cpp
+        run: |
+          cd Vendor/whisper.cpp
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build . --config Release -j $(sysctl -n hw.ncpu)
+
       - name: List available schemes
         run: |
           xcodebuild -list -project MacTalk.xcodeproj
@@ -77,6 +84,13 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Build whisper.cpp
+        run: |
+          cd Vendor/whisper.cpp
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build . --config Release -j $(sysctl -n hw.ncpu)
 
       - name: Build for Release
         run: |
