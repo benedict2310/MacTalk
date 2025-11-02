@@ -23,12 +23,11 @@ jobs:
 
       - name: List available schemes
         run: |
-          xcodebuild -list -project MacTalk/MacTalk.xcodeproj
+          xcodebuild -list -project MacTalk.xcodeproj
           echo "Continuing with available configuration..."
 
       - name: Run unit tests
         run: |
-          cd MacTalk
           xcodebuild test \
             -project MacTalk.xcodeproj \
             -scheme MacTalk \
@@ -43,8 +42,8 @@ jobs:
         with:
           name: test-results
           path: |
-            MacTalk/*.xcresult
-            MacTalk/xcodebuild-test.log
+            *.xcresult
+            xcodebuild-test.log
         continue-on-error: true
 
   build:
@@ -63,7 +62,6 @@ jobs:
 
       - name: Build for Release
         run: |
-          cd MacTalk
           xcodebuild build \
             -project MacTalk.xcodeproj \
             -scheme MacTalk \
@@ -77,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: MacTalk/xcodebuild-build.log
+          path: xcodebuild-build.log
         continue-on-error: true
 
   lint:
