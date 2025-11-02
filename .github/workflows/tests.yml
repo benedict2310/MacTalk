@@ -24,6 +24,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Remove old project file
+        run: rm -rf MacTalk.xcodeproj
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -68,6 +71,9 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Remove old project file
+        run: rm -rf MacTalk.xcodeproj
 
       - name: Generate Xcode project
         run: xcodegen generate
