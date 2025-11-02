@@ -47,10 +47,11 @@ jobs:
           xcodebuild test \
             -project MacTalk.xcodeproj \
             -scheme MacTalk \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -enableCodeCoverage YES \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=YES
 
       - name: Upload test results
         if: always()
@@ -98,9 +99,10 @@ jobs:
             -project MacTalk.xcodeproj \
             -scheme MacTalk \
             -configuration Release \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=YES
 
       - name: Upload build log
         if: always()
