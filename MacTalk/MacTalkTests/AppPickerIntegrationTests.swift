@@ -70,7 +70,10 @@ final class AppPickerIntegrationTests: XCTestCase {
     // MARK: - AudioSource Tests
 
     func testAudioSourceFromApp() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else {
+            XCTFail("Failed to get shareable content")
+            return
+        }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -86,7 +89,7 @@ final class AppPickerIntegrationTests: XCTestCase {
     }
 
     func testAudioSourceSystemAudio() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let display = content.displays.first else {
             XCTFail("Should have at least one display")
@@ -102,7 +105,7 @@ final class AppPickerIntegrationTests: XCTestCase {
     }
 
     func testAudioSourceIconForApp() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -116,7 +119,7 @@ final class AppPickerIntegrationTests: XCTestCase {
     }
 
     func testAudioSourceIconForSystemAudio() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let display = content.displays.first else {
             XCTFail("Should have at least one display")
@@ -142,7 +145,7 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     func testSelectionCallbackWithValidSource() async throws {
         let expectation = XCTestExpectation(description: "Selection callback with source")
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -244,7 +247,7 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     func testIntegrationWithScreenAudioCapture() async throws {
         let capture = ScreenAudioCapture()
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -269,7 +272,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         }
         let controller = TranscriptionController(engine: engine)
 
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -289,13 +292,13 @@ final class AppPickerIntegrationTests: XCTestCase {
     func testEmptyApplicationList() async throws {
         // In practice, there should always be applications
         // But test that the UI handles empty state gracefully
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         XCTAssertGreaterThan(content.applications.count, 0, "Should always have applications in test environment")
     }
 
     func testMultipleDisplays() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         // System may have one or more displays
         XCTAssertGreaterThan(content.displays.count, 0, "Should have at least one display")
@@ -359,7 +362,7 @@ final class AppPickerIntegrationTests: XCTestCase {
     // MARK: - Audio Source Equality Tests
 
     func testAudioSourceComparison() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let app = content.applications.first else {
             XCTFail("Should have at least one application")
@@ -374,7 +377,7 @@ final class AppPickerIntegrationTests: XCTestCase {
     }
 
     func testSystemAudioSourcesDistinct() async throws {
-        let content = try await getShareableContent()!
+        guard let content = try await getShareableContent() else { XCTFail("Failed to get shareable content"); return }
 
         guard let display = content.displays.first else {
             XCTFail("Should have at least one display")
