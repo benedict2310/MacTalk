@@ -9,12 +9,17 @@ import AVFoundation
 import CoreMedia
 
 final class AudioMixer {
-    private let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: false
-    )!
+    private lazy var targetFormat: AVAudioFormat = {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            fatalError("Failed to create target audio format")
+        }
+        return format
+    }()
 
     private var converter: AVAudioConverter?
     private var lastInputFormat: AVAudioFormat?

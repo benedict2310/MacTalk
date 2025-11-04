@@ -10,12 +10,12 @@ import AppKit
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusBarController: StatusBarController!
+    private var statusBarController: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize status bar controller (menu bar app)
         statusBarController = StatusBarController()
-        statusBarController.show()
+        statusBarController?.show()
 
         // Request microphone permission on first launch
         Permissions.ensureMic { granted in
@@ -40,13 +40,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPermissionAlert(type: String) {
         let alert = NSAlert()
         alert.messageText = "\(type) Permission Required"
-        alert.informativeText = "MacTalk needs \(type) access to function. Please grant permission in System Settings > Privacy & Security > \(type)."
+        alert.informativeText = """
+        MacTalk needs \(type) access to function. \
+        Please grant permission in System Settings > Privacy & Security > \(type).
+        """
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Quit")
 
         if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
+                NSWorkspace.shared.open(url)
+            }
         } else {
             NSApp.terminate(nil)
         }

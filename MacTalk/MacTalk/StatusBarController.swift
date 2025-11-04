@@ -32,13 +32,34 @@ final class StatusBarController {
         let menu = NSMenu()
 
         // Recording controls
-        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
-        menu.addItem(withTitle: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "a").target = self
-        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
+        let micOnlyItem = menu.addItem(
+            withTitle: "Start (Mic Only)",
+            action: #selector(startMicOnly),
+            keyEquivalent: "m"
+        )
+        micOnlyItem.target = self
+
+        let micPlusAppItem = menu.addItem(
+            withTitle: "Start (Mic + App Audio)",
+            action: #selector(startMicPlusApp),
+            keyEquivalent: "a"
+        )
+        micPlusAppItem.target = self
+
+        let stopItem = menu.addItem(
+            withTitle: "Stop Recording",
+            action: #selector(stopRecording),
+            keyEquivalent: "s"
+        )
+        stopItem.target = self
         menu.addItem(NSMenuItem.separator())
 
         // Settings
-        let autoPasteItem = NSMenuItem(title: "Auto-paste on Stop", action: #selector(toggleAutoPaste), keyEquivalent: "p")
+        let autoPasteItem = NSMenuItem(
+            title: "Auto-paste on Stop",
+            action: #selector(toggleAutoPaste),
+            keyEquivalent: "p"
+        )
         autoPasteItem.state = autoPaste ? .on : .off
         autoPasteItem.target = self
         menu.addItem(autoPasteItem)
@@ -55,7 +76,11 @@ final class StatusBarController {
             "ggml-large-v3-turbo-q5_0.gguf"
         ]
         for modelName in modelNames {
-            let item = NSMenuItem(title: modelName, action: #selector(selectModel(_:)), keyEquivalent: "")
+            let item = NSMenuItem(
+                title: modelName,
+                action: #selector(selectModel(_:)),
+                keyEquivalent: ""
+            )
             item.target = self
             item.representedObject = modelName
             item.state = modelName == currentModelName ? .on : .off
@@ -68,16 +93,37 @@ final class StatusBarController {
         menu.addItem(NSMenuItem.separator())
 
         // Settings
-        menu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",").target = self
+        let settingsItem = menu.addItem(
+            withTitle: "Settings...",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
 
         // Permissions
-        menu.addItem(withTitle: "Check Permissions", action: #selector(checkPermissions), keyEquivalent: "").target = self
+        let permissionsItem = menu.addItem(
+            withTitle: "Check Permissions",
+            action: #selector(checkPermissions),
+            keyEquivalent: ""
+        )
+        permissionsItem.target = self
 
         menu.addItem(NSMenuItem.separator())
 
         // About and Quit
-        menu.addItem(withTitle: "About MacTalk", action: #selector(showAbout), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Quit MacTalk", action: #selector(quit), keyEquivalent: "q").target = self
+        let aboutItem = menu.addItem(
+            withTitle: "About MacTalk",
+            action: #selector(showAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+
+        let quitItem = menu.addItem(
+            withTitle: "Quit MacTalk",
+            action: #selector(quit),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
 
         statusItem.menu = menu
 
@@ -162,7 +208,11 @@ final class StatusBarController {
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "MacTalk v1.0"
-        alert.informativeText = "A native macOS app for local voice transcription powered by Whisper.\n\n100% on-device processing. No cloud, no network calls."
+        alert.informativeText = """
+        A native macOS app for local voice transcription powered by Whisper.
+
+        100% on-device processing. No cloud, no network calls.
+        """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

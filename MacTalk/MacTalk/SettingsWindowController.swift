@@ -19,13 +19,29 @@ final class SettingsWindowController: NSWindowController {
     private let showNotificationsCheckbox = NSButton(checkboxWithTitle: "Show Notifications", target: nil, action: nil)
 
     // Output tab controls
-    private let autoPasteCheckbox = NSButton(checkboxWithTitle: "Auto-paste Transcript on Stop", target: nil, action: nil)
-    private let copyToClipboardCheckbox = NSButton(checkboxWithTitle: "Copy to Clipboard", target: nil, action: nil)
-    private let showTimestampsCheckbox = NSButton(checkboxWithTitle: "Include Timestamps", target: nil, action: nil)
+    private let autoPasteCheckbox = NSButton(
+        checkboxWithTitle: "Auto-paste Transcript on Stop",
+        target: nil,
+        action: nil
+    )
+    private let copyToClipboardCheckbox = NSButton(
+        checkboxWithTitle: "Copy to Clipboard",
+        target: nil,
+        action: nil
+    )
+    private let showTimestampsCheckbox = NSButton(
+        checkboxWithTitle: "Include Timestamps",
+        target: nil,
+        action: nil
+    )
 
     // Audio tab controls
     private let defaultModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let silenceDetectionCheckbox = NSButton(checkboxWithTitle: "Enable Silence Detection", target: nil, action: nil)
+    private let silenceDetectionCheckbox = NSButton(
+        checkboxWithTitle: "Enable Silence Detection",
+        target: nil,
+        action: nil
+    )
     private let silenceThresholdSlider = NSSlider()
     private let silenceThresholdLabel = NSTextField(labelWithString: "Silence Threshold:")
     private let silenceThresholdValueLabel = NSTextField(labelWithString: "-40 dB")
@@ -63,9 +79,10 @@ final class SettingsWindowController: NSWindowController {
     // MARK: - UI Setup
 
     private func setupUI() {
-        guard let window = window else { return }
+        guard let window = window,
+              let contentView = window.contentView else { return }
 
-        let containerView = NSView(frame: window.contentView!.bounds)
+        let containerView = NSView(frame: contentView.bounds)
         containerView.autoresizingMask = [.width, .height]
 
         // Setup tab view

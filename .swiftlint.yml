@@ -1,0 +1,75 @@
+# SwiftLint Configuration for MacTalk
+
+# Paths to include/exclude
+included:
+  - MacTalk/MacTalk
+excluded:
+  - Pods
+  - .build
+
+# Rules
+disabled_rules:
+  - trailing_comma
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - explicit_init
+  - first_where
+  - force_unwrapping
+  - overridden_super_call
+  - redundant_nil_coalescing
+  - unused_import
+
+# Rule Configurations
+line_length:
+  warning: 120
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+file_length:
+  warning: 400
+  error: 600
+  ignore_comment_only_lines: true
+
+function_body_length:
+  warning: 40
+  error: 100
+
+type_body_length:
+  warning: 200
+  error: 350
+
+cyclomatic_complexity:
+  warning: 10
+  error: 20
+
+identifier_name:
+  min_length:
+    warning: 2
+    error: 1
+  max_length:
+    warning: 40
+    error: 50
+  excluded:
+    - id
+    - db
+    - i
+    - j
+    - x
+    - y
+
+# Force unwrapping should be avoided in production code
+force_unwrapping:
+  severity: warning
+
+# TODOs are allowed but generate warnings
+todo:
+  severity: warning
+
+# Nesting depth
+nesting:
+  type_level:
+    warning: 2
+  statement_level:
+    warning: 5

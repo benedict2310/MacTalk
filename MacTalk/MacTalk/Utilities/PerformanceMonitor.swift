@@ -225,7 +225,8 @@ final class PerformanceMonitor {
                 }
             }
 
-            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: threads), vm_size_t(Int(threadsCount) * MemoryLayout<thread_t>.stride))
+            let deallocSize = vm_size_t(Int(threadsCount) * MemoryLayout<thread_t>.stride)
+            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: threads), deallocSize)
 
             os_log(.info, log: logger, "⚡ CPU usage: %.2f%%", totalCPU)
         }
