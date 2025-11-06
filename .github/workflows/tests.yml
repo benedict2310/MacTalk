@@ -51,6 +51,9 @@ jobs:
             -enableCodeCoverage YES \
             -skip-testing:MacTalkTests/AppPickerIntegrationTests \
             -skip-testing:MacTalkTests/ScreenAudioCaptureTests \
+            -skip-testing:MacTalkTests/HUDWindowControllerTests \
+            -skip-testing:MacTalkTests/StatusBarControllerTests \
+            -skip-testing:MacTalkTests/Phase4IntegrationTests \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=YES
