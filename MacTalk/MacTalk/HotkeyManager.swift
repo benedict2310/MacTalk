@@ -170,14 +170,14 @@ extension HotkeyManager {
         static let f12: UInt32 = 111
 
         // Letters (a-z)
-        static let a: UInt32 = 0
-        static let b: UInt32 = 11
-        static let c: UInt32 = 8
-        static let d: UInt32 = 2
-        static let e: UInt32 = 14
-        static let m: UInt32 = 46
-        static let s: UInt32 = 1
-        static let v: UInt32 = 9
+        static let keyA: UInt32 = 0
+        static let keyB: UInt32 = 11
+        static let keyC: UInt32 = 8
+        static let keyD: UInt32 = 2
+        static let keyE: UInt32 = 14
+        static let keyM: UInt32 = 46
+        static let keyS: UInt32 = 1
+        static let keyV: UInt32 = 9
     }
 
     /// Register a common hotkey configuration

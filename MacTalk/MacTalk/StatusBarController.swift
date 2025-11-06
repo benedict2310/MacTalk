@@ -88,12 +88,21 @@ final class StatusBarController {
 
         // Recording controls
         menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
-        menu.addItem(withTitle: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "a").target = self
+        let micPlusAppItem = menu.addItem(
+            withTitle: "Start (Mic + App Audio)",
+            action: #selector(startMicPlusApp),
+            keyEquivalent: "a"
+        )
+        micPlusAppItem.target = self
         menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
         menu.addItem(NSMenuItem.separator())
 
         // Settings
-        let autoPasteItem = NSMenuItem(title: "Auto-paste on Stop", action: #selector(toggleAutoPaste), keyEquivalent: "p")
+        let autoPasteItem = NSMenuItem(
+            title: "Auto-paste on Stop",
+            action: #selector(toggleAutoPaste),
+            keyEquivalent: "p"
+        )
         autoPasteItem.state = autoPaste ? .on : .off
         autoPasteItem.target = self
         menu.addItem(autoPasteItem)
@@ -126,7 +135,12 @@ final class StatusBarController {
         menu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",").target = self
 
         // Permissions
-        menu.addItem(withTitle: "Check Permissions", action: #selector(checkPermissions), keyEquivalent: "").target = self
+        let permissionsItem = menu.addItem(
+            withTitle: "Check Permissions",
+            action: #selector(checkPermissions),
+            keyEquivalent: ""
+        )
+        permissionsItem.target = self
 
         menu.addItem(NSMenuItem.separator())
 
@@ -219,7 +233,11 @@ final class StatusBarController {
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "MacTalk v1.0"
-        alert.informativeText = "A native macOS app for local voice transcription powered by Whisper.\n\n100% on-device processing. No cloud, no network calls."
+        alert.informativeText = """
+            A native macOS app for local voice transcription powered by Whisper.
+
+            100% on-device processing. No cloud, no network calls.
+            """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

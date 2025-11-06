@@ -78,17 +78,15 @@ final class AppPickerWindowController: NSWindowController {
 
     // MARK: - UI Setup
 
-    private func setupUI() {
-        guard let contentView = window?.contentView else { return }
-
-        // Search field
+    private func setupSearchField(in contentView: NSView) {
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.placeholderString = "Filter apps..."
         searchField.target = self
         searchField.action = #selector(searchFieldDidChange)
         contentView.addSubview(searchField)
+    }
 
-        // Table view
+    private func setupTableView(in contentView: NSView) {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
@@ -119,8 +117,9 @@ final class AppPickerWindowController: NSWindowController {
         // Level meter preview
         levelMeterView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(levelMeterView)
+    }
 
-        // Buttons
+    private func setupButtons(in contentView: NSView) {
         selectButton.translatesAutoresizingMaskIntoConstraints = false
         selectButton.title = "Select"
         selectButton.bezelStyle = .rounded
@@ -137,6 +136,14 @@ final class AppPickerWindowController: NSWindowController {
         cancelButton.target = self
         cancelButton.action = #selector(cancelButtonClicked)
         contentView.addSubview(cancelButton)
+    }
+
+    private func setupUI() {
+        guard let contentView = window?.contentView else { return }
+
+        setupSearchField(in: contentView)
+        setupTableView(in: contentView)
+        setupButtons(in: contentView)
 
         // Layout constraints
         NSLayoutConstraint.activate([
@@ -164,7 +171,7 @@ final class AppPickerWindowController: NSWindowController {
 
             selectButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
             selectButton.trailingAnchor.constraint(equalTo: cancelButton.leadingAnchor, constant: -12),
-            selectButton.widthAnchor.constraint(equalToConstant: 100),
+            selectButton.widthAnchor.constraint(equalToConstant: 100)
         ])
     }
 
@@ -286,7 +293,7 @@ extension AppPickerWindowController: NSTableViewDelegate {
             selectedSource = filteredSources[selectedRow]
             selectButton.isEnabled = true
 
-            // TODO: Start audio preview for selected source
+            // Note: Audio preview for selected source could be added in future
             // This would require starting a temporary capture to show levels
         } else {
             selectedSource = nil
