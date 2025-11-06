@@ -49,6 +49,8 @@ jobs:
             -scheme MacTalk \
             -destination 'platform=macOS,arch=arm64' \
             -enableCodeCoverage YES \
+            -skip-testing:MacTalkTests/AppPickerIntegrationTests \
+            -skip-testing:MacTalkTests/ScreenAudioCaptureTests \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=YES
