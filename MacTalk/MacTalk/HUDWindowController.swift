@@ -91,10 +91,10 @@ final class HUDWindowController: NSWindowController {
         let screenFrame = screen.visibleFrame
         let windowFrame = window.frame
 
-        let x = screenFrame.maxX - windowFrame.width - 20
-        let y = screenFrame.maxY - windowFrame.height - 20
+        let xPosition = screenFrame.maxX - windowFrame.width - 20
+        let yPosition = screenFrame.maxY - windowFrame.height - 20
 
-        window.setFrameOrigin(NSPoint(x: x, y: y))
+        window.setFrameOrigin(NSPoint(x: xPosition, y: yPosition))
     }
 
     func update(text: String) {

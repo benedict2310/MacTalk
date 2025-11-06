@@ -82,6 +82,27 @@ final class StatusBarController {
         NSLog("✅ [MacTalk] Status item length: %f", statusItem.length)
     }
 
+    private func createModelSubmenu() -> NSMenuItem {
+        let modelMenu = NSMenu()
+        let modelNames = [
+            "ggml-tiny-q5_1.bin",
+            "ggml-base-q5_1.bin",
+            "ggml-small-q5_1.bin",
+            "ggml-medium-q5_0.bin",
+            "ggml-large-v3-turbo-q5_0.bin"
+        ]
+        for modelName in modelNames {
+            let item = NSMenuItem(title: modelName, action: #selector(selectModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = modelName
+            item.state = modelName == currentModelName ? .on : .off
+            modelMenu.addItem(item)
+        }
+        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
+        modelItem.submenu = modelMenu
+        return modelItem
+    }
+
     private func setupMenu() {
         // Create menu
         let menu = NSMenu()
@@ -109,26 +130,8 @@ final class StatusBarController {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Model selection submenu
-        let modelMenu = NSMenu()
-        let modelNames = [
-            "ggml-tiny-q5_1.bin",
-            "ggml-base-q5_1.bin",
-            "ggml-small-q5_1.bin",
-            "ggml-medium-q5_0.bin",
-            "ggml-large-v3-turbo-q5_0.bin"
-        ]
-        for modelName in modelNames {
-            let item = NSMenuItem(title: modelName, action: #selector(selectModel(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = modelName
-            item.state = modelName == currentModelName ? .on : .off
-            modelMenu.addItem(item)
-        }
-        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
-        modelItem.submenu = modelMenu
-        menu.addItem(modelItem)
-
+        // Model selection
+        menu.addItem(createModelSubmenu())
         menu.addItem(NSMenuItem.separator())
 
         // Settings
@@ -256,22 +259,14 @@ final class StatusBarController {
         engine = WhisperEngine(modelURL: modelURL)
     }
 
-    private func startRecording() {
-        guard let engine = engine else {
-            showError("Model not loaded. Please check that the model file exists.")
-            return
-        }
-
-        let transcriptionController = TranscriptionController(engine: engine)
-        transcriptionController.autoPasteEnabled = autoPaste
-
-        transcriptionController.onPartial = { [weak self] text in
+    private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
+        controller.onPartial = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: text)
             }
         }
 
-        transcriptionController.onFinal = { [weak self] text in
+        controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: "Final: \(text)")
                 ClipboardManager.setClipboard(text)
@@ -280,12 +275,11 @@ final class StatusBarController {
                     ClipboardManager.pasteIfAllowed()
                 }
 
-                // Show notification
                 self?.showNotification(title: "Transcription Complete", message: "Text copied to clipboard")
             }
         }
 
-        transcriptionController.onMicLevel = { [weak self] levelData in
+        controller.onMicLevel = { [weak self] levelData in
             DispatchQueue.main.async {
                 self?.hudController?.updateMicLevel(
                     rms: levelData.rms,
@@ -295,7 +289,7 @@ final class StatusBarController {
             }
         }
 
-        transcriptionController.onAppLevel = { [weak self] levelData in
+        controller.onAppLevel = { [weak self] levelData in
             DispatchQueue.main.async {
                 self?.hudController?.updateAppLevel(
                     rms: levelData.rms,
@@ -305,7 +299,7 @@ final class StatusBarController {
             }
         }
 
-        transcriptionController.onAppAudioLost = { [weak self] in
+        controller.onAppAudioLost = { [weak self] in
             DispatchQueue.main.async {
                 self?.showNotification(
                     title: "App Audio Lost",
@@ -314,7 +308,7 @@ final class StatusBarController {
             }
         }
 
-        transcriptionController.onFallbackToMicOnly = { [weak self] in
+        controller.onFallbackToMicOnly = { [weak self] in
             DispatchQueue.main.async {
                 self?.showNotification(
                     title: "Switched to Mic-Only Mode",
@@ -323,7 +317,18 @@ final class StatusBarController {
                 self?.hudController?.setAppMeterVisible(false)
             }
         }
+    }
 
+    private func startRecording() {
+        guard let engine = engine else {
+            showError("Model not loaded. Please check that the model file exists.")
+            return
+        }
+
+        let transcriptionController = TranscriptionController(engine: engine)
+        transcriptionController.autoPasteEnabled = autoPaste
+
+        setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
 
         Task { [self] in

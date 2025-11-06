@@ -81,11 +81,11 @@ final class RingBuffer<T> {
         count = 0
     }
 
-    func popMultiple(_ n: Int) -> [T] {
+    func popMultiple(_ count: Int) -> [T] {
         lock.lock()
         defer { lock.unlock() }
 
-        let actualCount = min(n, count)
+        let actualCount = min(count, self.count)
         var result: [T] = []
         result.reserveCapacity(actualCount)
 
