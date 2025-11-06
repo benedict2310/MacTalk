@@ -82,12 +82,19 @@ final class TranscriptionController {
         // Set up app audio capture if needed
         if case .micPlusAppAudio = mode {
             guard let source = audioSource else {
+                micCapture.stop() // Stop mic if validation fails
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
             }
 
-            try await startAppAudioCapture(source: source)
+            do {
+                try await startAppAudioCapture(source: source)
+            } catch {
+                // Stop microphone capture if app audio setup fails
+                micCapture.stop()
+                throw error
+            }
         }
 
         print("Transcription started in mode: \(mode)")
