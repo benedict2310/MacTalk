@@ -137,28 +137,33 @@ final class ScreenAudioCaptureTests: XCTestCase {
     // MARK: - Method Availability Tests
 
     func testSelectAppMethodExists() async throws {
-        // Verify the method signature exists
-        // We can't easily test this without a real running app
-        // but we can verify the method compiles and exists
+        // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
+        do {
+            let content = try await SCShareableContent.current
 
-        let content = try await SCShareableContent.current
-
-        // Find any running app (should always have at least one)
-        if let testApp = content.applications.first {
-            // Don't actually call it to avoid permission prompts in tests
-            // Just verify the method exists and takes the right parameter type
-            XCTAssertNotNil(testApp, "Should have at least one running app")
+            // Find any running app (should always have at least one)
+            if let testApp = content.applications.first {
+                // Don't actually call it to avoid permission prompts in tests
+                // Just verify the method exists and takes the right parameter type
+                XCTAssertNotNil(testApp, "Should have at least one running app")
+            }
+        } catch {
+            throw XCTSkip("ScreenCaptureKit unavailable: \(error.localizedDescription)")
         }
     }
 
     func testSelectDisplayWithParameterMethodExists() async throws {
-        // Verify the method signature exists
-        let content = try await SCShareableContent.current
+        // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
+        do {
+            let content = try await SCShareableContent.current
 
-        if let display = content.displays.first {
-            // Don't actually call it to avoid permission prompts
-            // Just verify we have a display
-            XCTAssertNotNil(display, "Should have at least one display")
+            if let display = content.displays.first {
+                // Don't actually call it to avoid permission prompts
+                // Just verify we have a display
+                XCTAssertNotNil(display, "Should have at least one display")
+            }
+        } catch {
+            throw XCTSkip("ScreenCaptureKit unavailable: \(error.localizedDescription)")
         }
     }
 
@@ -224,38 +229,52 @@ final class ScreenAudioCaptureTests: XCTestCase {
     // MARK: - Integration Readiness Tests
 
     func testScreenCaptureContentQuery() async throws {
-        // Verify we can query shareable content
-        let content = try await SCShareableContent.current
+        // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
+        do {
+            let content = try await SCShareableContent.current
 
-        XCTAssertNotNil(content, "Should be able to query shareable content")
-        XCTAssertNotNil(content.applications, "Should have applications list")
-        XCTAssertNotNil(content.displays, "Should have displays list")
-        XCTAssertGreaterThan(content.applications.count, 0, "Should have at least one application")
-        XCTAssertGreaterThan(content.displays.count, 0, "Should have at least one display")
+            XCTAssertNotNil(content, "Should be able to query shareable content")
+            XCTAssertNotNil(content.applications, "Should have applications list")
+            XCTAssertNotNil(content.displays, "Should have displays list")
+            XCTAssertGreaterThan(content.applications.count, 0, "Should have at least one application")
+            XCTAssertGreaterThan(content.displays.count, 0, "Should have at least one display")
+        } catch {
+            throw XCTSkip("ScreenCaptureKit unavailable: \(error.localizedDescription)")
+        }
     }
 
     func testApplicationsHaveExpectedProperties() async throws {
-        let content = try await SCShareableContent.current
+        // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
+        do {
+            let content = try await SCShareableContent.current
 
-        guard let app = content.applications.first else {
-            XCTFail("Should have at least one application")
-            return
+            guard let app = content.applications.first else {
+                XCTFail("Should have at least one application")
+                return
+            }
+
+            XCTAssertNotNil(app.applicationName, "App should have a name")
+            XCTAssertFalse(app.applicationName.isEmpty, "App name should not be empty")
+        } catch {
+            throw XCTSkip("ScreenCaptureKit unavailable: \(error.localizedDescription)")
         }
-
-        XCTAssertNotNil(app.applicationName, "App should have a name")
-        XCTAssertFalse(app.applicationName.isEmpty, "App name should not be empty")
     }
 
     func testDisplaysHaveExpectedProperties() async throws {
-        let content = try await SCShareableContent.current
+        // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
+        do {
+            let content = try await SCShareableContent.current
 
-        guard let display = content.displays.first else {
-            XCTFail("Should have at least one display")
-            return
+            guard let display = content.displays.first else {
+                XCTFail("Should have at least one display")
+                return
+            }
+
+            XCTAssertGreaterThan(display.width, 0, "Display should have positive width")
+            XCTAssertGreaterThan(display.height, 0, "Display should have positive height")
+        } catch {
+            throw XCTSkip("ScreenCaptureKit unavailable: \(error.localizedDescription)")
         }
-
-        XCTAssertGreaterThan(display.width, 0, "Display should have positive width")
-        XCTAssertGreaterThan(display.height, 0, "Display should have positive height")
     }
 
     // MARK: - Edge Case Tests
