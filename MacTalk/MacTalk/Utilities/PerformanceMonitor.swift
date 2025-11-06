@@ -155,29 +155,39 @@ final class PerformanceMonitor {
 
     private func updateBatteryStatus() {
         #if os(macOS)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        process.arguments = ["-g", "batt"]
+        // Run pmset on background queue to avoid blocking UI
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            process.arguments = ["-g", "batt"]
 
-        do {
-            try process.run()
-            process.waitUntilExit()
+            let pipe = Pipe()
+            process.standardOutput = pipe
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let wasOnBattery = isBatteryMode
-                isBatteryMode = !output.contains("AC Power")
+            do {
+                try process.run()
+                process.waitUntilExit()
 
-                // Log battery mode changes
-                if wasOnBattery != isBatteryMode {
-                    os_log(.info, log: logger, "🔋 Battery mode: %{public}@", isBatteryMode ? "ON" : "OFF")
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    let newBatteryMode = !output.contains("AC Power")
+
+                    // Update isBatteryMode on main thread
+                    DispatchQueue.main.async {
+                        let wasOnBattery = self.isBatteryMode
+                        self.isBatteryMode = newBatteryMode
+
+                        // Log battery mode changes
+                        if wasOnBattery != newBatteryMode {
+                            os_log(.info, log: self.logger, "🔋 Battery mode: %{public}@", newBatteryMode ? "ON" : "OFF")
+                        }
+                    }
                 }
+            } catch {
+                os_log(.error, log: self.logger, "Failed to check battery status: %{public}@", error.localizedDescription)
             }
-        } catch {
-            os_log(.error, log: logger, "Failed to check battery status: %{public}@", error.localizedDescription)
         }
         #endif
     }
