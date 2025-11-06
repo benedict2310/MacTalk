@@ -40,8 +40,6 @@ final class TranscriptionController {
 
     private var fullTranscript: [String] = []
     private var currentMode: Mode = .micOnly
-    private var appAudioRetryCount = 0
-    private let maxAppAudioRetries = 3
 
     // Performance optimization
     private var adaptiveQualityEnabled = true
@@ -71,7 +69,6 @@ final class TranscriptionController {
         chunkLock.unlock()
 
         currentMode = mode
-        appAudioRetryCount = 0
 
         // Set up microphone capture
         micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
@@ -267,6 +264,9 @@ final class TranscriptionController {
         if !cleaned.isEmpty {
             onFinal?(cleaned)
         }
+
+        // Clear transcript to prevent duplicate emissions if stop() is called multiple times
+        fullTranscript.removeAll()
     }
 
     // MARK: - Text Post-Processing
@@ -299,28 +299,18 @@ final class TranscriptionController {
     // MARK: - Edge Case Handling
 
     private func handleAppAudioError(_ error: Error) {
-        print("App audio error: \(error)")
+        print("⚠️ App audio error: \(error)")
 
         // Notify that app audio was lost
         DispatchQueue.main.async { [weak self] in
             self?.onAppAudioLost?()
         }
 
-        // Attempt retry if within limits
-        if appAudioRetryCount < maxAppAudioRetries {
-            appAudioRetryCount += 1
-            print("Retrying app audio capture (attempt \(appAudioRetryCount)/\(maxAppAudioRetries))...")
-
-            // Retry after a delay
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                // Retry logic would go here
-                // For now, we'll just log
-                print("Retry logic not yet implemented")
-            }
-        } else {
-            // Max retries exceeded, fall back to mic-only
-            fallbackToMicOnly()
-        }
+        // Immediately fall back to mic-only mode
+        // Retrying a stopped ScreenCaptureKit stream is unreliable and complex,
+        // so we gracefully degrade to mic-only to maintain recording continuity
+        print("📉 Falling back to microphone-only mode due to app audio failure")
+        fallbackToMicOnly()
     }
 
     private func fallbackToMicOnly() {
