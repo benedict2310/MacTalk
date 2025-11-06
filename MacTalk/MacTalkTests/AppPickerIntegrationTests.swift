@@ -26,9 +26,20 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     // MARK: - Helper Methods
 
+    /// Check if running in CI environment where ScreenCaptureKit is unavailable
+    private func isRunningInCI() -> Bool {
+        return ProcessInfo.processInfo.environment["CI"] != nil ||
+               ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != nil
+    }
+
     /// FIX P0: Gate ScreenCaptureKit access behind availability/permission check
     /// This prevents tests from failing on CI or environments without screen recording permission
     private func getShareableContent() async throws -> SCShareableContent {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         do {
             return try await SCShareableContent.current
         } catch {

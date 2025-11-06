@@ -25,6 +25,14 @@ final class ScreenAudioCaptureTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - Helper Methods
+
+    /// Check if running in CI environment where ScreenCaptureKit is unavailable
+    private func isRunningInCI() -> Bool {
+        return ProcessInfo.processInfo.environment["CI"] != nil ||
+               ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != nil
+    }
+
     // MARK: - Initialization Tests
 
     func testInitialization() {
@@ -137,6 +145,11 @@ final class ScreenAudioCaptureTests: XCTestCase {
     // MARK: - Method Availability Tests
 
     func testSelectAppMethodExists() async throws {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
         do {
             let content = try await SCShareableContent.current
@@ -153,6 +166,11 @@ final class ScreenAudioCaptureTests: XCTestCase {
     }
 
     func testSelectDisplayWithParameterMethodExists() async throws {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
         do {
             let content = try await SCShareableContent.current
@@ -229,6 +247,11 @@ final class ScreenAudioCaptureTests: XCTestCase {
     // MARK: - Integration Readiness Tests
 
     func testScreenCaptureContentQuery() async throws {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
         do {
             let content = try await SCShareableContent.current
@@ -244,6 +267,11 @@ final class ScreenAudioCaptureTests: XCTestCase {
     }
 
     func testApplicationsHaveExpectedProperties() async throws {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
         do {
             let content = try await SCShareableContent.current
@@ -261,6 +289,11 @@ final class ScreenAudioCaptureTests: XCTestCase {
     }
 
     func testDisplaysHaveExpectedProperties() async throws {
+        // Skip immediately if in CI environment to avoid timeout
+        if isRunningInCI() {
+            throw XCTSkip("ScreenCaptureKit unavailable in CI environment")
+        }
+
         // Skip test if ScreenCaptureKit is unavailable (e.g., in CI)
         do {
             let content = try await SCShareableContent.current
