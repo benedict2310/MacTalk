@@ -81,11 +81,11 @@ final class RingBuffer<T> {
         count = 0
     }
 
-    func popMultiple(_ count: Int) -> [T] {
+    func popMultiple(_ maxCount: Int) -> [T] {
         lock.lock()
         defer { lock.unlock() }
 
-        let actualCount = min(count, self.count)
+        let actualCount = min(maxCount, self.count)
         var result: [T] = []
         result.reserveCapacity(actualCount)
 
@@ -95,7 +95,7 @@ final class RingBuffer<T> {
             }
             buffer[tail] = nil
             tail = (tail + 1) % buffer.count
-            count -= 1
+            self.count -= 1
         }
 
         return result
