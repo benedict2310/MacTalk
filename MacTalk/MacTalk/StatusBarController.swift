@@ -309,6 +309,51 @@ final class StatusBarController {
     }
 
     private func prepareModelWithAutoDownload(spec: ModelSpec) {
+        // Check if model already exists
+        if ModelStore.exists(spec) {
+            // Model exists - load it directly
+            let url = ModelStore.path(for: spec)
+            engine = WhisperEngine(modelURL: url)
+            setStartItemsEnabled(true)
+            return
+        }
+
+        // Model doesn't exist - ask user if they want to download
+        showDownloadConfirmationDialog(spec: spec)
+    }
+
+    private func showDownloadConfirmationDialog(spec: ModelSpec) {
+        let alert = NSAlert()
+        alert.messageText = "Model Not Available"
+        alert.informativeText = """
+        The model '\(spec.displayName)' is not downloaded yet.
+
+        Size: \(ByteCountFormatter.string(fromByteCount: spec.sizeBytes, countStyle: .file))
+
+        Would you like to download this model now?
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Use Different Model")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+
+        switch response {
+        case .alertFirstButtonReturn:
+            // Download - user clicked "Download"
+            startModelDownload(spec: spec)
+        case .alertSecondButtonReturn:
+            // Use Different Model - user clicked "Use Different Model"
+            setStartItemsEnabled(true)
+            showInfo("Please select a different model from the Model menu.")
+        default:
+            // Cancel
+            setStartItemsEnabled(true)
+        }
+    }
+
+    private func startModelDownload(spec: ModelSpec) {
         ModelManager.shared.ensureAvailable(spec) { [weak self] result in
             DispatchQueue.main.async {
                 self?.setStartItemsEnabled(true)
@@ -489,6 +534,15 @@ final class StatusBarController {
         alert.messageText = "Error"
         alert.informativeText = message
         alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func showInfo(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Information"
+        alert.informativeText = message
+        alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }

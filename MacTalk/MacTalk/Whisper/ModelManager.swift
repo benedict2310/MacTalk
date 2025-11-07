@@ -19,6 +19,10 @@ final class ModelManager {
     /// Bind this from UI to receive progress updates
     var onDownloadState: ((ModelDownloader.State) -> Void)?
 
+    /// Track if a download is currently in progress
+    private var isDownloading = false
+    private var currentDownloadSpec: ModelSpec?
+
     private init() {
         // Set up the downloader state forwarding
         downloader.onState = { [weak self] state in
@@ -27,6 +31,17 @@ final class ModelManager {
 
             // Forward to any completion handlers
             self?.completionHandler?(state)
+
+            // Update download state tracking
+            switch state {
+            case .running:
+                self?.isDownloading = true
+            case .done, .failed:
+                self?.isDownloading = false
+                self?.currentDownloadSpec = nil
+            default:
+                break
+            }
         }
     }
 
@@ -38,10 +53,31 @@ final class ModelManager {
     ///   - spec: The model specification to ensure is available
     ///   - completion: Called with the model URL on success, or error on failure
     func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
+        // Check if model already exists
         if ModelStore.exists(spec) {
             completion(.success(ModelStore.path(for: spec)))
             return
         }
+
+        // Prevent concurrent downloads
+        if isDownloading {
+            if currentDownloadSpec?.id == spec.id {
+                // Same model already downloading - just wait for it
+                return
+            } else {
+                // Different model downloading
+                completion(.failure(NSError(
+                    domain: "com.mactalk.modelmanager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Another model is currently downloading. Please wait."]
+                )))
+                return
+            }
+        }
+
+        // Mark as downloading
+        isDownloading = true
+        currentDownloadSpec = spec
 
         // Set up completion handler to forward done/failed states
         completionHandler = { state in
