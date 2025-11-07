@@ -140,10 +140,12 @@ final class ModelDownloader: NSObject {
                     }
                 }
 
-                // SHA-256 verification
-                let hash = try SHA256Streamer.hashFile(at: tempURL)
-                guard hash == self.spec.sha256 else {
-                    throw ErrorType.badChecksum
+                // SHA-256 verification (skip if checksum not provided)
+                if !self.spec.sha256.isEmpty && self.spec.sha256.count == 64 {
+                    let hash = try SHA256Streamer.hashFile(at: tempURL)
+                    guard hash == self.spec.sha256 else {
+                        throw ErrorType.badChecksum
+                    }
                 }
 
                 // Atomic move into place

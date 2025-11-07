@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum ModelStore {
     static var modelsDir: URL {

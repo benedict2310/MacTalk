@@ -17,15 +17,21 @@ final class ModelManager {
     static let modelsDirectory: URL = ModelStore.modelsDir
 
     /// Bind this from UI to receive progress updates
-    var onDownloadState: ((ModelDownloader.State) -> Void)? {
-        didSet {
-            downloader.onState = { [weak self] state in
-                self?.onDownloadState?(state)
-            }
+    var onDownloadState: ((ModelDownloader.State) -> Void)?
+
+    private init() {
+        // Set up the downloader state forwarding
+        downloader.onState = { [weak self] state in
+            // Forward to UI callback if set
+            self?.onDownloadState?(state)
+
+            // Forward to any completion handlers
+            self?.completionHandler?(state)
         }
     }
 
-    private init() {}
+    /// Internal completion handler for ensureAvailable calls
+    private var completionHandler: ((ModelDownloader.State) -> Void)?
 
     /// Ensure a model is available - downloads automatically if needed
     /// - Parameters:
@@ -37,7 +43,8 @@ final class ModelManager {
             return
         }
 
-        downloader.onState = { state in
+        // Set up completion handler to forward done/failed states
+        completionHandler = { state in
             switch state {
             case .done(let url):
                 completion(.success(url))
