@@ -131,12 +131,15 @@ final class ModelDownloader: NSObject {
             guard let self = self else { return }
 
             do {
-                // Optional size sanity-check
+                // Optional size sanity-check (very lenient - 10% tolerance or 10MB)
+                // This catches obviously wrong files while allowing for approximate sizes
                 if self.spec.sizeBytes > 0 {
                     let attr = try FileManager.default.attributesOfItem(atPath: tempURL.path)
-                    if let sz = (attr[.size] as? NSNumber)?.int64Value,
-                       abs(sz - self.spec.sizeBytes) > 10_000 {
-                        throw ErrorType.badChecksum
+                    if let sz = (attr[.size] as? NSNumber)?.int64Value {
+                        let tolerance = max(self.spec.sizeBytes / 10, 10_000_000) // 10% or 10MB
+                        if abs(sz - self.spec.sizeBytes) > tolerance {
+                            throw ErrorType.badChecksum
+                        }
                     }
                 }
 
