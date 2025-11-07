@@ -35,7 +35,7 @@ final class TranscriptionController {
     var onAppLevel: ((AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (() -> Void)?  // Callback when app audio is lost
     var onFallbackToMicOnly: (() -> Void)?  // Callback when falling back to mic-only
-    var language: String?
+    var language: String? = "en"  // Default to English to avoid incorrect auto-detection
     var autoPasteEnabled = false
 
     private var fullTranscript: [String] = []
