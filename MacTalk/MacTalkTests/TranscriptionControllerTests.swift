@@ -311,12 +311,16 @@ final class TranscriptionControllerTests: XCTestCase {
             rms: 0.5,
             peak: 0.8,
             peakHold: 0.9,
-            db: -12.0
+            decibels: -12.0
         )
         controller.onMicLevel?(mockLevel)
 
         wait(for: [expectation], timeout: 1.0)
-        XCTAssertEqual(receivedLevel?.rms, 0.5, accuracy: 0.01)
+        if let level = receivedLevel {
+            XCTAssertEqual(level.rms, 0.5, accuracy: 0.01)
+        } else {
+            XCTFail("Did not receive level")
+        }
     }
 
     func testOnAppLevelCallback() {
@@ -352,12 +356,16 @@ final class TranscriptionControllerTests: XCTestCase {
             rms: 0.3,
             peak: 0.6,
             peakHold: 0.7,
-            db: -18.0
+            decibels: -18.0
         )
         controller.onAppLevel?(mockLevel)
 
         wait(for: [expectation], timeout: 1.0)
-        XCTAssertEqual(receivedLevel?.rms, 0.3, accuracy: 0.01)
+        if let level = receivedLevel {
+            XCTAssertEqual(level.rms, 0.3, accuracy: 0.01)
+        } else {
+            XCTFail("Did not receive level")
+        }
     }
 
     // MARK: - Property Tests
@@ -591,10 +599,12 @@ final class TranscriptionControllerTests: XCTestCase {
             let modelURL = tempDir.appendingPathComponent("multi-\(i)-\(UUID().uuidString).bin")
             FileManager.default.createFile(atPath: modelURL.path, contents: Data())
 
-            if let engine = WhisperEngine(modelURL: modelURL) {
-                let controller = TranscriptionController(engine: engine)
-                controllers.append(controller)
+            guard let engine = WhisperEngine(modelURL: modelURL) else {
+                XCTFail("Failed to create WhisperEngine")
+                return
             }
+            let controller = TranscriptionController(engine: engine)
+            controllers.append(controller)
         }
 
         // When: Multiple instances exist

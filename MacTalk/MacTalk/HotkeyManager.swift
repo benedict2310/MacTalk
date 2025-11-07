@@ -156,28 +156,28 @@ extension HotkeyManager {
         static let delete: UInt32 = 51
 
         // Function keys
-        static let f1: UInt32 = 122
-        static let f2: UInt32 = 120
-        static let f3: UInt32 = 99
-        static let f4: UInt32 = 118
-        static let f5: UInt32 = 96
-        static let f6: UInt32 = 97
-        static let f7: UInt32 = 98
-        static let f8: UInt32 = 100
-        static let f9: UInt32 = 101
-        static let f10: UInt32 = 109
-        static let f11: UInt32 = 103
-        static let f12: UInt32 = 111
+        static let functionKey1: UInt32 = 122
+        static let functionKey2: UInt32 = 120
+        static let functionKey3: UInt32 = 99
+        static let functionKey4: UInt32 = 118
+        static let functionKey5: UInt32 = 96
+        static let functionKey6: UInt32 = 97
+        static let functionKey7: UInt32 = 98
+        static let functionKey8: UInt32 = 100
+        static let functionKey9: UInt32 = 101
+        static let functionKey10: UInt32 = 109
+        static let functionKey11: UInt32 = 103
+        static let functionKey12: UInt32 = 111
 
         // Letters (a-z)
-        static let a: UInt32 = 0
-        static let b: UInt32 = 11
-        static let c: UInt32 = 8
-        static let d: UInt32 = 2
-        static let e: UInt32 = 14
-        static let m: UInt32 = 46
-        static let s: UInt32 = 1
-        static let v: UInt32 = 9
+        static let keyA: UInt32 = 0
+        static let keyB: UInt32 = 11
+        static let keyC: UInt32 = 8
+        static let keyD: UInt32 = 2
+        static let keyE: UInt32 = 14
+        static let keyM: UInt32 = 46
+        static let keyS: UInt32 = 1
+        static let keyV: UInt32 = 9
     }
 
     /// Register a common hotkey configuration

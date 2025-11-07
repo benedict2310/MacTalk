@@ -18,7 +18,10 @@ final class StatusBarController {
     private var autoPaste = false
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
-    private var currentModelName = "ggml-small-q5_1.bin"
+    private var currentModelName = "ggml-large-v3-turbo-q5_0.gguf"
+    private var selectedAudioSource: AppPickerWindowController.AudioSource?
+    // FIX P0: Retain app picker to keep callbacks alive
+    private var appPickerController: AppPickerWindowController?
 
     init() {
         DLOG("=== StatusBarController.init() START ===")
@@ -79,25 +82,7 @@ final class StatusBarController {
         NSLog("✅ [MacTalk] Status item length: %f", statusItem.length)
     }
 
-    private func setupMenu() {
-        // Create menu
-        let menu = NSMenu()
-
-        // Recording controls
-        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
-        menu.addItem(withTitle: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "a").target = self
-        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
-        menu.addItem(NSMenuItem.separator())
-
-        // Settings
-        let autoPasteItem = NSMenuItem(title: "Auto-paste on Stop", action: #selector(toggleAutoPaste), keyEquivalent: "p")
-        autoPasteItem.state = autoPaste ? .on : .off
-        autoPasteItem.target = self
-        menu.addItem(autoPasteItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Model selection submenu
+    private func createModelSubmenu() -> NSMenuItem {
         let modelMenu = NSMenu()
         let modelNames = [
             "ggml-tiny-q5_1.bin",
@@ -115,15 +100,50 @@ final class StatusBarController {
         }
         let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
         modelItem.submenu = modelMenu
-        menu.addItem(modelItem)
+        return modelItem
+    }
 
+    private func setupMenu() {
+        // Create menu
+        let menu = NSMenu()
+
+        // Recording controls
+        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
+        let micPlusAppItem = menu.addItem(
+            withTitle: "Start (Mic + App Audio)",
+            action: #selector(startMicPlusApp),
+            keyEquivalent: "a"
+        )
+        micPlusAppItem.target = self
+        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
+        menu.addItem(NSMenuItem.separator())
+
+        // Settings
+        let autoPasteItem = NSMenuItem(
+            title: "Auto-paste on Stop",
+            action: #selector(toggleAutoPaste),
+            keyEquivalent: "p"
+        )
+        autoPasteItem.state = autoPaste ? .on : .off
+        autoPasteItem.target = self
+        menu.addItem(autoPasteItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Model selection
+        menu.addItem(createModelSubmenu())
         menu.addItem(NSMenuItem.separator())
 
         // Settings
         menu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",").target = self
 
         // Permissions
-        menu.addItem(withTitle: "Check Permissions", action: #selector(checkPermissions), keyEquivalent: "").target = self
+        let permissionsItem = menu.addItem(
+            withTitle: "Check Permissions",
+            action: #selector(checkPermissions),
+            keyEquivalent: ""
+        )
+        permissionsItem.target = self
 
         menu.addItem(NSMenuItem.separator())
 
@@ -156,8 +176,7 @@ final class StatusBarController {
 
     @objc private func startMicPlusApp() {
         mode = .micPlusAppAudio
-        // TODO: Show app picker dialog
-        startRecording()
+        showAppPicker()
     }
 
     @objc private func stopRecording() {
@@ -217,7 +236,11 @@ final class StatusBarController {
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "MacTalk v1.0"
-        alert.informativeText = "A native macOS app for local voice transcription powered by Whisper.\n\n100% on-device processing. No cloud, no network calls."
+        alert.informativeText = """
+            A native macOS app for local voice transcription powered by Whisper.
+
+            100% on-device processing. No cloud, no network calls.
+            """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -236,22 +259,14 @@ final class StatusBarController {
         engine = WhisperEngine(modelURL: modelURL)
     }
 
-    private func startRecording() {
-        guard let engine = engine else {
-            showError("Model not loaded. Please check that the model file exists.")
-            return
-        }
-
-        let transcriptionController = TranscriptionController(engine: engine)
-        transcriptionController.autoPasteEnabled = autoPaste
-
-        transcriptionController.onPartial = { [weak self] text in
+    private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
+        controller.onPartial = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: text)
             }
         }
 
-        transcriptionController.onFinal = { [weak self] text in
+        controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: "Final: \(text)")
                 ClipboardManager.setClipboard(text)
@@ -260,12 +275,11 @@ final class StatusBarController {
                     ClipboardManager.pasteIfAllowed()
                 }
 
-                // Show notification
                 self?.showNotification(title: "Transcription Complete", message: "Text copied to clipboard")
             }
         }
 
-        transcriptionController.onMicLevel = { [weak self] levelData in
+        controller.onMicLevel = { [weak self] levelData in
             DispatchQueue.main.async {
                 self?.hudController?.updateMicLevel(
                     rms: levelData.rms,
@@ -275,7 +289,7 @@ final class StatusBarController {
             }
         }
 
-        transcriptionController.onAppLevel = { [weak self] levelData in
+        controller.onAppLevel = { [weak self] levelData in
             DispatchQueue.main.async {
                 self?.hudController?.updateAppLevel(
                     rms: levelData.rms,
@@ -285,12 +299,45 @@ final class StatusBarController {
             }
         }
 
+        controller.onAppAudioLost = { [weak self] in
+            DispatchQueue.main.async {
+                self?.showNotification(
+                    title: "App Audio Lost",
+                    message: "The selected app's audio stream was interrupted. Retrying..."
+                )
+            }
+        }
+
+        controller.onFallbackToMicOnly = { [weak self] in
+            DispatchQueue.main.async {
+                self?.showNotification(
+                    title: "Switched to Mic-Only Mode",
+                    message: "App audio could not be restored. Continuing with microphone only."
+                )
+                self?.hudController?.setAppMeterVisible(false)
+            }
+        }
+    }
+
+    private func startRecording() {
+        guard let engine = engine else {
+            showError("Model not loaded. Please check that the model file exists.")
+            return
+        }
+
+        let transcriptionController = TranscriptionController(engine: engine)
+        transcriptionController.autoPasteEnabled = autoPaste
+
+        setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
 
         Task { [self] in
             do {
-                try await transcriptionController.start(mode: mode, appName: "Zoom")
-                DispatchQueue.main.async { [self] in
+                try await transcriptionController.start(
+                    mode: mode,
+                    audioSource: selectedAudioSource
+                )
+                DispatchQueue.main.async {
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
@@ -365,5 +412,21 @@ final class StatusBarController {
     func cleanup() {
         transcriber?.stop()
         hudController?.close()
+    }
+
+    // MARK: - App Picker
+
+    private func showAppPicker() {
+        // FIX P0: Retain the picker controller so it stays alive
+        let picker = AppPickerWindowController()
+        self.appPickerController = picker
+
+        picker.onSelection = { [weak self] source in
+            self?.selectedAudioSource = source
+            self?.appPickerController = nil  // Release after selection
+            self?.startRecording()
+        }
+        picker.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

@@ -147,13 +147,13 @@ final class AudioLevelMeterView: NSView {
 
         switch orientation {
         case .horizontal:
-            let x = rect.minX + (rect.width * CGFloat(level))
-            context.move(to: CGPoint(x: x, y: rect.minY))
-            context.addLine(to: CGPoint(x: x, y: rect.maxY))
+            let xPosition = rect.minX + (rect.width * CGFloat(level))
+            context.move(to: CGPoint(x: xPosition, y: rect.minY))
+            context.addLine(to: CGPoint(x: xPosition, y: rect.maxY))
         case .vertical:
-            let y = rect.minY + (rect.height * CGFloat(level))
-            context.move(to: CGPoint(x: rect.minX, y: y))
-            context.addLine(to: CGPoint(x: rect.maxX, y: y))
+            let yPosition = rect.minY + (rect.height * CGFloat(level))
+            context.move(to: CGPoint(x: rect.minX, y: yPosition))
+            context.addLine(to: CGPoint(x: rect.maxX, y: yPosition))
         }
 
         context.strokePath()

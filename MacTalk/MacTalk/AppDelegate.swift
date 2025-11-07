@@ -35,6 +35,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DLOG("=== applicationDidFinishLaunching START ===")
         NSLog("🚀 [MacTalk] applicationDidFinishLaunching called")
 
+        // Skip UI initialization when running tests
+        if isRunningTests() {
+            NSLog("🧪 [MacTalk] Running under XCTest - skipping UI initialization")
+            DLOG("=== applicationDidFinishLaunching END (test mode) ===")
+            return
+        }
+
         // Note: Activation policy is now set in main.swift before app.run()
         // This ensures proper initialization order for macOS 26
 
@@ -60,6 +67,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func isRunningTests() -> Bool {
+        // Check if running under XCTest
+        return ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+               ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil ||
+               NSClassFromString("XCTest") != nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -56,10 +56,11 @@ final class AudioMixerTests: XCTestCase {
         let samples = mixer.convert(buffer: buffer)
 
         XCTAssertNotNil(samples)
+        guard let samples = samples else { return }
 
         // 48kHz -> 16kHz is 3:1 ratio
         // 4800 samples should become ~1600 samples
-        XCTAssertEqual(samples?.count, 1600, accuracy: 10)
+        XCTAssertEqual(samples.count, 1600, accuracy: 10)
     }
 
     func testConvert48kHzStereoTo16kHzMono() {
@@ -76,9 +77,10 @@ final class AudioMixerTests: XCTestCase {
         let samples = mixer.convert(buffer: buffer)
 
         XCTAssertNotNil(samples)
+        guard let samples = samples else { return }
 
         // Should downmix to mono and resample
-        XCTAssertEqual(samples?.count, 1600, accuracy: 10)
+        XCTAssertEqual(samples.count, 1600, accuracy: 10)
     }
 
     func testConvert44_1kHzTo16kHz() {
@@ -95,10 +97,11 @@ final class AudioMixerTests: XCTestCase {
         let samples = mixer.convert(buffer: buffer)
 
         XCTAssertNotNil(samples)
+        guard let samples = samples else { return }
 
         // 44.1kHz -> 16kHz is approximately 2.76:1
         // 4410 samples should become ~1600 samples
-        XCTAssertEqual(samples?.count, 1600, accuracy: 50)
+        XCTAssertEqual(samples.count, 1600, accuracy: 50)
     }
 
     // MARK: - Multiple Conversion Tests
@@ -256,9 +259,10 @@ final class AudioMixerTests: XCTestCase {
         let samples = mixer.convert(buffer: buffer)
 
         XCTAssertNotNil(samples)
+        guard let samples = samples else { return }
 
         // Should be approximately 160,000 samples at 16kHz
-        XCTAssertEqual(samples?.count, 160000, accuracy: 1000)
+        XCTAssertEqual(samples.count, 160000, accuracy: 1000)
     }
 
     // MARK: - Performance Tests
