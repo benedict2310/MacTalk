@@ -12,6 +12,25 @@ import AVFoundation
 
 final class Phase4IntegrationTests: XCTestCase {
 
+    // MARK: - Test Helpers
+
+    /// Helper to get a test WhisperEngine, skipping the test if no model is available
+    private func getTestEngine() throws -> WhisperEngine {
+        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
+
+        // Check if model file exists
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run WhisperEngine tests.")
+        }
+
+        // Try to create engine
+        guard let engine = WhisperEngine(modelURL: modelURL) else {
+            throw XCTSkip("Failed to create WhisperEngine with model at \(modelURL.path). Model may be invalid.")
+        }
+
+        return engine
+    }
+
     // MARK: - Multi-Source Mixing Tests
 
     func testAudioMixerHandlesBothSources() {
@@ -97,17 +116,15 @@ final class Phase4IntegrationTests: XCTestCase {
         XCTAssertNotEqual("\(micOnly)", "\(micPlusApp)", "Modes should be distinct")
     }
 
-    func testTranscriptionControllerInitialization() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testTranscriptionControllerInitialization() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         XCTAssertNotNil(controller, "Controller should initialize with engine")
     }
 
-    func testTranscriptionControllerCallbacks() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testTranscriptionControllerCallbacks() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         let partialExpectation = XCTestExpectation(description: "Partial callback")
@@ -147,9 +164,8 @@ final class Phase4IntegrationTests: XCTestCase {
         XCTAssertNotNil(controller.onFallbackToMicOnly)
     }
 
-    func testTranscriptionControllerStopWithoutStart() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testTranscriptionControllerStopWithoutStart() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         // Should not crash
@@ -158,9 +174,8 @@ final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - Edge Case Handling Tests
 
-    func testAppAudioErrorHandling() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testAppAudioErrorHandling() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         let audioLostExpectation = XCTestExpectation(description: "Audio lost callback")
@@ -176,9 +191,8 @@ final class Phase4IntegrationTests: XCTestCase {
         wait(for: [audioLostExpectation], timeout: 0.5)
     }
 
-    func testFallbackToMicOnly() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testFallbackToMicOnly() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         var fallbackCalled = false
@@ -375,9 +389,8 @@ final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - Error Recovery Tests
 
-    func testRecoveryAfterAppAudioFailure() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testRecoveryAfterAppAudioFailure() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         var recoveryAttempts = 0
@@ -412,9 +425,8 @@ final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - Configuration Tests
 
-    func testTranscriptionControllerLanguageConfiguration() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testTranscriptionControllerLanguageConfiguration() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         // Test language setting
@@ -428,9 +440,8 @@ final class Phase4IntegrationTests: XCTestCase {
         XCTAssertNil(controller.language)
     }
 
-    func testTranscriptionControllerAutoPasteConfiguration() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testTranscriptionControllerAutoPasteConfiguration() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         XCTAssertFalse(controller.autoPasteEnabled, "Auto-paste should be disabled by default")
@@ -444,9 +455,8 @@ final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - State Management Tests
 
-    func testControllerStateAfterStop() {
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+    func testControllerStateAfterStop() throws {
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         // Stop without starting

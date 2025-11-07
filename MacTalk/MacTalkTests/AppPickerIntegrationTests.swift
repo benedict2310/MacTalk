@@ -26,6 +26,23 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     // MARK: - Helper Methods
 
+    /// Helper to get a test WhisperEngine, skipping the test if no model is available
+    private func getTestEngine() throws -> WhisperEngine {
+        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
+
+        // Check if model file exists
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run WhisperEngine tests.")
+        }
+
+        // Try to create engine
+        guard let engine = WhisperEngine(modelURL: modelURL) else {
+            throw XCTSkip("Failed to create WhisperEngine with model at \(modelURL.path). Model may be invalid.")
+        }
+
+        return engine
+    }
+
     /// Check if running in CI environment where ScreenCaptureKit is unavailable
     private func isRunningInCI() -> Bool {
         return ProcessInfo.processInfo.environment["CI"] != nil ||
@@ -272,12 +289,8 @@ final class AppPickerIntegrationTests: XCTestCase {
     }
 
     func testIntegrationWithTranscriptionController() async throws {
-        // Create a mock Whisper engine for testing
-        let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
-            XCTFail("Failed to create WhisperEngine")
-            return
-        }
+        // Create a test Whisper engine (skips if model not available)
+        let engine = try getTestEngine()
         let controller = TranscriptionController(engine: engine)
 
         let content = try await getShareableContent()
