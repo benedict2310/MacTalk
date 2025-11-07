@@ -40,10 +40,10 @@ enum ModelCatalog {
             ),
             ModelSpec(
                 id: "whisper-base-q5_1",
-                displayName: "Base (Q5_1) - 56MB",
+                displayName: "Base (Q5_1) - 60MB",
                 filename: "ggml-base-q5_1.bin",
                 sha256: "", // TODO: Add real SHA-256 checksum for security
-                sizeBytes: 56_000_000,
+                sizeBytes: 59_700_000, // 59.7 MB from HuggingFace
                 urls: [
                     URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin")!,
                     URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin")!
@@ -53,10 +53,10 @@ enum ModelCatalog {
             ),
             ModelSpec(
                 id: "whisper-small-q5_1",
-                displayName: "Small (Q5_1) - 182MB",
+                displayName: "Small (Q5_1) - 190MB",
                 filename: "ggml-small-q5_1.bin",
                 sha256: "", // TODO: Add real SHA-256 checksum for security
-                sizeBytes: 182_000_000,
+                sizeBytes: 190_000_000, // 190 MB from HuggingFace
                 urls: [
                     URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin")!,
                     URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin")!
@@ -66,10 +66,10 @@ enum ModelCatalog {
             ),
             ModelSpec(
                 id: "whisper-medium-q5_0",
-                displayName: "Medium (Q5_0) - 515MB",
+                displayName: "Medium (Q5_0) - 539MB",
                 filename: "ggml-medium-q5_0.bin",
                 sha256: "", // TODO: Add real SHA-256 checksum for security
-                sizeBytes: 515_000_000,
+                sizeBytes: 539_000_000, // 539 MB from HuggingFace
                 urls: [
                     URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin")!,
                     URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin")!
@@ -79,10 +79,10 @@ enum ModelCatalog {
             ),
             ModelSpec(
                 id: "whisper-large-v3-turbo-q5_0",
-                displayName: "Large v3 Turbo (Q5_0) - 1.5GB",
+                displayName: "Large v3 Turbo (Q5_0) - 574MB",
                 filename: "ggml-large-v3-turbo-q5_0.bin",
                 sha256: "", // TODO: Add real SHA-256 checksum for security
-                sizeBytes: 1_500_000_000,
+                sizeBytes: 574_000_000, // 574 MB from HuggingFace (NOT 1.5GB!)
                 urls: [
                     URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")!,
                     URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")!
