@@ -18,10 +18,15 @@ final class StatusBarController {
     private var autoPaste = false
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
-    private var currentModelName = "ggml-large-v3-turbo-q5_0.gguf"
+    private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
     private var selectedAudioSource: AppPickerWindowController.AudioSource?
     // FIX P0: Retain app picker to keep callbacks alive
     private var appPickerController: AppPickerWindowController?
+
+    // Auto-download feature
+    private var catalog = ModelCatalog.bundled()
+    private var selectedModel: ModelSpec?
+    private var progressItem: NSMenuItem?
 
     init() {
         DLOG("=== StatusBarController.init() START ===")
@@ -84,20 +89,16 @@ final class StatusBarController {
 
     private func createModelSubmenu() -> NSMenuItem {
         let modelMenu = NSMenu()
-        let modelNames = [
-            "ggml-tiny-q5_1.bin",
-            "ggml-base-q5_1.bin",
-            "ggml-small-q5_1.bin",
-            "ggml-medium-q5_0.bin",
-            "ggml-large-v3-turbo-q5_0.bin"
-        ]
-        for modelName in modelNames {
-            let item = NSMenuItem(title: modelName, action: #selector(selectModel(_:)), keyEquivalent: "")
+
+        // Use ModelCatalog for model selection with display names
+        for spec in catalog {
+            let item = NSMenuItem(title: spec.displayName, action: #selector(selectModelSpec(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = modelName
-            item.state = modelName == currentModelName ? .on : .off
+            item.representedObject = spec
+            item.state = spec.filename == currentModelName ? .on : .off
             modelMenu.addItem(item)
         }
+
         let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
         modelItem.submenu = modelMenu
         return modelItem
@@ -132,6 +133,12 @@ final class StatusBarController {
 
         // Model selection
         menu.addItem(createModelSubmenu())
+
+        // Download progress indicator (hidden by default)
+        progressItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        progressItem?.isHidden = true
+        menu.addItem(progressItem!)
+
         menu.addItem(NSMenuItem.separator())
 
         // Settings
@@ -155,6 +162,13 @@ final class StatusBarController {
 
         // Initialize HUD
         hudController = HUDWindowController()
+
+        // Bind download progress updates
+        ModelManager.shared.onDownloadState = { [weak self] state in
+            DispatchQueue.main.async {
+                self?.handleDownloadState(state)
+            }
+        }
 
         // Load default model (async to avoid blocking menu bar icon)
         DispatchQueue.main.async { [weak self] in
@@ -208,6 +222,35 @@ final class StatusBarController {
         prepareModel()
     }
 
+    @objc private func selectModelSpec(_ sender: NSMenuItem) {
+        guard let spec = sender.representedObject as? ModelSpec else { return }
+        selectedModel = spec
+        currentModelName = spec.filename
+
+        // Update checkmarks
+        if let menu = sender.menu {
+            for item in menu.items {
+                item.state = .off
+            }
+        }
+        sender.state = .on
+
+        // Disable start items while downloading
+        setStartItemsEnabled(false)
+
+        // Prepare model with auto-download
+        prepareModelWithAutoDownload(spec: spec)
+    }
+
+    private func setStartItemsEnabled(_ enabled: Bool) {
+        guard let menu = statusItem.menu else { return }
+        for item in menu.items {
+            if item.title.hasPrefix("Start") {
+                item.isEnabled = enabled
+            }
+        }
+    }
+
     @objc private func checkPermissions() {
         Permissions.ensureMic { micGranted in
             DispatchQueue.main.async {
@@ -251,12 +294,61 @@ final class StatusBarController {
     }
 
     private func prepareModel() {
-        let modelURL = ModelManager.ensureModelDownloaded(name: currentModelName)
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            showModelMissingAlert(modelName: currentModelName, path: modelURL.path)
-            return
+        // Find model spec from catalog
+        if let spec = ModelCatalog.findByFilename(currentModelName) {
+            prepareModelWithAutoDownload(spec: spec)
+        } else {
+            // Fallback to legacy behavior for models not in catalog
+            let modelURL = ModelManager.ensureModelDownloaded(name: currentModelName)
+            guard FileManager.default.fileExists(atPath: modelURL.path) else {
+                showModelMissingAlert(modelName: currentModelName, path: modelURL.path)
+                return
+            }
+            engine = WhisperEngine(modelURL: modelURL)
         }
-        engine = WhisperEngine(modelURL: modelURL)
+    }
+
+    private func prepareModelWithAutoDownload(spec: ModelSpec) {
+        ModelManager.shared.ensureAvailable(spec) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.setStartItemsEnabled(true)
+                switch result {
+                case .success(let url):
+                    self?.engine = WhisperEngine(modelURL: url)
+                case .failure(let error):
+                    self?.progressItem?.title = "Model error: \(error.localizedDescription)"
+                    self?.progressItem?.isHidden = false
+                    self?.showError("Failed to load model: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func handleDownloadState(_ state: ModelDownloader.State) {
+        switch state {
+        case .running(let progress):
+            progressItem?.title = String(format: "Downloading model… %.0f%%", progress * 100)
+            progressItem?.isHidden = false
+        case .verifying:
+            progressItem?.title = "Verifying model…"
+            progressItem?.isHidden = false
+        case .failed(let error):
+            progressItem?.title = "Download failed: \(error.localizedDescription)"
+            progressItem?.isHidden = false
+            // Auto-hide error after 5 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                self?.progressItem?.isHidden = true
+            }
+        case .done:
+            progressItem?.title = "Model ready ✓"
+            progressItem?.isHidden = false
+            // Auto-hide success message after 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.progressItem?.isHidden = true
+            }
+        default:
+            progressItem?.isHidden = true
+        }
     }
 
     private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {

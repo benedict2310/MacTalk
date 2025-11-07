@@ -189,18 +189,25 @@ Transcribe both your mic and app audio (e.g., Zoom, FaceTime):
 
 MacTalk supports multiple Whisper model sizes, allowing you to balance speed vs. accuracy:
 
-| Model | Size (Q5_0) | Speed (M4) | Accuracy | Use Case |
-|-------|-------------|------------|----------|----------|
-| **tiny** | ~75 MB | Fastest | Good | Quick dictation, constrained systems |
-| **base** | ~140 MB | Very Fast | Better | Everyday use, balanced |
-| **small** | ~460 MB | Fast | Great | Recommended default |
-| **medium** | ~1.4 GB | Moderate | Excellent | High accuracy needs |
-| **large-v3-turbo** | ~2.8 GB | Slower | Best | Maximum accuracy |
+| Model | Size (Q5_0/Q5_1) | Speed (M4) | Accuracy | Use Case |
+|-------|------------------|------------|----------|----------|
+| **tiny** | ~32 MB | Fastest | Good | Quick dictation, constrained systems |
+| **base** | ~56 MB | Very Fast | Better | Everyday use, balanced |
+| **small** | ~182 MB | Fast | Great | Recommended default |
+| **medium** | ~515 MB | Moderate | Excellent | High accuracy needs |
+| **large-v3-turbo** | ~1.5 GB | Slower | Best | Maximum accuracy |
 
-Models are downloaded on-demand and stored in:
-```
-~/Library/Application Support/MacTalk/Models/
-```
+### Automatic Downloads
+
+**NEW:** MacTalk now features automatic model downloads with:
+- **One-Click Selection:** Choose a model from the menu bar and it downloads automatically
+- **Resume Support:** Downloads resume if interrupted (network issue, app quit, etc.)
+- **SHA-256 Verification:** Every download is verified for integrity
+- **Mirror Fallback:** Automatically tries alternate mirrors if primary source fails
+- **Progress Tracking:** Real-time download progress shown in menu bar
+- **Smart Storage:** Models stored in `~/Library/Application Support/MacTalk/Models/`
+
+Simply select a model from the menu bar and MacTalk handles the rest!
 
 ---
 
@@ -259,6 +266,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for performance optimization strateg
 - ✅ Clipboard + auto-paste - Implementation complete, comprehensive tests
 - ✅ Menu bar UI + HUD overlay - Implementation complete, comprehensive tests
 - ✅ Model management (tiny → large-v3-turbo) - Implementation complete, comprehensive tests
+- ✅ **Automatic model downloads with resume support** - Implementation complete
 
 ### v1.1 - Target: Q3 2025
 - Per-app presets (model, language)
@@ -389,6 +397,7 @@ MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for detail
 **Progress:** 85% (5/6 phases complete, final release phase remaining)
 
 **Recent Achievements:**
+- ✅ **Automatic model downloads with resume support** (November 2025)
 - ✅ **whisper.cpp v1.8.2 built with Metal acceleration** (November 2025)
 - ✅ **Project builds successfully on Xcode 26 / macOS 15+**
 - ✅ **macOS 26 (Tahoe) compatibility fixes** (main.swift, VAD, automated signing)
