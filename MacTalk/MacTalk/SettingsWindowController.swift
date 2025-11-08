@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Carbon
 
 final class SettingsWindowController: NSWindowController {
 
@@ -37,6 +38,11 @@ final class SettingsWindowController: NSWindowController {
     private let beamSizeSlider = NSSlider()
     private let beamSizeLabel = NSTextField(labelWithString: "Beam Size:")
     private let beamSizeValueLabel = NSTextField(labelWithString: "5")
+
+    // Shortcuts tab controls
+    private let startStopRecorder = ShortcutRecorderView()
+    private let showHideHUDRecorder = ShortcutRecorderView()
+    private let openSettingsRecorder = ShortcutRecorderView()
 
     // MARK: - Initialization
 
@@ -77,6 +83,7 @@ final class SettingsWindowController: NSWindowController {
         tabView.addTabViewItem(createGeneralTab())
         tabView.addTabViewItem(createOutputTab())
         tabView.addTabViewItem(createAudioTab())
+        tabView.addTabViewItem(createShortcutsTab())
         tabView.addTabViewItem(createAdvancedTab())
         tabView.addTabViewItem(createPermissionsTab())
 
@@ -207,6 +214,86 @@ final class SettingsWindowController: NSWindowController {
         view.addSubview(silenceThresholdSlider)
         view.addSubview(silenceThresholdValueLabel)
         view.addSubview(infoLabel)
+
+        tab.view = view
+        return tab
+    }
+
+    private func createShortcutsTab() -> NSTabViewItem {
+        let tab = NSTabViewItem(identifier: "shortcuts")
+        tab.label = "Shortcuts"
+
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 340))
+
+        // Title
+        let titleLabel = NSTextField(labelWithString: "Keyboard Shortcuts")
+        titleLabel.frame = NSRect(x: 20, y: 290, width: 440, height: 25)
+        titleLabel.font = NSFont.boldSystemFont(ofSize: 14)
+        titleLabel.isEditable = false
+        titleLabel.isBordered = false
+        titleLabel.backgroundColor = .clear
+
+        // Start/Stop Recording
+        let startStopLabel = NSTextField(labelWithString: "Start/Stop Recording:")
+        startStopLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
+        startStopLabel.isEditable = false
+        startStopLabel.isBordered = false
+        startStopLabel.backgroundColor = .clear
+
+        startStopRecorder.frame = NSRect(x: 210, y: 250, width: 250, height: 25)
+        startStopRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "startStopShortcut")
+        }
+
+        // Show/Hide HUD
+        let showHideLabel = NSTextField(labelWithString: "Show/Hide HUD:")
+        showHideLabel.frame = NSRect(x: 20, y: 215, width: 180, height: 25)
+        showHideLabel.isEditable = false
+        showHideLabel.isBordered = false
+        showHideLabel.backgroundColor = .clear
+
+        showHideHUDRecorder.frame = NSRect(x: 210, y: 215, width: 250, height: 25)
+        showHideHUDRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "showHideHUDShortcut")
+        }
+
+        // Open Settings
+        let openSettingsLabel = NSTextField(labelWithString: "Open Settings:")
+        openSettingsLabel.frame = NSRect(x: 20, y: 180, width: 180, height: 25)
+        openSettingsLabel.isEditable = false
+        openSettingsLabel.isBordered = false
+        openSettingsLabel.backgroundColor = .clear
+
+        openSettingsRecorder.frame = NSRect(x: 210, y: 180, width: 250, height: 25)
+        openSettingsRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "openSettingsShortcut")
+        }
+
+        // Info text
+        let infoLabel = NSTextField(wrappingLabelWithString: """
+        Click on a shortcut field and press the desired key combination.
+        Shortcuts must include at least one modifier key (⌘, ⌃, ⌥, or ⇧).
+
+        Note: Shortcuts are global and will work even when MacTalk is in the background.
+        """)
+        infoLabel.frame = NSRect(x: 20, y: 90, width: 440, height: 70)
+        infoLabel.textColor = .secondaryLabelColor
+        infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        // Reset to defaults button
+        let resetButton = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetShortcutsToDefaults))
+        resetButton.frame = NSRect(x: 20, y: 50, width: 150, height: 30)
+        resetButton.bezelStyle = .rounded
+
+        view.addSubview(titleLabel)
+        view.addSubview(startStopLabel)
+        view.addSubview(startStopRecorder)
+        view.addSubview(showHideLabel)
+        view.addSubview(showHideHUDRecorder)
+        view.addSubview(openSettingsLabel)
+        view.addSubview(openSettingsRecorder)
+        view.addSubview(infoLabel)
+        view.addSubview(resetButton)
 
         tab.view = view
         return tab
@@ -398,6 +485,11 @@ final class SettingsWindowController: NSWindowController {
         showInDockCheckbox.state = defaults.bool(forKey: "showInDock") ? .on : .off
         showNotificationsCheckbox.state = defaults.bool(forKey: "showNotifications") ? .on : .off
 
+        // Shortcuts
+        startStopRecorder.shortcut = loadShortcut(forKey: "startStopShortcut")
+        showHideHUDRecorder.shortcut = loadShortcut(forKey: "showHideHUDShortcut")
+        openSettingsRecorder.shortcut = loadShortcut(forKey: "openSettingsShortcut")
+
         // Output
         autoPasteCheckbox.state = defaults.bool(forKey: "autoPaste") ? .on : .off
         copyToClipboardCheckbox.state = defaults.bool(forKey: "copyToClipboard") ? .on : .off
@@ -498,4 +590,48 @@ final class SettingsWindowController: NSWindowController {
             NSWorkspace.shared.open(url)
         }
     }
+
+    @objc private func resetShortcutsToDefaults() {
+        // Default: Cmd+Shift+Space for Start/Stop
+        let defaultStartStop = KeyboardShortcut(
+            keyCode: UInt32(kVK_Space),
+            modifierFlags: [.command, .shift]
+        )
+        startStopRecorder.shortcut = defaultStartStop
+        saveShortcut(defaultStartStop, forKey: "startStopShortcut")
+
+        // No defaults for other shortcuts
+        showHideHUDRecorder.shortcut = nil
+        saveShortcut(nil, forKey: "showHideHUDShortcut")
+
+        openSettingsRecorder.shortcut = nil
+        saveShortcut(nil, forKey: "openSettingsShortcut")
+    }
+
+    // MARK: - Shortcut Helpers
+
+    private func saveShortcut(_ shortcut: KeyboardShortcut?, forKey key: String) {
+        let defaults = UserDefaults.standard
+        if let shortcut = shortcut {
+            if let data = try? JSONEncoder().encode(shortcut) {
+                defaults.set(data, forKey: key)
+            }
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+        // Notify that shortcuts changed
+        NotificationCenter.default.post(name: .shortcutsDidChange, object: nil)
+    }
+
+    private func loadShortcut(forKey key: String) -> KeyboardShortcut? {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
+    }
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    static let shortcutsDidChange = Notification.Name("shortcutsDidChange")
 }

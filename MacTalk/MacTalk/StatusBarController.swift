@@ -28,9 +28,22 @@ final class StatusBarController {
     private var selectedModel: ModelSpec?
     private var progressItem: NSMenuItem?
 
+    // Hotkeys
+    private let hotkeyManager = HotkeyManager()
+    private var registeredHotkeyIDs: [String: UInt32] = [:]
+
     init() {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
+
+        // Listen for shortcut changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(shortcutsDidChange),
+            name: .shortcutsDidChange,
+            object: nil
+        )
+
         DLOG("=== StatusBarController.init() END ===")
     }
 
@@ -81,6 +94,10 @@ final class StatusBarController {
         NSLog("🔧 [MacTalk] About to call setupMenu()...")
         setupMenu()
         NSLog("🔧 [MacTalk] setupMenu() completed")
+
+        // Register global shortcuts
+        registerShortcuts()
+        NSLog("🔧 [MacTalk] Shortcuts registered")
 
         NSLog("✅ [MacTalk] Status bar setup complete. Button frame: %@", NSStringFromRect(button.frame))
         NSLog("✅ [MacTalk] Status item isVisible: %d", statusItem.isVisible)
@@ -577,5 +594,91 @@ final class StatusBarController {
         }
         picker.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Hotkeys
+
+    private func registerShortcuts() {
+        // Unregister all existing hotkeys first
+        for (_, hotkeyID) in registeredHotkeyIDs {
+            hotkeyManager.unregister(hotkeyID: hotkeyID)
+        }
+        registeredHotkeyIDs.removeAll()
+
+        // Load shortcuts from UserDefaults
+        let defaults = UserDefaults.standard
+
+        // Start/Stop Recording
+        if let data = defaults.data(forKey: "startStopShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            if let hotkeyID = hotkeyManager.register(
+                keyCode: shortcut.keyCode,
+                modifiers: shortcut.carbonModifiers,
+                handler: { [weak self] in
+                    self?.toggleRecording()
+                }
+            ) {
+                registeredHotkeyIDs["startStop"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Start/Stop shortcut: \(shortcut.displayString)")
+            }
+        }
+
+        // Show/Hide HUD
+        if let data = defaults.data(forKey: "showHideHUDShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            if let hotkeyID = hotkeyManager.register(
+                keyCode: shortcut.keyCode,
+                modifiers: shortcut.carbonModifiers,
+                handler: { [weak self] in
+                    self?.toggleHUD()
+                }
+            ) {
+                registeredHotkeyIDs["showHideHUD"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Show/Hide HUD shortcut: \(shortcut.displayString)")
+            }
+        }
+
+        // Open Settings
+        if let data = defaults.data(forKey: "openSettingsShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            if let hotkeyID = hotkeyManager.register(
+                keyCode: shortcut.keyCode,
+                modifiers: shortcut.carbonModifiers,
+                handler: { [weak self] in
+                    self?.showSettings()
+                }
+            ) {
+                registeredHotkeyIDs["openSettings"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Open Settings shortcut: \(shortcut.displayString)")
+            }
+        }
+    }
+
+    @objc private func shortcutsDidChange() {
+        registerShortcuts()
+    }
+
+    private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            // Use current mode
+            if mode == .micPlusAppAudio {
+                // Need to show app picker first
+                showAppPicker()
+            } else {
+                startRecording()
+            }
+        }
+    }
+
+    private func toggleHUD() {
+        if let hud = hudController {
+            if hud.window?.isVisible == true {
+                hud.close()
+            } else {
+                hud.showWindow(nil)
+            }
+        }
     }
 }
