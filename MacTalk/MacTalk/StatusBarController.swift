@@ -209,8 +209,43 @@ final class StatusBarController {
     }
 
     @objc private func startMicPlusApp() {
+        NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
-        showAppPicker()
+
+        // Check screen recording permission first
+        Task {
+            NSLog("🔍 [StatusBar] Checking screen recording permission before showing picker...")
+            let hasPermission = await Permissions.checkScreenRecordingPermission()
+
+            await MainActor.run {
+                if hasPermission {
+                    NSLog("✅ [StatusBar] Permission granted, showing app picker")
+                    showAppPicker()
+                } else {
+                    NSLog("❌ [StatusBar] Screen recording permission not granted")
+                    let alert = NSAlert()
+                    alert.messageText = "Screen Recording Permission Required"
+                    alert.informativeText = """
+                    To capture app audio, MacTalk needs Screen Recording permission.
+
+                    Steps to enable:
+                    1. Open System Settings
+                    2. Go to Privacy & Security > Screen Recording
+                    3. Turn on the toggle for MacTalk
+                    4. Restart MacTalk
+
+                    Would you like to open System Settings now?
+                    """
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Open System Settings")
+                    alert.addButton(withTitle: "Cancel")
+
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        Permissions.openScreenRecordingSettings()
+                    }
+                }
+            }
+        }
     }
 
     @objc private func stopRecording() {
