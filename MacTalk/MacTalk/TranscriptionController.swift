@@ -23,10 +23,11 @@ final class TranscriptionController {
     private let engine: WhisperEngine
     private let levelMonitor = MultiChannelLevelMonitor()
 
-    private let chunkDurationMs: Int = 750  // 0.75 seconds
+    private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let samplesPerMs = 16  // 16kHz sample rate
 
     private var audioChunk: [Float] = []
+    private var allAudio: [Float] = []  // Store all audio for final transcription
     private let chunkLock = NSLock()
 
     var onPartial: ((String) -> Void)?
@@ -35,7 +36,7 @@ final class TranscriptionController {
     var onAppLevel: ((AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (() -> Void)?  // Callback when app audio is lost
     var onFallbackToMicOnly: (() -> Void)?  // Callback when falling back to mic-only
-    var language: String?
+    var language: String? = "en"  // Default to English to avoid incorrect auto-detection
     var autoPasteEnabled = false
 
     private var fullTranscript: [String] = []
@@ -65,6 +66,7 @@ final class TranscriptionController {
         // Clear previous state
         chunkLock.lock()
         audioChunk.removeAll()
+        allAudio.removeAll()
         fullTranscript.removeAll()
         chunkLock.unlock()
 
@@ -165,6 +167,7 @@ final class TranscriptionController {
 
         chunkLock.lock()
         audioChunk.append(contentsOf: samples)
+        allAudio.append(contentsOf: samples)  // Store all audio for final transcription
         let chunkCount = audioChunk.count
         chunkLock.unlock()
 
@@ -189,7 +192,7 @@ final class TranscriptionController {
 
         // Simple Voice Activity Detection (VAD) - skip if chunk is too quiet
         let rms = sqrt(chunkSamples.map { $0 * $0 }.reduce(0, +) / Float(chunkSamples.count))
-        let silenceThreshold: Float = 0.01  // Adjust based on testing
+        let silenceThreshold: Float = 0.005  // Lowered to catch quieter speech
 
         if rms < silenceThreshold {
             print("🔇 Skipping silent chunk (RMS: \(String(format: "%.4f", rms)))")
@@ -221,31 +224,35 @@ final class TranscriptionController {
 
     private func flushFinalChunk() {
         chunkLock.lock()
-        let remainingSamples = audioChunk
+        let finalAudio = allAudio  // Use ALL accumulated audio for best quality
         audioChunk.removeAll()
+        allAudio.removeAll()
         chunkLock.unlock()
 
-        guard !remainingSamples.isEmpty else {
+        guard !finalAudio.isEmpty else {
             // Emit final combined transcript
             emitFinalTranscript()
             return
         }
 
-        // Check if remaining audio is mostly silent
-        let rms = sqrt(remainingSamples.map { $0 * $0 }.reduce(0, +) / Float(remainingSamples.count))
-        let silenceThreshold: Float = 0.01
+        // Check if audio is mostly silent
+        let rms = sqrt(finalAudio.map { $0 * $0 }.reduce(0, +) / Float(finalAudio.count))
+        let silenceThreshold: Float = 0.005  // Lowered threshold
 
         if rms < silenceThreshold {
-            print("🔇 Skipping silent final chunk (RMS: \(String(format: "%.4f", rms)))")
+            print("🔇 Skipping silent final audio (RMS: \(String(format: "%.4f", rms)))")
             emitFinalTranscript()
             return
         }
 
-        print("🎤 Processing final chunk with RMS: \(String(format: "%.4f", rms))")
+        print("🎤 Processing final transcription with ALL audio: \(finalAudio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
-        // Transcribe remaining audio
+        // Clear streaming transcript and transcribe ALL audio at once for best quality
+        fullTranscript.removeAll()
+
+        // Transcribe complete audio recording
         if let result = engine.transcribeFinal(
-            samples: remainingSamples,
+            samples: finalAudio,
             language: language
         ) {
             let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)

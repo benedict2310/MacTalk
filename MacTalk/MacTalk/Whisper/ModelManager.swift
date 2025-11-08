@@ -2,23 +2,106 @@
 //  ModelManager.swift
 //  MacTalk
 //
-//  Model download and management
+//  Model download and management with automatic download support
 //
 
 import Foundation
 import AppKit
 
-enum ModelManager {
-    static let modelsDirectory: URL = {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0]
-        return appSupport
-            .appendingPathComponent("MacTalk", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
-    }()
+/// Enhanced ModelManager with automatic download capabilities
+final class ModelManager {
+    static let shared = ModelManager()
+    private let downloader = ModelDownloader()
 
+    /// Legacy compatibility - points to ModelStore directory
+    static let modelsDirectory: URL = ModelStore.modelsDir
+
+    /// Bind this from UI to receive progress updates
+    var onDownloadState: ((ModelDownloader.State) -> Void)?
+
+    /// Track if a download is currently in progress
+    private var isDownloading = false
+    private var currentDownloadSpec: ModelSpec?
+
+    private init() {
+        // Set up the downloader state forwarding
+        downloader.onState = { [weak self] state in
+            // Forward to UI callback if set
+            self?.onDownloadState?(state)
+
+            // Forward to any completion handlers
+            self?.completionHandler?(state)
+
+            // Update download state tracking
+            switch state {
+            case .running:
+                self?.isDownloading = true
+            case .done, .failed:
+                self?.isDownloading = false
+                self?.currentDownloadSpec = nil
+            default:
+                break
+            }
+        }
+    }
+
+    /// Internal completion handler for ensureAvailable calls
+    private var completionHandler: ((ModelDownloader.State) -> Void)?
+
+    /// Ensure a model is available - downloads automatically if needed
+    /// - Parameters:
+    ///   - spec: The model specification to ensure is available
+    ///   - completion: Called with the model URL on success, or error on failure
+    func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
+        // Check if model already exists
+        if ModelStore.exists(spec) {
+            completion(.success(ModelStore.path(for: spec)))
+            return
+        }
+
+        // Prevent concurrent downloads
+        if isDownloading {
+            if currentDownloadSpec?.id == spec.id {
+                // Same model already downloading - just wait for it
+                return
+            } else {
+                // Different model downloading
+                completion(.failure(NSError(
+                    domain: "com.mactalk.modelmanager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Another model is currently downloading. Please wait."]
+                )))
+                return
+            }
+        }
+
+        // Mark as downloading
+        isDownloading = true
+        currentDownloadSpec = spec
+
+        // Set up completion handler to forward done/failed states
+        completionHandler = { state in
+            switch state {
+            case .done(let url):
+                completion(.success(url))
+            case .failed(let error):
+                completion(.failure(error))
+            default:
+                break
+            }
+        }
+
+        downloader.start(spec: spec)
+    }
+
+    /// Cancel ongoing download
+    func cancelDownload() {
+        downloader.cancel()
+    }
+
+    // MARK: - Legacy Compatibility Methods
+
+    /// Legacy method - now uses ModelStore
     static func ensureModelDownloaded(name: String) -> URL {
         // Create models directory if it doesn't exist
         try? FileManager.default.createDirectory(
@@ -35,21 +118,28 @@ enum ModelManager {
             MacTalk Models Directory
             ========================
 
-            Place your Whisper GGUF model files here.
+            MacTalk now supports automatic model downloads!
 
-            Download models from:
+            Models can be automatically downloaded through the app's menu bar:
+            1. Click the MacTalk icon in the menu bar
+            2. Select "Model" submenu
+            3. Choose your desired model - it will download automatically
+
+            Available models:
+            - Tiny (Q5_1) - 32MB, fastest
+            - Base (Q5_1) - 56MB, fast
+            - Small (Q5_1) - 182MB, balanced
+            - Medium (Q5_0) - 515MB, high accuracy
+            - Large v3 Turbo (Q5_0) - 1.5GB, highest accuracy
+
+            All downloads include:
+            - Automatic resume if interrupted
+            - SHA-256 checksum verification
+            - Multiple mirror fallback
+            - Progress tracking
+
+            Manual download (if needed):
             https://huggingface.co/ggerganov/whisper.cpp/tree/main
-
-            Recommended models:
-            - ggml-tiny-q5_0.gguf (~75 MB, fastest)
-            - ggml-base-q5_0.gguf (~140 MB, fast)
-            - ggml-small-q5_0.gguf (~460 MB, balanced, recommended)
-            - ggml-medium-q5_0.gguf (~1.4 GB, high accuracy)
-            - ggml-large-v3-turbo-q5_0.gguf (~2.8 GB, highest accuracy)
-
-            Example download command:
-            curl -L -o "\(name)" \\
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(name)"
 
             Current model path:
             \(modelURL.path)
@@ -68,18 +158,7 @@ enum ModelManager {
     }
 
     static func listAvailableModels() -> [String] {
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: modelsDirectory,
-            includingPropertiesForKeys: [.nameKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        return contents
-            .filter { $0.pathExtension == "gguf" || $0.pathExtension == "bin" }
-            .map { $0.lastPathComponent }
-            .sorted()
+        return ModelStore.listAvailableModels()
     }
 
     static func modelExists(name: String) -> Bool {
@@ -101,11 +180,11 @@ enum ModelManager {
     }
 
     static func openModelsDirectory() {
-        NSWorkspace.shared.open(modelsDirectory)
+        ModelStore.openModelsDirectory()
     }
 }
 
-// MARK: - Model Download (Future Enhancement)
+// MARK: - Model Download
 
 extension ModelManager {
     enum DownloadError: Error {
@@ -114,16 +193,35 @@ extension ModelManager {
         case checksumMismatch
     }
 
-    /// Download a model from Hugging Face (placeholder for future implementation)
+    /// Download a model from Hugging Face with progress tracking
+    /// This is now implemented via ensureAvailable() method
     static func downloadModel(
         name: String,
         progressHandler: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        // TODO: Implement actual download with URLSession
-        // For now, just show instructions
+        // Find the model spec from catalog
+        guard let spec = ModelCatalog.findByFilename(name) else {
+            completion(.failure(DownloadError.invalidURL))
+            return
+        }
 
-        let modelURL = modelsDirectory.appendingPathComponent(name)
-        completion(.failure(DownloadError.downloadFailed))
+        // Use the shared manager to download
+        shared.onDownloadState = { state in
+            switch state {
+            case .running(let progress):
+                progressHandler(progress)
+            case .done(let url):
+                completion(.success(url))
+            case .failed(let error):
+                completion(.failure(error))
+            default:
+                break
+            }
+        }
+
+        shared.ensureAvailable(spec) { result in
+            // Completion already handled by onDownloadState callback
+        }
     }
 }

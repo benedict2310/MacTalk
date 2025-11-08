@@ -25,8 +25,10 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ### User Experience
 - **Menu Bar Integration:** Lightweight, always accessible, no Dock clutter
-- **HUD Overlay:** Live transcript preview with audio level meters
+- **HUD Overlay:** Live transcript preview with audio level meters and stop button
+- **Easy Controls:** Stop recording directly from HUD - no need to go back to menu bar
 - **Global Hotkeys:** Start/stop transcription without switching apps
+- **Automatic Model Downloads:** One-click model selection with progress tracking
 - **Customizable Settings:** Model selection, language, auto-punctuation, and more
 
 ---
@@ -88,10 +90,11 @@ open MacTalk.xcodeproj
 ### Quick Start
 
 1. **Launch MacTalk:** Icon appears in menu bar
-2. **Start Recording:** Press hotkey (default: `Cmd+Shift+Space`) or click menu bar icon
-3. **Speak:** Your words appear in the HUD overlay
-4. **Stop:** Press hotkey again or click Stop button
-5. **Result:** Transcript copied to clipboard (and auto-pasted if enabled)
+2. **Download a Model:** Select a model from the Model submenu (auto-downloads if needed)
+3. **Start Recording:** Click menu bar icon → "Start (Mic Only)"
+4. **Speak:** Your words appear in the HUD overlay with live audio levels
+5. **Stop:** Click the "Stop Recording" button in the HUD or use menu bar
+6. **Result:** Transcript copied to clipboard (and auto-pasted if enabled)
 
 ### Mode A: Dictation (Mic-Only)
 
@@ -189,18 +192,40 @@ Transcribe both your mic and app audio (e.g., Zoom, FaceTime):
 
 MacTalk supports multiple Whisper model sizes, allowing you to balance speed vs. accuracy:
 
-| Model | Size (Q5_0) | Speed (M4) | Accuracy | Use Case |
-|-------|-------------|------------|----------|----------|
-| **tiny** | ~75 MB | Fastest | Good | Quick dictation, constrained systems |
-| **base** | ~140 MB | Very Fast | Better | Everyday use, balanced |
-| **small** | ~460 MB | Fast | Great | Recommended default |
-| **medium** | ~1.4 GB | Moderate | Excellent | High accuracy needs |
-| **large-v3-turbo** | ~2.8 GB | Slower | Best | Maximum accuracy |
+| Model | Size (Q5_0/Q5_1) | Speed (M4) | Accuracy | Use Case |
+|-------|------------------|------------|----------|----------|
+| **tiny** | ~32 MB | Fastest | Good | Quick dictation, constrained systems |
+| **base** | ~60 MB | Very Fast | Better | Everyday use, balanced |
+| **small** | ~190 MB | Fast | Great | Recommended default |
+| **medium** | ~539 MB | Moderate | Excellent | High accuracy needs |
+| **large-v3-turbo** | ~574 MB | Slower | Best | Maximum accuracy |
 
-Models are downloaded on-demand and stored in:
-```
-~/Library/Application Support/MacTalk/Models/
-```
+### Automatic Downloads
+
+**NEW:** MacTalk now features intelligent automatic model downloads:
+
+**User Experience:**
+- **User Confirmation:** Dialog appears before downloading, showing model name and file size
+- **One-Click Download:** Simple "Download" button starts the process
+- **Resume Support:** Downloads automatically resume if interrupted (network issue, app quit, etc.)
+- **Progress Tracking:** Real-time download progress shown in menu bar with percentage
+- **Prevention:** Only one download at a time - no confusing concurrent downloads
+- **Verification:** File size validation ensures downloads completed correctly
+
+**Technical Features:**
+- **Mirror Fallback:** Automatically tries alternate mirrors if primary source fails
+- **Smart Storage:** Models stored in `~/Library/Application Support/MacTalk/Models/`
+- **Integrity Checks:** 10% file size tolerance to catch corrupted downloads
+- **Optional SHA-256:** When checksums are available, full cryptographic verification
+
+**How to Use:**
+1. Select a model from the menu bar → Model submenu
+2. If not downloaded, a dialog appears with model details
+3. Click "Download" to start, "Use Different Model" to choose another, or "Cancel"
+4. Watch progress in menu bar as the model downloads
+5. Model is automatically verified and ready to use when complete
+
+No manual downloads or terminal commands required!
 
 ---
 
@@ -259,6 +284,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for performance optimization strateg
 - ✅ Clipboard + auto-paste - Implementation complete, comprehensive tests
 - ✅ Menu bar UI + HUD overlay - Implementation complete, comprehensive tests
 - ✅ Model management (tiny → large-v3-turbo) - Implementation complete, comprehensive tests
+- ✅ **Automatic model downloads with resume support** - Implementation complete
 
 ### v1.1 - Target: Q3 2025
 - Per-app presets (model, language)
@@ -389,6 +415,20 @@ MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for detail
 **Progress:** 85% (5/6 phases complete, final release phase remaining)
 
 **Recent Achievements:**
+- ✅ **Automatic model downloads with intelligent UX** (November 2025)
+  - User confirmation dialogs before downloading
+  - Resume support across app restarts
+  - Concurrent download prevention
+  - Real-time progress tracking in menu bar
+  - Accurate file size validation (10% tolerance)
+- ✅ **Transcription quality fixes** (November 2025)
+  - Default to English language (fixes incorrect auto-detection)
+  - Full recording transcription for accuracy (no repetition/missing words)
+  - Lower silence threshold for quieter speech
+  - 3-second streaming chunks for better real-time context
+- ✅ **HUD improvements** (November 2025)
+  - Stop button added to HUD for easy access
+  - No need to return to menu bar to stop recording
 - ✅ **whisper.cpp v1.8.2 built with Metal acceleration** (November 2025)
 - ✅ **Project builds successfully on Xcode 26 / macOS 15+**
 - ✅ **macOS 26 (Tahoe) compatibility fixes** (main.swift, VAD, automated signing)
