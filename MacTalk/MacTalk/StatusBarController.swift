@@ -418,9 +418,11 @@ final class StatusBarController {
 
     private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
         controller.onPartial = { [weak self] text in
-            DispatchQueue.main.async {
-                self?.hudController?.update(text: text)
-            }
+            // Disabled: Partial transcripts are often inaccurate
+            // HUD will show "Recording..." until final transcript is ready
+            // DispatchQueue.main.async {
+            //     self?.hudController?.update(text: text)
+            // }
         }
 
         controller.onFinal = { [weak self] text in
