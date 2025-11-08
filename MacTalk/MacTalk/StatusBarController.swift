@@ -32,6 +32,10 @@ final class StatusBarController {
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
 
+    // Menu items (to update shortcut display)
+    private var micOnlyMenuItem: NSMenuItem?
+    private var micPlusAppMenuItem: NSMenuItem?
+
     init() {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
@@ -126,14 +130,17 @@ final class StatusBarController {
         let menu = NSMenu()
 
         // Recording controls
-        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
-        let micPlusAppItem = menu.addItem(
+        micOnlyMenuItem = menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "")
+        micOnlyMenuItem?.target = self
+
+        micPlusAppMenuItem = menu.addItem(
             withTitle: "Start (Mic + App Audio)",
             action: #selector(startMicPlusApp),
-            keyEquivalent: "a"
+            keyEquivalent: ""
         )
-        micPlusAppItem.target = self
-        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
+        micPlusAppMenuItem?.target = self
+
+        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "").target = self
         menu.addItem(NSMenuItem.separator())
 
         // Settings
@@ -645,19 +652,42 @@ final class StatusBarController {
         // Load shortcuts from UserDefaults
         let defaults = UserDefaults.standard
 
-        // Start/Stop Recording
-        if let data = defaults.data(forKey: "startStopShortcut"),
+        // Start Mic-Only Recording
+        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             if let hotkeyID = hotkeyManager.register(
                 keyCode: shortcut.keyCode,
                 modifiers: shortcut.carbonModifiers,
                 handler: { [weak self] in
-                    self?.toggleRecording()
+                    self?.startMicOnly()
                 }
             ) {
-                registeredHotkeyIDs["startStop"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Start/Stop shortcut: \(shortcut.displayString)")
+                registeredHotkeyIDs["startMicOnly"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Start Mic-Only shortcut: \(shortcut.displayString)")
             }
+            // Update menu item display
+            updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcut)
+        } else {
+            updateMenuItemShortcut(micOnlyMenuItem, shortcut: nil)
+        }
+
+        // Start Mic + App Audio Recording
+        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            if let hotkeyID = hotkeyManager.register(
+                keyCode: shortcut.keyCode,
+                modifiers: shortcut.carbonModifiers,
+                handler: { [weak self] in
+                    self?.startMicPlusApp()
+                }
+            ) {
+                registeredHotkeyIDs["startMicPlusApp"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Start Mic+App shortcut: \(shortcut.displayString)")
+            }
+            // Update menu item display
+            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcut)
+        } else {
+            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: nil)
         }
 
         // Show/Hide HUD
@@ -688,6 +718,20 @@ final class StatusBarController {
                 registeredHotkeyIDs["openSettings"] = hotkeyID
                 NSLog("✅ [MacTalk] Registered Open Settings shortcut: \(shortcut.displayString)")
             }
+        }
+    }
+
+    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut?) {
+        guard let item = menuItem else { return }
+
+        if let shortcut = shortcut {
+            // Display shortcut next to the menu item title
+            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
+            item.title = "\(baseTitle)\t\(shortcut.displayString)"
+        } else {
+            // Remove any existing shortcut display
+            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
+            item.title = baseTitle
         }
     }
 

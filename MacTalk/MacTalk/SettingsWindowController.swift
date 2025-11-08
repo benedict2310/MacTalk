@@ -40,7 +40,8 @@ final class SettingsWindowController: NSWindowController {
     private let beamSizeValueLabel = NSTextField(labelWithString: "5")
 
     // Shortcuts tab controls
-    private let startStopRecorder = ShortcutRecorderView()
+    private let startMicOnlyRecorder = ShortcutRecorderView()
+    private let startMicPlusAppRecorder = ShortcutRecorderView()
     private let showHideHUDRecorder = ShortcutRecorderView()
     private let openSettingsRecorder = ShortcutRecorderView()
 
@@ -233,38 +234,50 @@ final class SettingsWindowController: NSWindowController {
         titleLabel.isBordered = false
         titleLabel.backgroundColor = .clear
 
-        // Start/Stop Recording
-        let startStopLabel = NSTextField(labelWithString: "Start/Stop Recording:")
-        startStopLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
-        startStopLabel.isEditable = false
-        startStopLabel.isBordered = false
-        startStopLabel.backgroundColor = .clear
+        // Start Mic-Only Recording
+        let startMicOnlyLabel = NSTextField(labelWithString: "Start Mic-Only:")
+        startMicOnlyLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
+        startMicOnlyLabel.isEditable = false
+        startMicOnlyLabel.isBordered = false
+        startMicOnlyLabel.backgroundColor = .clear
 
-        startStopRecorder.frame = NSRect(x: 210, y: 250, width: 250, height: 25)
-        startStopRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "startStopShortcut")
+        startMicOnlyRecorder.frame = NSRect(x: 210, y: 250, width: 250, height: 25)
+        startMicOnlyRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "startMicOnlyShortcut")
+        }
+
+        // Start Mic + App Audio Recording
+        let startMicPlusAppLabel = NSTextField(labelWithString: "Start Mic + App Audio:")
+        startMicPlusAppLabel.frame = NSRect(x: 20, y: 215, width: 180, height: 25)
+        startMicPlusAppLabel.isEditable = false
+        startMicPlusAppLabel.isBordered = false
+        startMicPlusAppLabel.backgroundColor = .clear
+
+        startMicPlusAppRecorder.frame = NSRect(x: 210, y: 215, width: 250, height: 25)
+        startMicPlusAppRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "startMicPlusAppShortcut")
         }
 
         // Show/Hide HUD
         let showHideLabel = NSTextField(labelWithString: "Show/Hide HUD:")
-        showHideLabel.frame = NSRect(x: 20, y: 215, width: 180, height: 25)
+        showHideLabel.frame = NSRect(x: 20, y: 180, width: 180, height: 25)
         showHideLabel.isEditable = false
         showHideLabel.isBordered = false
         showHideLabel.backgroundColor = .clear
 
-        showHideHUDRecorder.frame = NSRect(x: 210, y: 215, width: 250, height: 25)
+        showHideHUDRecorder.frame = NSRect(x: 210, y: 180, width: 250, height: 25)
         showHideHUDRecorder.onShortcutChanged = { [weak self] shortcut in
             self?.saveShortcut(shortcut, forKey: "showHideHUDShortcut")
         }
 
         // Open Settings
         let openSettingsLabel = NSTextField(labelWithString: "Open Settings:")
-        openSettingsLabel.frame = NSRect(x: 20, y: 180, width: 180, height: 25)
+        openSettingsLabel.frame = NSRect(x: 20, y: 145, width: 180, height: 25)
         openSettingsLabel.isEditable = false
         openSettingsLabel.isBordered = false
         openSettingsLabel.backgroundColor = .clear
 
-        openSettingsRecorder.frame = NSRect(x: 210, y: 180, width: 250, height: 25)
+        openSettingsRecorder.frame = NSRect(x: 210, y: 145, width: 250, height: 25)
         openSettingsRecorder.onShortcutChanged = { [weak self] shortcut in
             self?.saveShortcut(shortcut, forKey: "openSettingsShortcut")
         }
@@ -286,8 +299,10 @@ final class SettingsWindowController: NSWindowController {
         resetButton.bezelStyle = .rounded
 
         view.addSubview(titleLabel)
-        view.addSubview(startStopLabel)
-        view.addSubview(startStopRecorder)
+        view.addSubview(startMicOnlyLabel)
+        view.addSubview(startMicOnlyRecorder)
+        view.addSubview(startMicPlusAppLabel)
+        view.addSubview(startMicPlusAppRecorder)
         view.addSubview(showHideLabel)
         view.addSubview(showHideHUDRecorder)
         view.addSubview(openSettingsLabel)
@@ -486,7 +501,8 @@ final class SettingsWindowController: NSWindowController {
         showNotificationsCheckbox.state = defaults.bool(forKey: "showNotifications") ? .on : .off
 
         // Shortcuts
-        startStopRecorder.shortcut = loadShortcut(forKey: "startStopShortcut")
+        startMicOnlyRecorder.shortcut = loadShortcut(forKey: "startMicOnlyShortcut")
+        startMicPlusAppRecorder.shortcut = loadShortcut(forKey: "startMicPlusAppShortcut")
         showHideHUDRecorder.shortcut = loadShortcut(forKey: "showHideHUDShortcut")
         openSettingsRecorder.shortcut = loadShortcut(forKey: "openSettingsShortcut")
 
@@ -592,13 +608,21 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func resetShortcutsToDefaults() {
-        // Default: Cmd+Shift+Space for Start/Stop
-        let defaultStartStop = KeyboardShortcut(
-            keyCode: UInt32(kVK_Space),
+        // Default: Cmd+Shift+M for Mic-Only
+        let defaultMicOnly = KeyboardShortcut(
+            keyCode: UInt32(kVK_ANSI_M),
             modifierFlags: [.command, .shift]
         )
-        startStopRecorder.shortcut = defaultStartStop
-        saveShortcut(defaultStartStop, forKey: "startStopShortcut")
+        startMicOnlyRecorder.shortcut = defaultMicOnly
+        saveShortcut(defaultMicOnly, forKey: "startMicOnlyShortcut")
+
+        // Default: Cmd+Shift+A for Mic + App Audio
+        let defaultMicPlusApp = KeyboardShortcut(
+            keyCode: UInt32(kVK_ANSI_A),
+            modifierFlags: [.command, .shift]
+        )
+        startMicPlusAppRecorder.shortcut = defaultMicPlusApp
+        saveShortcut(defaultMicPlusApp, forKey: "startMicPlusAppShortcut")
 
         // No defaults for other shortcuts
         showHideHUDRecorder.shortcut = nil
