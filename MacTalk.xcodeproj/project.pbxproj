@@ -31,6 +31,7 @@
 		78C03577C5DF441A3E20842D /* ScreenAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0CB0C822E590700DC92674D /* ScreenAudioCapture.swift */; };
 		7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */; };
 		7AB2F2BBEDB6558B75DB870A /* SHA256Streamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6A281ADAFA30F63A003298 /* SHA256Streamer.swift */; };
+		7DBC21CA08AE0BB41407A650 /* ShortcutRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B6BD7A39D8B2C793828874 /* ShortcutRecorderView.swift */; };
 		7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */; };
 		84D42F69C99B386850434DC8 /* AppPickerWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C657766293ADBF02FDD74B36 /* AppPickerWindowController.swift */; };
 		8C730F7115014CA1B0A7A91C /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */; };
@@ -94,6 +95,7 @@
 		B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionController.swift; sourceTree = "<group>"; };
 		B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloader.swift; sourceTree = "<group>"; };
 		B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManagerTests.swift; sourceTree = "<group>"; };
+		B8B6BD7A39D8B2C793828874 /* ShortcutRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRecorderView.swift; sourceTree = "<group>"; };
 		C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionControllerTests.swift; sourceTree = "<group>"; };
 		C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMonitor.swift; sourceTree = "<group>"; };
 		C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBuffer.swift; sourceTree = "<group>"; };
@@ -139,6 +141,7 @@
 			children = (
 				C657766293ADBF02FDD74B36 /* AppPickerWindowController.swift */,
 				135F815473A57D696974319C /* AudioLevelMeterView.swift */,
+				B8B6BD7A39D8B2C793828874 /* ShortcutRecorderView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -407,6 +410,7 @@
 				7AB2F2BBEDB6558B75DB870A /* SHA256Streamer.swift in Sources */,
 				78C03577C5DF441A3E20842D /* ScreenAudioCapture.swift in Sources */,
 				22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */,
+				7DBC21CA08AE0BB41407A650 /* ShortcutRecorderView.swift in Sources */,
 				F8737753B44C1AEC16F43DC7 /* StatusBarController.swift in Sources */,
 				7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */,
 				26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */,
