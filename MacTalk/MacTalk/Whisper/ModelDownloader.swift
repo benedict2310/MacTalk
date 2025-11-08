@@ -114,6 +114,8 @@ final class ModelDownloader: NSObject {
     private func tryNextMirror(_ err: Error) {
         currentURLIndex += 1
         if currentURLIndex < spec.urls.count {
+            // Clear resume data when switching mirrors since it contains the old URL
+            try? FileManager.default.removeItem(at: resumeURL)
             kick()
         } else {
             DispatchQueue.main.async { [weak self] in
