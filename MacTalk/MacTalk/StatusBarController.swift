@@ -652,14 +652,14 @@ final class StatusBarController {
         // Load shortcuts from UserDefaults
         let defaults = UserDefaults.standard
 
-        // Start Mic-Only Recording
+        // Start Mic-Only Recording (toggle behavior)
         if let data = defaults.data(forKey: "startMicOnlyShortcut"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             if let hotkeyID = hotkeyManager.register(
                 keyCode: shortcut.keyCode,
                 modifiers: shortcut.carbonModifiers,
                 handler: { [weak self] in
-                    self?.startMicOnly()
+                    self?.toggleMicOnly()
                 }
             ) {
                 registeredHotkeyIDs["startMicOnly"] = hotkeyID
@@ -671,14 +671,14 @@ final class StatusBarController {
             updateMenuItemShortcut(micOnlyMenuItem, shortcut: nil)
         }
 
-        // Start Mic + App Audio Recording
+        // Start Mic + App Audio Recording (toggle behavior)
         if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             if let hotkeyID = hotkeyManager.register(
                 keyCode: shortcut.keyCode,
                 modifiers: shortcut.carbonModifiers,
                 handler: { [weak self] in
-                    self?.startMicPlusApp()
+                    self?.toggleMicPlusApp()
                 }
             ) {
                 registeredHotkeyIDs["startMicPlusApp"] = hotkeyID
@@ -725,13 +725,27 @@ final class StatusBarController {
         guard let item = menuItem else { return }
 
         if let shortcut = shortcut {
-            // Display shortcut next to the menu item title
+            // Convert Carbon key code to NSEvent key equivalent
+            // For display purposes, we'll show it as attributed text
+            let attrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .font: NSFont.menuFont(ofSize: 0)  // 0 = default menu font size
+            ]
+
             let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
-            item.title = "\(baseTitle)\t\(shortcut.displayString)"
+            let titleAttr = NSAttributedString(string: baseTitle)
+            let shortcutAttr = NSAttributedString(string: "  " + shortcut.displayString, attributes: attrs)
+
+            let combined = NSMutableAttributedString()
+            combined.append(titleAttr)
+            combined.append(shortcutAttr)
+
+            item.attributedTitle = combined
         } else {
             // Remove any existing shortcut display
             let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
             item.title = baseTitle
+            item.attributedTitle = nil
         }
     }
 
@@ -750,6 +764,22 @@ final class StatusBarController {
             } else {
                 startRecording()
             }
+        }
+    }
+
+    private func toggleMicOnly() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startMicOnly()
+        }
+    }
+
+    private func toggleMicPlusApp() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startMicPlusApp()
         }
     }
 
