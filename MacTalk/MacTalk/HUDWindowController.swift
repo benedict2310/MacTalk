@@ -12,11 +12,14 @@ final class HUDWindowController: NSWindowController {
     private let backgroundView = NSVisualEffectView()
     private let levelMeterView = DualChannelLevelMeterView()
     private let containerStack = NSStackView()
+    private let stopButton = NSButton()
+
+    var onStop: (() -> Void)?
 
     convenience init() {
         // Create a borderless, floating panel
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 140),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 180),
             styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -63,6 +66,15 @@ final class HUDWindowController: NSWindowController {
         textView.maximumNumberOfLines = 3
         textView.translatesAutoresizingMaskIntoConstraints = false
 
+        // Stop button
+        stopButton.title = "Stop Recording"
+        stopButton.bezelStyle = .rounded
+        stopButton.target = self
+        stopButton.action = #selector(stopButtonClicked)
+        stopButton.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.setAccessibilityLabel("Stop Recording")
+        stopButton.setAccessibilityHelp("Click to stop the current recording")
+
         // Setup container stack
         containerStack.orientation = .vertical
         containerStack.spacing = 12
@@ -71,6 +83,7 @@ final class HUDWindowController: NSWindowController {
 
         containerStack.addArrangedSubview(levelMeterView)
         containerStack.addArrangedSubview(textView)
+        containerStack.addArrangedSubview(stopButton)
 
         backgroundView.addSubview(containerStack)
 
@@ -118,6 +131,10 @@ final class HUDWindowController: NSWindowController {
 
     func resetLevels() {
         levelMeterView.reset()
+    }
+
+    @objc private func stopButtonClicked() {
+        onStop?()
     }
 
     override func showWindow(_ sender: Any?) {

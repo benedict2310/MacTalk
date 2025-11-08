@@ -162,6 +162,9 @@ final class StatusBarController {
 
         // Initialize HUD
         hudController = HUDWindowController()
+        hudController?.onStop = { [weak self] in
+            self?.stopRecording()
+        }
 
         // Bind download progress updates
         ModelManager.shared.onDownloadState = { [weak self] state in
