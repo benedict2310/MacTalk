@@ -61,13 +61,21 @@ enum Permissions {
 
     static func checkScreenRecordingPermission() async -> Bool {
         // Try to get shareable content - this will trigger permission if needed
+        NSLog("🔍 [Permissions] Checking screen recording permission...")
         do {
-            _ = try await SCShareableContent.excludingDesktopWindows(
+            let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
+            NSLog("✅ [Permissions] Screen recording permission GRANTED")
+            NSLog("🔍 [Permissions] Available: \(content.displays.count) displays, \(content.applications.count) apps, \(content.windows.count) windows")
             return true
-        } catch {
+        } catch let error as NSError {
+            NSLog("❌ [Permissions] Screen recording permission check FAILED")
+            NSLog("❌ [Permissions]   Domain: \(error.domain)")
+            NSLog("❌ [Permissions]   Code: \(error.code)")
+            NSLog("❌ [Permissions]   Description: \(error.localizedDescription)")
+            NSLog("❌ [Permissions]   User Info: \(error.userInfo)")
             return false
         }
     }
