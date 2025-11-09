@@ -178,7 +178,7 @@ final class AppPickerWindowController: NSWindowController {
     // MARK: - Data Loading
 
     private func loadAudioSources() {
-        Task {
+        Task { @MainActor in
             NSLog("🔍 [AppPicker] Starting to load audio sources...")
 
             do {
@@ -189,9 +189,7 @@ final class AppPickerWindowController: NSWindowController {
 
                 if !hasPermission {
                     NSLog("❌ [AppPicker] Screen recording permission NOT granted")
-                    await MainActor.run {
-                        self.showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
-                    }
+                    self.showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
                     return
                 }
 
@@ -227,12 +225,10 @@ final class AppPickerWindowController: NSWindowController {
                 // Sort alphabetically
                 sources.sort { $0.name < $1.name }
 
-                await MainActor.run {
-                    self.allAudioSources = sources
-                    self.filteredSources = sources
-                    self.tableView.reloadData()
-                    NSLog("✅ [AppPicker] Audio sources loaded and table view updated")
-                }
+                self.allAudioSources = sources
+                self.filteredSources = sources
+                self.tableView.reloadData()
+                NSLog("✅ [AppPicker] Audio sources loaded and table view updated")
             } catch let error as NSError {
                 NSLog("❌ [AppPicker] Error loading audio sources:")
                 NSLog("❌ [AppPicker]   Domain: \(error.domain)")
@@ -240,24 +236,22 @@ final class AppPickerWindowController: NSWindowController {
                 NSLog("❌ [AppPicker]   Description: \(error.localizedDescription)")
                 NSLog("❌ [AppPicker]   User Info: \(error.userInfo)")
 
-                await MainActor.run {
-                    var errorMessage = "Failed to load audio sources.\n\n"
-                    errorMessage += "Error: \(error.localizedDescription)\n"
-                    errorMessage += "Domain: \(error.domain)\n"
-                    errorMessage += "Code: \(error.code)\n\n"
+                var errorMessage = "Failed to load audio sources.\n\n"
+                errorMessage += "Error: \(error.localizedDescription)\n"
+                errorMessage += "Domain: \(error.domain)\n"
+                errorMessage += "Code: \(error.code)\n\n"
 
-                    // Provide helpful guidance based on the error
-                    if error.localizedDescription.contains("TCC") || error.localizedDescription.contains("declined") {
-                        errorMessage += "This usually means Screen Recording permission is not granted.\n\n"
-                        errorMessage += "Please:\n"
-                        errorMessage += "1. Open System Settings\n"
-                        errorMessage += "2. Go to Privacy & Security > Screen Recording\n"
-                        errorMessage += "3. Enable MacTalk\n"
-                        errorMessage += "4. Restart MacTalk\n"
-                    }
-
-                    self.showError(errorMessage)
+                // Provide helpful guidance based on the error
+                if error.localizedDescription.contains("TCC") || error.localizedDescription.contains("declined") {
+                    errorMessage += "This usually means Screen Recording permission is not granted.\n\n"
+                    errorMessage += "Please:\n"
+                    errorMessage += "1. Open System Settings\n"
+                    errorMessage += "2. Go to Privacy & Security > Screen Recording\n"
+                    errorMessage += "3. Enable MacTalk\n"
+                    errorMessage += "4. Restart MacTalk\n"
                 }
+
+                self.showError(errorMessage)
             }
         }
     }
