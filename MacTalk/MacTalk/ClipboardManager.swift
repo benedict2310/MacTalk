@@ -13,10 +13,15 @@ enum ClipboardManager {
 
     /// Set text to system clipboard
     static func setClipboard(_ text: String) {
+        NSLog("📋 [ClipboardManager] Setting clipboard with text: \(text.prefix(50))...")
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        print("Text copied to clipboard: \(text.prefix(50))...")
+        let success = pasteboard.setString(text, forType: .string)
+        if success {
+            NSLog("✅ [ClipboardManager] Clipboard set successfully")
+        } else {
+            NSLog("❌ [ClipboardManager] Failed to set clipboard")
+        }
     }
 
     /// Get current clipboard text
@@ -29,14 +34,21 @@ enum ClipboardManager {
 
     /// Attempt to paste clipboard content using Cmd+V simulation
     static func pasteIfAllowed() {
-        guard Permissions.isAccessibilityTrusted() else {
-            print("Accessibility permission not granted - cannot auto-paste")
+        NSLog("🔍 [ClipboardManager] pasteIfAllowed() called - checking accessibility permission...")
+
+        let isGranted = Permissions.isAccessibilityTrusted()
+        NSLog("🔍 [ClipboardManager] Accessibility permission status: \(isGranted ? "GRANTED ✅" : "NOT GRANTED ❌")")
+
+        guard isGranted else {
+            NSLog("❌ [ClipboardManager] Accessibility permission not granted - cannot auto-paste")
+            NSLog("🚨 [ClipboardManager] Requesting accessibility permission from user...")
             Permissions.requestAccessibilityPermission()
             return
         }
 
+        NSLog("📝 [ClipboardManager] Accessibility granted - executing Cmd+V...")
         sendCommandV()
-        print("Auto-paste executed (Cmd+V)")
+        NSLog("✅ [ClipboardManager] Auto-paste executed (Cmd+V sent)")
     }
 
     /// Simulate Command+V key press

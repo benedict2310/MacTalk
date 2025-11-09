@@ -499,20 +499,36 @@ final class StatusBarController {
 
         controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
+                NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
                 self?.hudController?.update(text: "Final: \(text)")
 
                 // Copy to clipboard if enabled
-                if self?.copyToClipboard == true {
+                let copyEnabled = self?.copyToClipboard ?? false
+                NSLog("📋 [StatusBar] copyToClipboard setting: \(copyEnabled)")
+
+                if copyEnabled {
+                    NSLog("📋 [StatusBar] Copying text to clipboard...")
                     ClipboardManager.setClipboard(text)
+                } else {
+                    NSLog("⏭️ [StatusBar] Skipping clipboard copy (disabled in settings)")
                 }
 
                 // Auto-paste if enabled (requires clipboard copy)
-                if self?.autoPaste == true && self?.copyToClipboard == true {
+                let autoPasteEnabled = self?.autoPaste ?? false
+                NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
+
+                if autoPasteEnabled && copyEnabled {
+                    NSLog("🔄 [StatusBar] Auto-paste is enabled and clipboard was copied - attempting paste...")
                     ClipboardManager.pasteIfAllowed()
+                } else if autoPasteEnabled && !copyEnabled {
+                    NSLog("⚠️ [StatusBar] Auto-paste is enabled but clipboard copy is disabled - skipping paste")
+                } else {
+                    NSLog("⏭️ [StatusBar] Auto-paste is disabled - skipping paste")
                 }
 
                 // Show notification
-                let message = self?.copyToClipboard == true ? "Text copied to clipboard" : "Transcription complete"
+                let message = copyEnabled ? "Text copied to clipboard" : "Transcription complete"
+                NSLog("📢 [StatusBar] Showing notification: \(message)")
                 self?.showNotification(title: "Transcription Complete", message: message)
             }
         }
@@ -558,30 +574,48 @@ final class StatusBarController {
     }
 
     private func startRecording() {
+        NSLog("🎬 [StatusBar] startRecording() called")
+        NSLog("🎬 [StatusBar] Mode: \(mode)")
+        if let source = selectedAudioSource {
+            NSLog("🎬 [StatusBar] Audio source: \(source.name)")
+        } else {
+            NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
+        }
+
         guard let engine = engine else {
+            NSLog("❌ [StatusBar] Engine not loaded!")
             showError("Model not loaded. Please check that the model file exists.")
             return
         }
 
+        NSLog("✅ [StatusBar] Engine available, creating TranscriptionController...")
         let transcriptionController = TranscriptionController(engine: engine)
         transcriptionController.autoPasteEnabled = autoPaste
+        NSLog("🎬 [StatusBar] TranscriptionController created with autoPaste=\(autoPaste)")
 
         setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
 
         Task { [self] in
             do {
+                if let source = selectedAudioSource {
+                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=\(source.name)")
+                } else {
+                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=nil")
+                }
                 try await transcriptionController.start(
                     mode: mode,
                     audioSource: selectedAudioSource
                 )
                 DispatchQueue.main.async {
+                    NSLog("✅ [StatusBar] Transcription started successfully")
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
             } catch {
+                NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 DispatchQueue.main.async { [self] in
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }

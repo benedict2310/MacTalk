@@ -90,10 +90,15 @@ enum Permissions {
     }
 
     static func isAccessibilityTrusted() -> Bool {
-        return AXIsProcessTrusted()
+        let trusted = AXIsProcessTrusted()
+        NSLog("🔐 [Permissions] Accessibility permission check: \(trusted ? "TRUSTED ✅" : "NOT TRUSTED ❌")")
+        return trusted
     }
 
     static func requestAccessibilityPermission() {
+        NSLog("🚨 [Permissions] Requesting accessibility permission from user...")
+        NSLog("🚨 [Permissions] Showing permission dialog...")
+
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
         alert.informativeText = """
@@ -103,6 +108,7 @@ enum Permissions {
         1. Open System Settings
         2. Go to Privacy & Security > Accessibility
         3. Enable MacTalk
+        4. IMPORTANT: Restart MacTalk after granting permission
 
         Would you like to open System Settings now?
         """
@@ -110,8 +116,12 @@ enum Permissions {
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
 
-        if alert.runModal() == .alertFirstButtonReturn {
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            NSLog("👤 [Permissions] User chose to open System Settings")
             openAccessibilitySettings()
+        } else {
+            NSLog("👤 [Permissions] User cancelled permission request")
         }
     }
 
