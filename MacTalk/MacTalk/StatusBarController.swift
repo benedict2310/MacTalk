@@ -16,7 +16,6 @@ final class StatusBarController {
     private var settingsController: SettingsWindowController?
 
     private var autoPaste = false
-    private var copyToClipboard = true  // Default to true
     private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
@@ -46,13 +45,6 @@ final class StatusBarController {
         let defaults = UserDefaults.standard
         autoPaste = defaults.bool(forKey: "autoPaste")
 
-        // Copy to clipboard defaults to true if not set
-        if defaults.object(forKey: "copyToClipboard") != nil {
-            copyToClipboard = defaults.bool(forKey: "copyToClipboard")
-        } else {
-            copyToClipboard = true  // Default
-        }
-
         // Show notifications defaults to true if not set
         if defaults.object(forKey: "showNotifications") != nil {
             showNotifications = defaults.bool(forKey: "showNotifications")
@@ -61,8 +53,8 @@ final class StatusBarController {
         }
 
         NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
-        NSLog("🔧 [MacTalk] Loaded copy-to-clipboard setting: \(copyToClipboard)")
         NSLog("🔧 [MacTalk] Loaded show-notifications setting: \(showNotifications)")
+        NSLog("📋 [MacTalk] Clipboard copy: Always enabled (required for transcription)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
@@ -502,33 +494,21 @@ final class StatusBarController {
                 NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
                 self?.hudController?.update(text: "Final: \(text)")
 
-                let copyEnabled = self?.copyToClipboard ?? false
                 let autoPasteEnabled = self?.autoPaste ?? false
-                NSLog("📋 [StatusBar] copyToClipboard setting: \(copyEnabled)")
                 NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
 
-                // Auto-paste works independently - always copy to clipboard for paste
+                // Always copy to clipboard
+                NSLog("📋 [StatusBar] Copying text to clipboard...")
+                ClipboardManager.setClipboard(text)
+
+                // Auto-paste if enabled
                 if autoPasteEnabled {
-                    NSLog("🔄 [StatusBar] Auto-paste is enabled - copying to clipboard and pasting...")
-                    ClipboardManager.setClipboard(text)
+                    NSLog("🔄 [StatusBar] Auto-paste is enabled - pasting...")
                     ClipboardManager.pasteIfAllowed()
-                } else if copyEnabled {
-                    // Only copy if not already copied by auto-paste
-                    NSLog("📋 [StatusBar] Copying text to clipboard (auto-paste disabled)...")
-                    ClipboardManager.setClipboard(text)
-                } else {
-                    NSLog("⏭️ [StatusBar] Both copy and auto-paste disabled - no clipboard action")
                 }
 
                 // Show notification
-                let message: String
-                if autoPasteEnabled {
-                    message = "Text pasted"
-                } else if copyEnabled {
-                    message = "Text copied to clipboard"
-                } else {
-                    message = "Transcription complete"
-                }
+                let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
                 NSLog("📢 [StatusBar] Showing notification: \(message)")
                 self?.showNotification(title: "Transcription Complete", message: message)
             }

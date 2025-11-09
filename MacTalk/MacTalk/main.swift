@@ -19,9 +19,12 @@ DLOG("NSApplication.shared created")
 
 // CRITICAL: Set activation policy BEFORE creating delegate or running app
 // This is required for menu bar apps on macOS 26 (Tahoe)
-NSLog("🚀 [MacTalk] Setting activation policy to .accessory")
-app.setActivationPolicy(.accessory)
-DLOG("Activation policy set to .accessory")
+// Check showInDock preference to determine activation policy
+let showInDock = UserDefaults.standard.bool(forKey: "showInDock")
+let policy: NSApplication.ActivationPolicy = showInDock ? .regular : .accessory
+NSLog("🚀 [MacTalk] Setting activation policy to \(showInDock ? ".regular (show in dock)" : ".accessory (menu bar only)")")
+app.setActivationPolicy(policy)
+DLOG("Activation policy set to \(policy)")
 
 // Create and assign delegate
 NSLog("🚀 [MacTalk] Creating AppDelegate")

@@ -20,7 +20,6 @@ final class SettingsWindowController: NSWindowController {
 
     // Output tab controls
     private let autoPasteCheckbox = NSButton(checkboxWithTitle: "Auto-paste Transcript on Stop", target: nil, action: nil)
-    private let copyToClipboardCheckbox = NSButton(checkboxWithTitle: "Copy to Clipboard", target: nil, action: nil)
 
     // Audio tab controls
     private let defaultModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -120,18 +119,13 @@ final class SettingsWindowController: NSWindowController {
         autoPasteCheckbox.target = self
         autoPasteCheckbox.action = #selector(outputSettingChanged)
 
-        copyToClipboardCheckbox.frame = NSRect(x: 20, y: 250, width: 440, height: 25)
-        copyToClipboardCheckbox.target = self
-        copyToClipboardCheckbox.action = #selector(outputSettingChanged)
-        copyToClipboardCheckbox.state = .on  // Default to on
-
-        let infoLabel = NSTextField(labelWithString: "Configure how transcripts are delivered")
-        infoLabel.frame = NSRect(x: 20, y: 210, width: 440, height: 20)
+        let infoLabel = NSTextField(labelWithString: "Transcript is always copied to clipboard. Enable auto-paste to automatically paste it.")
+        infoLabel.frame = NSRect(x: 20, y: 240, width: 440, height: 40)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        infoLabel.lineBreakMode = .byWordWrapping
 
         view.addSubview(autoPasteCheckbox)
-        view.addSubview(copyToClipboardCheckbox)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -399,7 +393,6 @@ final class SettingsWindowController: NSWindowController {
 
         // Output
         autoPasteCheckbox.state = defaults.bool(forKey: "autoPaste") ? .on : .off
-        copyToClipboardCheckbox.state = defaults.bool(forKey: "copyToClipboard") ? .on : .off
 
         // Audio
         defaultModePopup.selectItem(at: defaults.integer(forKey: "defaultMode"))
@@ -429,7 +422,6 @@ final class SettingsWindowController: NSWindowController {
 
         // Output
         defaults.set(autoPasteCheckbox.state == .on, forKey: "autoPaste")
-        defaults.set(copyToClipboardCheckbox.state == .on, forKey: "copyToClipboard")
 
         // Audio
         defaults.set(defaultModePopup.indexOfSelectedItem, forKey: "defaultMode")
@@ -443,6 +435,17 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func generalSettingChanged() {
         saveSettings()
+
+        // Update activation policy immediately when Show in Dock changes
+        let showInDock = showInDockCheckbox.state == .on
+        let policy: NSApplication.ActivationPolicy = showInDock ? .regular : .accessory
+        NSLog("⚙️ [Settings] Changing activation policy to \(showInDock ? ".regular (show in dock)" : ".accessory (menu bar only)")")
+        NSApp.setActivationPolicy(policy)
+
+        if showInDock {
+            // Activate the app to show the icon in the dock
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     @objc private func outputSettingChanged() {

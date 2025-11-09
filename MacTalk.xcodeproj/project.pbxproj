@@ -47,6 +47,7 @@
 		DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4F33E65DF8138019C37275 /* RingBufferTests.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3BD2E91B633537326157C2EC /* AVFoundation.framework */; };
+		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
 		F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */; };
 		F8737753B44C1AEC16F43DC7 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E458427B2F013B3D86FF976 /* StatusBarController.swift */; };
@@ -72,6 +73,7 @@
 		135F815473A57D696974319C /* AudioLevelMeterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMeterView.swift; sourceTree = "<group>"; };
 		170191E05BBF77579A873511 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		17A686CDEF44401730A9967E /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIntegrationTests.swift; sourceTree = "<group>"; };
 		1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Phase4IntegrationTests.swift; sourceTree = "<group>"; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		35F50A54ADED08971D0A193F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -189,6 +191,7 @@
 				1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */,
 				CC4F33E65DF8138019C37275 /* RingBufferTests.swift */,
 				44DB11AF678F4F2CB4A12F7A /* ScreenAudioCaptureTests.swift */,
+				1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */,
 				99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */,
 				82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */,
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
@@ -433,6 +436,7 @@
 				9C3CFF8B7A8A8078163F8897 /* Phase4IntegrationTests.swift in Sources */,
 				DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */,
 				FE70C047F8540DB2C94D4DE5 /* ScreenAudioCaptureTests.swift in Sources */,
+				EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */,
 				2CA2A08ADEAAAC67AA9DD125 /* SettingsWindowControllerTests.swift in Sources */,
 				D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */,
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
