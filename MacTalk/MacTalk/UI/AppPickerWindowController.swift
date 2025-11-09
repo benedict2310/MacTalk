@@ -26,6 +26,7 @@ final class AppPickerWindowController: NSWindowController {
     private var selectedSource: AudioSource?
 
     var onSelection: ((AudioSource) -> Void)?
+    var onReady: (() -> Void)?  // Called when data is loaded and window is ready to show
 
     // MARK: - Types
 
@@ -229,6 +230,10 @@ final class AppPickerWindowController: NSWindowController {
                 self.filteredSources = sources
                 self.tableView.reloadData()
                 NSLog("✅ [AppPicker] Audio sources loaded and table view updated")
+
+                // Notify that window is ready to be shown
+                self.onReady?()
+                NSLog("✅ [AppPicker] onReady callback invoked")
             } catch let error as NSError {
                 NSLog("❌ [AppPicker] Error loading audio sources:")
                 NSLog("❌ [AppPicker]   Domain: \(error.domain)")

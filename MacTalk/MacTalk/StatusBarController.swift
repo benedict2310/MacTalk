@@ -743,8 +743,13 @@ final class StatusBarController {
             self?.appPickerController = nil  // Release after selection
             self?.startRecording()
         }
-        picker.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+
+        // FIX: Wait for data to load before showing window
+        picker.onReady = { [weak picker] in
+            NSLog("🎬 [StatusBar] App picker ready, showing window")
+            picker?.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     // MARK: - Hotkeys
