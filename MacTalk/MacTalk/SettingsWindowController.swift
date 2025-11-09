@@ -15,34 +15,23 @@ final class SettingsWindowController: NSWindowController {
     private let tabView = NSTabView()
 
     // General tab controls
-    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at Login", target: nil, action: nil)
     private let showInDockCheckbox = NSButton(checkboxWithTitle: "Show in Dock", target: nil, action: nil)
     private let showNotificationsCheckbox = NSButton(checkboxWithTitle: "Show Notifications", target: nil, action: nil)
 
     // Output tab controls
     private let autoPasteCheckbox = NSButton(checkboxWithTitle: "Auto-paste Transcript on Stop", target: nil, action: nil)
     private let copyToClipboardCheckbox = NSButton(checkboxWithTitle: "Copy to Clipboard", target: nil, action: nil)
-    private let showTimestampsCheckbox = NSButton(checkboxWithTitle: "Include Timestamps", target: nil, action: nil)
 
     // Audio tab controls
     private let defaultModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let silenceDetectionCheckbox = NSButton(checkboxWithTitle: "Enable Silence Detection", target: nil, action: nil)
-    private let silenceThresholdSlider = NSSlider()
-    private let silenceThresholdLabel = NSTextField(labelWithString: "Silence Threshold:")
-    private let silenceThresholdValueLabel = NSTextField(labelWithString: "-40 dB")
 
     // Advanced tab controls
     private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let translateCheckbox = NSButton(checkboxWithTitle: "Translate to English", target: nil, action: nil)
-    private let beamSizeSlider = NSSlider()
-    private let beamSizeLabel = NSTextField(labelWithString: "Beam Size:")
-    private let beamSizeValueLabel = NSTextField(labelWithString: "5")
 
     // Shortcuts tab controls
-    private let startStopRecorder = ShortcutRecorderView()
-    private let showHideHUDRecorder = ShortcutRecorderView()
-    private let openSettingsRecorder = ShortcutRecorderView()
+    private let startMicOnlyRecorder = ShortcutRecorderView()
+    private let startMicPlusAppRecorder = ShortcutRecorderView()
 
     // MARK: - Initialization
 
@@ -98,25 +87,20 @@ final class SettingsWindowController: NSWindowController {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 340))
 
         // Layout controls
-        launchAtLoginCheckbox.frame = NSRect(x: 20, y: 280, width: 440, height: 25)
-        launchAtLoginCheckbox.target = self
-        launchAtLoginCheckbox.action = #selector(generalSettingChanged)
-
-        showInDockCheckbox.frame = NSRect(x: 20, y: 250, width: 440, height: 25)
+        showInDockCheckbox.frame = NSRect(x: 20, y: 280, width: 440, height: 25)
         showInDockCheckbox.target = self
         showInDockCheckbox.action = #selector(generalSettingChanged)
 
-        showNotificationsCheckbox.frame = NSRect(x: 20, y: 220, width: 440, height: 25)
+        showNotificationsCheckbox.frame = NSRect(x: 20, y: 250, width: 440, height: 25)
         showNotificationsCheckbox.target = self
         showNotificationsCheckbox.action = #selector(generalSettingChanged)
         showNotificationsCheckbox.state = .on  // Default to on
 
         let infoLabel = NSTextField(labelWithString: "General application preferences")
-        infoLabel.frame = NSRect(x: 20, y: 180, width: 440, height: 20)
+        infoLabel.frame = NSRect(x: 20, y: 210, width: 440, height: 20)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
-        view.addSubview(launchAtLoginCheckbox)
         view.addSubview(showInDockCheckbox)
         view.addSubview(showNotificationsCheckbox)
         view.addSubview(infoLabel)
@@ -141,18 +125,13 @@ final class SettingsWindowController: NSWindowController {
         copyToClipboardCheckbox.action = #selector(outputSettingChanged)
         copyToClipboardCheckbox.state = .on  // Default to on
 
-        showTimestampsCheckbox.frame = NSRect(x: 20, y: 220, width: 440, height: 25)
-        showTimestampsCheckbox.target = self
-        showTimestampsCheckbox.action = #selector(outputSettingChanged)
-
         let infoLabel = NSTextField(labelWithString: "Configure how transcripts are delivered")
-        infoLabel.frame = NSRect(x: 20, y: 180, width: 440, height: 20)
+        infoLabel.frame = NSRect(x: 20, y: 210, width: 440, height: 20)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
         view.addSubview(autoPasteCheckbox)
         view.addSubview(copyToClipboardCheckbox)
-        view.addSubview(showTimestampsCheckbox)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -177,42 +156,13 @@ final class SettingsWindowController: NSWindowController {
         defaultModePopup.target = self
         defaultModePopup.action = #selector(audioSettingChanged)
 
-        // Silence detection
-        silenceDetectionCheckbox.frame = NSRect(x: 20, y: 240, width: 440, height: 25)
-        silenceDetectionCheckbox.target = self
-        silenceDetectionCheckbox.action = #selector(silenceDetectionToggled)
-
-        // Silence threshold
-        silenceThresholdLabel.frame = NSRect(x: 40, y: 210, width: 120, height: 20)
-        silenceThresholdLabel.isEditable = false
-        silenceThresholdLabel.isBordered = false
-        silenceThresholdLabel.backgroundColor = .clear
-
-        silenceThresholdSlider.frame = NSRect(x: 170, y: 210, width: 200, height: 20)
-        silenceThresholdSlider.minValue = -60
-        silenceThresholdSlider.maxValue = -10
-        silenceThresholdSlider.doubleValue = -40
-        silenceThresholdSlider.target = self
-        silenceThresholdSlider.action = #selector(silenceThresholdChanged)
-        silenceThresholdSlider.isEnabled = false  // Disabled until checkbox is on
-
-        silenceThresholdValueLabel.frame = NSRect(x: 380, y: 210, width: 60, height: 20)
-        silenceThresholdValueLabel.isEditable = false
-        silenceThresholdValueLabel.isBordered = false
-        silenceThresholdValueLabel.backgroundColor = .clear
-        silenceThresholdValueLabel.alignment = .right
-
-        let infoLabel = NSTextField(labelWithString: "Configure audio capture and processing")
-        infoLabel.frame = NSRect(x: 20, y: 170, width: 440, height: 20)
+        let infoLabel = NSTextField(labelWithString: "Configure audio capture mode")
+        infoLabel.frame = NSRect(x: 20, y: 240, width: 440, height: 20)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
         view.addSubview(modeLabel)
         view.addSubview(defaultModePopup)
-        view.addSubview(silenceDetectionCheckbox)
-        view.addSubview(silenceThresholdLabel)
-        view.addSubview(silenceThresholdSlider)
-        view.addSubview(silenceThresholdValueLabel)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -233,40 +183,28 @@ final class SettingsWindowController: NSWindowController {
         titleLabel.isBordered = false
         titleLabel.backgroundColor = .clear
 
-        // Start/Stop Recording
-        let startStopLabel = NSTextField(labelWithString: "Start/Stop Recording:")
-        startStopLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
-        startStopLabel.isEditable = false
-        startStopLabel.isBordered = false
-        startStopLabel.backgroundColor = .clear
+        // Start Mic-Only Recording
+        let startMicOnlyLabel = NSTextField(labelWithString: "Start Mic-Only:")
+        startMicOnlyLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
+        startMicOnlyLabel.isEditable = false
+        startMicOnlyLabel.isBordered = false
+        startMicOnlyLabel.backgroundColor = .clear
 
-        startStopRecorder.frame = NSRect(x: 210, y: 250, width: 250, height: 25)
-        startStopRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "startStopShortcut")
+        startMicOnlyRecorder.frame = NSRect(x: 210, y: 250, width: 250, height: 25)
+        startMicOnlyRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "startMicOnlyShortcut")
         }
 
-        // Show/Hide HUD
-        let showHideLabel = NSTextField(labelWithString: "Show/Hide HUD:")
-        showHideLabel.frame = NSRect(x: 20, y: 215, width: 180, height: 25)
-        showHideLabel.isEditable = false
-        showHideLabel.isBordered = false
-        showHideLabel.backgroundColor = .clear
+        // Start Mic + App Audio Recording
+        let startMicPlusAppLabel = NSTextField(labelWithString: "Start Mic + App Audio:")
+        startMicPlusAppLabel.frame = NSRect(x: 20, y: 215, width: 180, height: 25)
+        startMicPlusAppLabel.isEditable = false
+        startMicPlusAppLabel.isBordered = false
+        startMicPlusAppLabel.backgroundColor = .clear
 
-        showHideHUDRecorder.frame = NSRect(x: 210, y: 215, width: 250, height: 25)
-        showHideHUDRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "showHideHUDShortcut")
-        }
-
-        // Open Settings
-        let openSettingsLabel = NSTextField(labelWithString: "Open Settings:")
-        openSettingsLabel.frame = NSRect(x: 20, y: 180, width: 180, height: 25)
-        openSettingsLabel.isEditable = false
-        openSettingsLabel.isBordered = false
-        openSettingsLabel.backgroundColor = .clear
-
-        openSettingsRecorder.frame = NSRect(x: 210, y: 180, width: 250, height: 25)
-        openSettingsRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "openSettingsShortcut")
+        startMicPlusAppRecorder.frame = NSRect(x: 210, y: 215, width: 250, height: 25)
+        startMicPlusAppRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.saveShortcut(shortcut, forKey: "startMicPlusAppShortcut")
         }
 
         // Info text
@@ -286,12 +224,10 @@ final class SettingsWindowController: NSWindowController {
         resetButton.bezelStyle = .rounded
 
         view.addSubview(titleLabel)
-        view.addSubview(startStopLabel)
-        view.addSubview(startStopRecorder)
-        view.addSubview(showHideLabel)
-        view.addSubview(showHideHUDRecorder)
-        view.addSubview(openSettingsLabel)
-        view.addSubview(openSettingsRecorder)
+        view.addSubview(startMicOnlyLabel)
+        view.addSubview(startMicOnlyRecorder)
+        view.addSubview(startMicPlusAppLabel)
+        view.addSubview(startMicPlusAppRecorder)
         view.addSubview(infoLabel)
         view.addSubview(resetButton)
 
@@ -344,35 +280,12 @@ final class SettingsWindowController: NSWindowController {
             "Japanese",
             "Chinese"
         ])
+        languagePopup.selectItem(at: 1)  // Default to English
         languagePopup.target = self
         languagePopup.action = #selector(advancedSettingChanged)
 
-        // Translate checkbox
-        translateCheckbox.frame = NSRect(x: 20, y: 210, width: 440, height: 25)
-        translateCheckbox.target = self
-        translateCheckbox.action = #selector(advancedSettingChanged)
-
-        // Beam size
-        beamSizeLabel.frame = NSRect(x: 20, y: 175, width: 120, height: 20)
-        beamSizeLabel.isEditable = false
-        beamSizeLabel.isBordered = false
-        beamSizeLabel.backgroundColor = .clear
-
-        beamSizeSlider.frame = NSRect(x: 150, y: 175, width: 200, height: 20)
-        beamSizeSlider.minValue = 1
-        beamSizeSlider.maxValue = 10
-        beamSizeSlider.intValue = 5
-        beamSizeSlider.target = self
-        beamSizeSlider.action = #selector(beamSizeChanged)
-
-        beamSizeValueLabel.frame = NSRect(x: 360, y: 175, width: 60, height: 20)
-        beamSizeValueLabel.isEditable = false
-        beamSizeValueLabel.isBordered = false
-        beamSizeValueLabel.backgroundColor = .clear
-        beamSizeValueLabel.alignment = .right
-
-        let infoLabel = NSTextField(labelWithString: "Advanced transcription settings (affects quality and speed)")
-        infoLabel.frame = NSRect(x: 20, y: 135, width: 440, height: 20)
+        let infoLabel = NSTextField(labelWithString: "Whisper model and language settings")
+        infoLabel.frame = NSRect(x: 20, y: 205, width: 440, height: 20)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
@@ -380,10 +293,6 @@ final class SettingsWindowController: NSWindowController {
         view.addSubview(modelPopup)
         view.addSubview(languageLabel)
         view.addSubview(languagePopup)
-        view.addSubview(translateCheckbox)
-        view.addSubview(beamSizeLabel)
-        view.addSubview(beamSizeSlider)
-        view.addSubview(beamSizeValueLabel)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -481,31 +390,19 @@ final class SettingsWindowController: NSWindowController {
         let defaults = UserDefaults.standard
 
         // General
-        launchAtLoginCheckbox.state = defaults.bool(forKey: "launchAtLogin") ? .on : .off
         showInDockCheckbox.state = defaults.bool(forKey: "showInDock") ? .on : .off
         showNotificationsCheckbox.state = defaults.bool(forKey: "showNotifications") ? .on : .off
 
         // Shortcuts
-        startStopRecorder.shortcut = loadShortcut(forKey: "startStopShortcut")
-        showHideHUDRecorder.shortcut = loadShortcut(forKey: "showHideHUDShortcut")
-        openSettingsRecorder.shortcut = loadShortcut(forKey: "openSettingsShortcut")
+        startMicOnlyRecorder.shortcut = loadShortcut(forKey: "startMicOnlyShortcut")
+        startMicPlusAppRecorder.shortcut = loadShortcut(forKey: "startMicPlusAppShortcut")
 
         // Output
         autoPasteCheckbox.state = defaults.bool(forKey: "autoPaste") ? .on : .off
         copyToClipboardCheckbox.state = defaults.bool(forKey: "copyToClipboard") ? .on : .off
-        showTimestampsCheckbox.state = defaults.bool(forKey: "showTimestamps") ? .on : .off
 
         // Audio
         defaultModePopup.selectItem(at: defaults.integer(forKey: "defaultMode"))
-        silenceDetectionCheckbox.state = defaults.bool(forKey: "silenceDetection") ? .on : .off
-        let threshold = defaults.double(forKey: "silenceThreshold")
-        if threshold != 0 {
-            silenceThresholdSlider.doubleValue = threshold
-        } else {
-            silenceThresholdSlider.doubleValue = -40
-        }
-        silenceThresholdValueLabel.stringValue = "\(Int(silenceThresholdSlider.doubleValue)) dB"
-        silenceThresholdSlider.isEnabled = silenceDetectionCheckbox.state == .on
 
         // Advanced
         let modelIndex = defaults.integer(forKey: "modelIndex")
@@ -515,41 +412,31 @@ final class SettingsWindowController: NSWindowController {
             modelPopup.selectItem(at: 4)  // Default to large-v3-turbo
         }
 
-        languagePopup.selectItem(at: defaults.integer(forKey: "languageIndex"))
-        translateCheckbox.state = defaults.bool(forKey: "translate") ? .on : .off
-
-        let beamSize = defaults.integer(forKey: "beamSize")
-        if beamSize > 0 {
-            beamSizeSlider.intValue = Int32(beamSize)
+        let languageIndex = defaults.integer(forKey: "languageIndex")
+        if languageIndex > 0 {
+            languagePopup.selectItem(at: languageIndex)
         } else {
-            beamSizeSlider.intValue = 5
+            languagePopup.selectItem(at: 1)  // Default to English
         }
-        beamSizeValueLabel.stringValue = "\(beamSizeSlider.intValue)"
     }
 
     private func saveSettings() {
         let defaults = UserDefaults.standard
 
         // General
-        defaults.set(launchAtLoginCheckbox.state == .on, forKey: "launchAtLogin")
         defaults.set(showInDockCheckbox.state == .on, forKey: "showInDock")
         defaults.set(showNotificationsCheckbox.state == .on, forKey: "showNotifications")
 
         // Output
         defaults.set(autoPasteCheckbox.state == .on, forKey: "autoPaste")
         defaults.set(copyToClipboardCheckbox.state == .on, forKey: "copyToClipboard")
-        defaults.set(showTimestampsCheckbox.state == .on, forKey: "showTimestamps")
 
         // Audio
         defaults.set(defaultModePopup.indexOfSelectedItem, forKey: "defaultMode")
-        defaults.set(silenceDetectionCheckbox.state == .on, forKey: "silenceDetection")
-        defaults.set(silenceThresholdSlider.doubleValue, forKey: "silenceThreshold")
 
         // Advanced
         defaults.set(modelPopup.indexOfSelectedItem, forKey: "modelIndex")
         defaults.set(languagePopup.indexOfSelectedItem, forKey: "languageIndex")
-        defaults.set(translateCheckbox.state == .on, forKey: "translate")
-        defaults.set(beamSizeSlider.intValue, forKey: "beamSize")
     }
 
     // MARK: - Actions
@@ -570,21 +457,6 @@ final class SettingsWindowController: NSWindowController {
         saveSettings()
     }
 
-    @objc private func silenceDetectionToggled() {
-        silenceThresholdSlider.isEnabled = silenceDetectionCheckbox.state == .on
-        saveSettings()
-    }
-
-    @objc private func silenceThresholdChanged() {
-        silenceThresholdValueLabel.stringValue = "\(Int(silenceThresholdSlider.doubleValue)) dB"
-        saveSettings()
-    }
-
-    @objc private func beamSizeChanged() {
-        beamSizeValueLabel.stringValue = "\(beamSizeSlider.intValue)"
-        saveSettings()
-    }
-
     @objc private func openSystemSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
             NSWorkspace.shared.open(url)
@@ -592,20 +464,21 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func resetShortcutsToDefaults() {
-        // Default: Cmd+Shift+Space for Start/Stop
-        let defaultStartStop = KeyboardShortcut(
-            keyCode: UInt32(kVK_Space),
+        // Default: Cmd+Shift+M for Mic-Only
+        let defaultMicOnly = KeyboardShortcut(
+            keyCode: UInt32(kVK_ANSI_M),
             modifierFlags: [.command, .shift]
         )
-        startStopRecorder.shortcut = defaultStartStop
-        saveShortcut(defaultStartStop, forKey: "startStopShortcut")
+        startMicOnlyRecorder.shortcut = defaultMicOnly
+        saveShortcut(defaultMicOnly, forKey: "startMicOnlyShortcut")
 
-        // No defaults for other shortcuts
-        showHideHUDRecorder.shortcut = nil
-        saveShortcut(nil, forKey: "showHideHUDShortcut")
-
-        openSettingsRecorder.shortcut = nil
-        saveShortcut(nil, forKey: "openSettingsShortcut")
+        // Default: Cmd+Shift+A for Mic + App Audio
+        let defaultMicPlusApp = KeyboardShortcut(
+            keyCode: UInt32(kVK_ANSI_A),
+            modifierFlags: [.command, .shift]
+        )
+        startMicPlusAppRecorder.shortcut = defaultMicPlusApp
+        saveShortcut(defaultMicPlusApp, forKey: "startMicPlusAppShortcut")
     }
 
     // MARK: - Shortcut Helpers

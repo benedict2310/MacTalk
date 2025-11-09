@@ -142,6 +142,12 @@ final class HUDWindowController: NSWindowController {
         window?.makeKeyAndOrderFront(nil)
         window?.alphaValue = 0.0
         window?.animator().alphaValue = 1.0
+        reset()
+    }
+
+    /// Reset HUD to initial state (clear text and levels)
+    func reset() {
+        textView.stringValue = "Recording..."
         resetLevels()
     }
 

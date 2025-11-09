@@ -16,6 +16,7 @@ final class StatusBarController {
     private var settingsController: SettingsWindowController?
 
     private var autoPaste = false
+    private var copyToClipboard = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
     private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -32,9 +33,27 @@ final class StatusBarController {
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
 
+    // Menu items for shortcut display
+    private var micOnlyMenuItem: NSMenuItem?
+    private var micPlusAppMenuItem: NSMenuItem?
+
     init() {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
+
+        // Load settings from UserDefaults
+        let defaults = UserDefaults.standard
+        autoPaste = defaults.bool(forKey: "autoPaste")
+
+        // Copy to clipboard defaults to true if not set
+        if defaults.object(forKey: "copyToClipboard") != nil {
+            copyToClipboard = defaults.bool(forKey: "copyToClipboard")
+        } else {
+            copyToClipboard = true  // Default
+        }
+
+        NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
+        NSLog("🔧 [MacTalk] Loaded copy-to-clipboard setting: \(copyToClipboard)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
@@ -126,15 +145,19 @@ final class StatusBarController {
         let menu = NSMenu()
 
         // Recording controls
-        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "m").target = self
-        let micPlusAppItem = menu.addItem(
-            withTitle: "Start (Mic + App Audio)",
-            action: #selector(startMicPlusApp),
-            keyEquivalent: "a"
-        )
-        micPlusAppItem.target = self
-        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s").target = self
+        micOnlyMenuItem = NSMenuItem(title: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "")
+        micOnlyMenuItem?.target = self
+        menu.addItem(micOnlyMenuItem!)
+
+        micPlusAppMenuItem = NSMenuItem(title: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "")
+        micPlusAppMenuItem?.target = self
+        menu.addItem(micPlusAppMenuItem!)
+
+        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "").target = self
         menu.addItem(NSMenuItem.separator())
+
+        // Update menu shortcuts with current values
+        updateMenuShortcuts()
 
         // Settings
         let autoPasteItem = NSMenuItem(
@@ -259,6 +282,11 @@ final class StatusBarController {
     @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
         autoPaste.toggle()
         sender.state = autoPaste ? .on : .off
+
+        // Save to UserDefaults
+        let defaults = UserDefaults.standard
+        defaults.set(autoPaste, forKey: "autoPaste")
+        NSLog("🔧 [MacTalk] Auto-paste setting changed to: \(autoPaste)")
     }
 
     @objc private func selectModel(_ sender: NSMenuItem) {
@@ -453,21 +481,30 @@ final class StatusBarController {
 
     private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
         controller.onPartial = { [weak self] text in
-            DispatchQueue.main.async {
-                self?.hudController?.update(text: text)
-            }
+            // Disabled: Partial transcripts are often inaccurate
+            // HUD will show "Recording..." until final transcript is ready
+            // DispatchQueue.main.async {
+            //     self?.hudController?.update(text: text)
+            // }
         }
 
         controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: "Final: \(text)")
-                ClipboardManager.setClipboard(text)
 
-                if self?.autoPaste == true {
+                // Copy to clipboard if enabled
+                if self?.copyToClipboard == true {
+                    ClipboardManager.setClipboard(text)
+                }
+
+                // Auto-paste if enabled (requires clipboard copy)
+                if self?.autoPaste == true && self?.copyToClipboard == true {
                     ClipboardManager.pasteIfAllowed()
                 }
 
-                self?.showNotification(title: "Transcription Complete", message: "Text copied to clipboard")
+                // Show notification
+                let message = self?.copyToClipboard == true ? "Text copied to clipboard" : "Transcription complete"
+                self?.showNotification(title: "Transcription Complete", message: message)
             }
         }
 
@@ -615,6 +652,55 @@ final class StatusBarController {
         hudController?.close()
     }
 
+    // MARK: - Menu Shortcut Display
+
+    private func updateMenuShortcuts() {
+        let defaults = UserDefaults.standard
+
+        // Update Mic-Only shortcut
+        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcut)
+        }
+
+        // Update Mic + App Audio shortcut
+        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcut)
+        }
+    }
+
+    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut) {
+        guard let menuItem = menuItem else { return }
+
+        // Get the base title without any previous shortcut
+        let baseTitle = menuItem.title.components(separatedBy: "\t").first ?? menuItem.title
+
+        // Create attributed string with tab-separated shortcut
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.tabStops = [NSTextTab(textAlignment: .right, location: 260)]
+
+        let attributedTitle = NSMutableAttributedString(string: "\(baseTitle)\t\(shortcut.displayString)")
+        attributedTitle.addAttribute(
+            .paragraphStyle,
+            value: paragraphStyle,
+            range: NSRange(location: 0, length: attributedTitle.length)
+        )
+
+        // Make the shortcut text grey
+        let shortcutRange = NSRange(
+            location: baseTitle.count + 1,
+            length: shortcut.displayString.count
+        )
+        attributedTitle.addAttribute(
+            .foregroundColor,
+            value: NSColor.tertiaryLabelColor,
+            range: shortcutRange
+        )
+
+        menuItem.attributedTitle = attributedTitle
+    }
+
     // MARK: - App Picker
 
     private func showAppPicker() {
@@ -643,54 +729,41 @@ final class StatusBarController {
         // Load shortcuts from UserDefaults
         let defaults = UserDefaults.standard
 
-        // Start/Stop Recording
-        if let data = defaults.data(forKey: "startStopShortcut"),
+        // Start Mic-Only Recording (toggle behavior)
+        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             if let hotkeyID = hotkeyManager.register(
                 keyCode: shortcut.keyCode,
                 modifiers: shortcut.carbonModifiers,
                 handler: { [weak self] in
-                    self?.toggleRecording()
+                    self?.toggleMicOnly()
                 }
             ) {
-                registeredHotkeyIDs["startStop"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Start/Stop shortcut: \(shortcut.displayString)")
+                registeredHotkeyIDs["startMicOnly"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Start Mic-Only shortcut: \(shortcut.displayString)")
             }
         }
 
-        // Show/Hide HUD
-        if let data = defaults.data(forKey: "showHideHUDShortcut"),
+        // Start Mic + App Audio Recording (toggle behavior)
+        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             if let hotkeyID = hotkeyManager.register(
                 keyCode: shortcut.keyCode,
                 modifiers: shortcut.carbonModifiers,
                 handler: { [weak self] in
-                    self?.toggleHUD()
+                    self?.toggleMicPlusApp()
                 }
             ) {
-                registeredHotkeyIDs["showHideHUD"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Show/Hide HUD shortcut: \(shortcut.displayString)")
+                registeredHotkeyIDs["startMicPlusApp"] = hotkeyID
+                NSLog("✅ [MacTalk] Registered Start Mic+App shortcut: \(shortcut.displayString)")
             }
         }
 
-        // Open Settings
-        if let data = defaults.data(forKey: "openSettingsShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            if let hotkeyID = hotkeyManager.register(
-                keyCode: shortcut.keyCode,
-                modifiers: shortcut.carbonModifiers,
-                handler: { [weak self] in
-                    self?.showSettings()
-                }
-            ) {
-                registeredHotkeyIDs["openSettings"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Open Settings shortcut: \(shortcut.displayString)")
-            }
-        }
     }
 
     @objc private func shortcutsDidChange() {
         registerShortcuts()
+        updateMenuShortcuts()
     }
 
     private func toggleRecording() {
@@ -704,6 +777,22 @@ final class StatusBarController {
             } else {
                 startRecording()
             }
+        }
+    }
+
+    private func toggleMicOnly() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startMicOnly()
+        }
+    }
+
+    private func toggleMicPlusApp() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startMicPlusApp()
         }
     }
 
