@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import ScreenCaptureKit
 
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
@@ -734,22 +735,93 @@ final class StatusBarController {
     // MARK: - App Picker
 
     private func showAppPicker() {
-        // FIX P0: Retain the picker controller so it stays alive
-        let picker = AppPickerWindowController()
-        self.appPickerController = picker
+        NSLog("🎬 [StatusBar] showAppPicker() - starting to load audio sources...")
 
-        picker.onSelection = { [weak self] source in
-            self?.selectedAudioSource = source
-            self?.appPickerController = nil  // Release after selection
-            self?.startRecording()
+        // Pattern 1: Preload → Inject → Then show
+        // Load data FIRST, then create window controller with data
+        Task { @MainActor in
+            do {
+                let sources = try await loadAudioSources()
+
+                guard !sources.isEmpty else {
+                    NSLog("⚠️ [StatusBar] No audio sources available")
+                    showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
+                    return
+                }
+
+                NSLog("✅ [StatusBar] Loaded \(sources.count) audio sources - creating window controller...")
+
+                // Now create window controller WITH data already available
+                let picker = AppPickerWindowController(sources: sources)
+                self.appPickerController = picker
+
+                picker.onSelection = { [weak self] source in
+                    NSLog("✅ [StatusBar] Audio source selected: \(source.name)")
+                    self?.selectedAudioSource = source
+                    self?.appPickerController = nil  // Release after selection
+                    self?.startRecording()
+                }
+
+                // Force window load synchronously BEFORE showing
+                _ = picker.window
+                NSLog("🎬 [StatusBar] Window loaded - now showing...")
+
+                // Now show the window (data is already loaded and injected)
+                picker.showWindow(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                NSLog("✅ [StatusBar] App picker window shown successfully")
+
+            } catch {
+                NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
+                showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func loadAudioSources() async throws -> [AppPickerWindowController.AudioSource] {
+        NSLog("🔍 [StatusBar] loadAudioSources() - checking screen recording permission...")
+
+        // Check screen recording permission first
+        let hasPermission = await Permissions.checkScreenRecordingPermission()
+        NSLog("🔍 [StatusBar] Screen recording permission: \(hasPermission)")
+
+        guard hasPermission else {
+            NSLog("❌ [StatusBar] Screen recording permission NOT granted")
+            showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
+            return []
         }
 
-        // FIX: Wait for data to load before showing window
-        picker.onReady = { [weak picker] in
-            NSLog("🎬 [StatusBar] App picker ready, showing window")
-            picker?.showWindow(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        NSLog("🔍 [StatusBar] Fetching shareable content...")
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        NSLog("✅ [StatusBar] Successfully fetched shareable content")
+        NSLog("🔍 [StatusBar] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
+
+        var sources: [AppPickerWindowController.AudioSource] = []
+
+        // Add system audio option
+        if let display = content.displays.first {
+            NSLog("🔍 [StatusBar] Adding system audio source for display: \(display.displayID)")
+            sources.append(.systemAudio(display: display))
         }
+
+        // Add running applications with windows
+        for app in content.applications {
+            let hasWindow = content.windows.contains(where: { $0.owningApplication == app })
+            if hasWindow {
+                NSLog("🔍 [StatusBar] Adding app: \(app.applicationName)")
+                sources.append(.fromApp(app))
+            }
+        }
+
+        NSLog("✅ [StatusBar] Total audio sources found: \(sources.count)")
+
+        // Sort alphabetically
+        sources.sort { $0.name < $1.name }
+
+        return sources
     }
 
     // MARK: - Hotkeys
