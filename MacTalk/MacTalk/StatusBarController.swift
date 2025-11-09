@@ -16,6 +16,7 @@ final class StatusBarController {
     private var settingsController: SettingsWindowController?
 
     private var autoPaste = false
+    private var copyToClipboard = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
     private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -43,7 +44,16 @@ final class StatusBarController {
         // Load settings from UserDefaults
         let defaults = UserDefaults.standard
         autoPaste = defaults.bool(forKey: "autoPaste")
+
+        // Copy to clipboard defaults to true if not set
+        if defaults.object(forKey: "copyToClipboard") != nil {
+            copyToClipboard = defaults.bool(forKey: "copyToClipboard")
+        } else {
+            copyToClipboard = true  // Default
+        }
+
         NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
+        NSLog("🔧 [MacTalk] Loaded copy-to-clipboard setting: \(copyToClipboard)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
@@ -481,13 +491,20 @@ final class StatusBarController {
         controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
                 self?.hudController?.update(text: "Final: \(text)")
-                ClipboardManager.setClipboard(text)
 
-                if self?.autoPaste == true {
+                // Copy to clipboard if enabled
+                if self?.copyToClipboard == true {
+                    ClipboardManager.setClipboard(text)
+                }
+
+                // Auto-paste if enabled (requires clipboard copy)
+                if self?.autoPaste == true && self?.copyToClipboard == true {
                     ClipboardManager.pasteIfAllowed()
                 }
 
-                self?.showNotification(title: "Transcription Complete", message: "Text copied to clipboard")
+                // Show notification
+                let message = self?.copyToClipboard == true ? "Text copied to clipboard" : "Transcription complete"
+                self?.showNotification(title: "Transcription Complete", message: message)
             }
         }
 
