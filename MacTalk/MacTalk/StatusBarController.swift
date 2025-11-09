@@ -17,6 +17,7 @@ final class StatusBarController {
 
     private var autoPaste = false
     private var copyToClipboard = true  // Default to true
+    private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
     private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -52,8 +53,16 @@ final class StatusBarController {
             copyToClipboard = true  // Default
         }
 
+        // Show notifications defaults to true if not set
+        if defaults.object(forKey: "showNotifications") != nil {
+            showNotifications = defaults.bool(forKey: "showNotifications")
+        } else {
+            showNotifications = true  // Default
+        }
+
         NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
         NSLog("🔧 [MacTalk] Loaded copy-to-clipboard setting: \(copyToClipboard)")
+        NSLog("🔧 [MacTalk] Loaded show-notifications setting: \(showNotifications)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
@@ -640,6 +649,12 @@ final class StatusBarController {
     }
 
     private func showNotification(title: String, message: String) {
+        // Only show notifications if enabled in settings
+        guard showNotifications else {
+            NSLog("🔕 [MacTalk] Notifications disabled - skipping: \(title)")
+            return
+        }
+
         let notification = NSUserNotification()
         notification.title = title
         notification.informativeText = message
