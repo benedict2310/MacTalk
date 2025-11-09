@@ -725,20 +725,28 @@ final class StatusBarController {
         guard let item = menuItem else { return }
 
         if let shortcut = shortcut {
-            // Convert Carbon key code to NSEvent key equivalent
-            // For display purposes, we'll show it as attributed text
-            let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.secondaryLabelColor,
-                .font: NSFont.menuFont(ofSize: 0)  // 0 = default menu font size
+            // Use attributed string with right-aligned tab stop for proper macOS menu styling
+            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
+
+            // Create paragraph style with right-aligned tab stop
+            let paragraphStyle = NSMutableParagraphStyle()
+            let tabStop = NSTextTab(textAlignment: .right, location: 260, options: [:])  // 260 pts is typical for menu shortcuts
+            paragraphStyle.tabStops = [tabStop]
+
+            // Title with default color
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .paragraphStyle: paragraphStyle,
+                .font: NSFont.menuFont(ofSize: 0)
             ]
 
-            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
-            let titleAttr = NSAttributedString(string: baseTitle)
-            let shortcutAttr = NSAttributedString(string: "  " + shortcut.displayString, attributes: attrs)
+            // Shortcut with secondary (grey) color
+            let shortcutAttrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.tertiaryLabelColor,  // Use tertiaryLabelColor for lighter grey like system menus
+                .font: NSFont.menuFont(ofSize: 0)
+            ]
 
-            let combined = NSMutableAttributedString()
-            combined.append(titleAttr)
-            combined.append(shortcutAttr)
+            let combined = NSMutableAttributedString(string: baseTitle + "\t", attributes: titleAttrs)
+            combined.append(NSAttributedString(string: shortcut.displayString, attributes: shortcutAttrs))
 
             item.attributedTitle = combined
         } else {
