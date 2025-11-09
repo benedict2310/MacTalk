@@ -42,8 +42,6 @@ final class SettingsWindowController: NSWindowController {
     // Shortcuts tab controls
     private let startMicOnlyRecorder = ShortcutRecorderView()
     private let startMicPlusAppRecorder = ShortcutRecorderView()
-    private let showHideHUDRecorder = ShortcutRecorderView()
-    private let openSettingsRecorder = ShortcutRecorderView()
 
     // MARK: - Initialization
 
@@ -258,30 +256,6 @@ final class SettingsWindowController: NSWindowController {
             self?.saveShortcut(shortcut, forKey: "startMicPlusAppShortcut")
         }
 
-        // Show/Hide HUD
-        let showHideLabel = NSTextField(labelWithString: "Show/Hide HUD:")
-        showHideLabel.frame = NSRect(x: 20, y: 180, width: 180, height: 25)
-        showHideLabel.isEditable = false
-        showHideLabel.isBordered = false
-        showHideLabel.backgroundColor = .clear
-
-        showHideHUDRecorder.frame = NSRect(x: 210, y: 180, width: 250, height: 25)
-        showHideHUDRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "showHideHUDShortcut")
-        }
-
-        // Open Settings
-        let openSettingsLabel = NSTextField(labelWithString: "Open Settings:")
-        openSettingsLabel.frame = NSRect(x: 20, y: 145, width: 180, height: 25)
-        openSettingsLabel.isEditable = false
-        openSettingsLabel.isBordered = false
-        openSettingsLabel.backgroundColor = .clear
-
-        openSettingsRecorder.frame = NSRect(x: 210, y: 145, width: 250, height: 25)
-        openSettingsRecorder.onShortcutChanged = { [weak self] shortcut in
-            self?.saveShortcut(shortcut, forKey: "openSettingsShortcut")
-        }
-
         // Info text
         let infoLabel = NSTextField(wrappingLabelWithString: """
         Click on a shortcut field and press the desired key combination.
@@ -303,10 +277,6 @@ final class SettingsWindowController: NSWindowController {
         view.addSubview(startMicOnlyRecorder)
         view.addSubview(startMicPlusAppLabel)
         view.addSubview(startMicPlusAppRecorder)
-        view.addSubview(showHideLabel)
-        view.addSubview(showHideHUDRecorder)
-        view.addSubview(openSettingsLabel)
-        view.addSubview(openSettingsRecorder)
         view.addSubview(infoLabel)
         view.addSubview(resetButton)
 
@@ -503,8 +473,6 @@ final class SettingsWindowController: NSWindowController {
         // Shortcuts
         startMicOnlyRecorder.shortcut = loadShortcut(forKey: "startMicOnlyShortcut")
         startMicPlusAppRecorder.shortcut = loadShortcut(forKey: "startMicPlusAppShortcut")
-        showHideHUDRecorder.shortcut = loadShortcut(forKey: "showHideHUDShortcut")
-        openSettingsRecorder.shortcut = loadShortcut(forKey: "openSettingsShortcut")
 
         // Output
         autoPasteCheckbox.state = defaults.bool(forKey: "autoPaste") ? .on : .off
@@ -623,13 +591,6 @@ final class SettingsWindowController: NSWindowController {
         )
         startMicPlusAppRecorder.shortcut = defaultMicPlusApp
         saveShortcut(defaultMicPlusApp, forKey: "startMicPlusAppShortcut")
-
-        // No defaults for other shortcuts
-        showHideHUDRecorder.shortcut = nil
-        saveShortcut(nil, forKey: "showHideHUDShortcut")
-
-        openSettingsRecorder.shortcut = nil
-        saveShortcut(nil, forKey: "openSettingsShortcut")
     }
 
     // MARK: - Shortcut Helpers

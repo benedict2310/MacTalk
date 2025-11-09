@@ -32,10 +32,6 @@ final class StatusBarController {
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
 
-    // Menu items (to update shortcut display)
-    private var micOnlyMenuItem: NSMenuItem?
-    private var micPlusAppMenuItem: NSMenuItem?
-
     init() {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
@@ -130,16 +126,8 @@ final class StatusBarController {
         let menu = NSMenu()
 
         // Recording controls
-        micOnlyMenuItem = menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "")
-        micOnlyMenuItem?.target = self
-
-        micPlusAppMenuItem = menu.addItem(
-            withTitle: "Start (Mic + App Audio)",
-            action: #selector(startMicPlusApp),
-            keyEquivalent: ""
-        )
-        micPlusAppMenuItem?.target = self
-
+        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "").target = self
         menu.addItem(NSMenuItem.separator())
 
@@ -665,10 +653,6 @@ final class StatusBarController {
                 registeredHotkeyIDs["startMicOnly"] = hotkeyID
                 NSLog("✅ [MacTalk] Registered Start Mic-Only shortcut: \(shortcut.displayString)")
             }
-            // Update menu item display
-            updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcut)
-        } else {
-            updateMenuItemShortcut(micOnlyMenuItem, shortcut: nil)
         }
 
         // Start Mic + App Audio Recording (toggle behavior)
@@ -684,77 +668,8 @@ final class StatusBarController {
                 registeredHotkeyIDs["startMicPlusApp"] = hotkeyID
                 NSLog("✅ [MacTalk] Registered Start Mic+App shortcut: \(shortcut.displayString)")
             }
-            // Update menu item display
-            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcut)
-        } else {
-            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: nil)
         }
 
-        // Show/Hide HUD
-        if let data = defaults.data(forKey: "showHideHUDShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            if let hotkeyID = hotkeyManager.register(
-                keyCode: shortcut.keyCode,
-                modifiers: shortcut.carbonModifiers,
-                handler: { [weak self] in
-                    self?.toggleHUD()
-                }
-            ) {
-                registeredHotkeyIDs["showHideHUD"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Show/Hide HUD shortcut: \(shortcut.displayString)")
-            }
-        }
-
-        // Open Settings
-        if let data = defaults.data(forKey: "openSettingsShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            if let hotkeyID = hotkeyManager.register(
-                keyCode: shortcut.keyCode,
-                modifiers: shortcut.carbonModifiers,
-                handler: { [weak self] in
-                    self?.showSettings()
-                }
-            ) {
-                registeredHotkeyIDs["openSettings"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Open Settings shortcut: \(shortcut.displayString)")
-            }
-        }
-    }
-
-    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut?) {
-        guard let item = menuItem else { return }
-
-        if let shortcut = shortcut {
-            // Use attributed string with right-aligned tab stop for proper macOS menu styling
-            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
-
-            // Create paragraph style with right-aligned tab stop
-            let paragraphStyle = NSMutableParagraphStyle()
-            let tabStop = NSTextTab(textAlignment: .right, location: 260, options: [:])  // 260 pts is typical for menu shortcuts
-            paragraphStyle.tabStops = [tabStop]
-
-            // Title with default color
-            let titleAttrs: [NSAttributedString.Key: Any] = [
-                .paragraphStyle: paragraphStyle,
-                .font: NSFont.menuFont(ofSize: 0)
-            ]
-
-            // Shortcut with secondary (grey) color
-            let shortcutAttrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.tertiaryLabelColor,  // Use tertiaryLabelColor for lighter grey like system menus
-                .font: NSFont.menuFont(ofSize: 0)
-            ]
-
-            let combined = NSMutableAttributedString(string: baseTitle + "\t", attributes: titleAttrs)
-            combined.append(NSAttributedString(string: shortcut.displayString, attributes: shortcutAttrs))
-
-            item.attributedTitle = combined
-        } else {
-            // Remove any existing shortcut display
-            let baseTitle = item.title.components(separatedBy: "\t").first ?? item.title
-            item.title = baseTitle
-            item.attributedTitle = nil
-        }
     }
 
     @objc private func shortcutsDidChange() {
