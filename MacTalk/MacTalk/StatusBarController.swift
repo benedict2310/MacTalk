@@ -502,32 +502,33 @@ final class StatusBarController {
                 NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
                 self?.hudController?.update(text: "Final: \(text)")
 
-                // Copy to clipboard if enabled
                 let copyEnabled = self?.copyToClipboard ?? false
-                NSLog("📋 [StatusBar] copyToClipboard setting: \(copyEnabled)")
-
-                if copyEnabled {
-                    NSLog("📋 [StatusBar] Copying text to clipboard...")
-                    ClipboardManager.setClipboard(text)
-                } else {
-                    NSLog("⏭️ [StatusBar] Skipping clipboard copy (disabled in settings)")
-                }
-
-                // Auto-paste if enabled (requires clipboard copy)
                 let autoPasteEnabled = self?.autoPaste ?? false
+                NSLog("📋 [StatusBar] copyToClipboard setting: \(copyEnabled)")
                 NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
 
-                if autoPasteEnabled && copyEnabled {
-                    NSLog("🔄 [StatusBar] Auto-paste is enabled and clipboard was copied - attempting paste...")
+                // Auto-paste works independently - always copy to clipboard for paste
+                if autoPasteEnabled {
+                    NSLog("🔄 [StatusBar] Auto-paste is enabled - copying to clipboard and pasting...")
+                    ClipboardManager.setClipboard(text)
                     ClipboardManager.pasteIfAllowed()
-                } else if autoPasteEnabled && !copyEnabled {
-                    NSLog("⚠️ [StatusBar] Auto-paste is enabled but clipboard copy is disabled - skipping paste")
+                } else if copyEnabled {
+                    // Only copy if not already copied by auto-paste
+                    NSLog("📋 [StatusBar] Copying text to clipboard (auto-paste disabled)...")
+                    ClipboardManager.setClipboard(text)
                 } else {
-                    NSLog("⏭️ [StatusBar] Auto-paste is disabled - skipping paste")
+                    NSLog("⏭️ [StatusBar] Both copy and auto-paste disabled - no clipboard action")
                 }
 
                 // Show notification
-                let message = copyEnabled ? "Text copied to clipboard" : "Transcription complete"
+                let message: String
+                if autoPasteEnabled {
+                    message = "Text pasted"
+                } else if copyEnabled {
+                    message = "Text copied to clipboard"
+                } else {
+                    message = "Transcription complete"
+                }
                 NSLog("📢 [StatusBar] Showing notification: \(message)")
                 self?.showNotification(title: "Transcription Complete", message: message)
             }
