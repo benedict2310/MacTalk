@@ -47,9 +47,9 @@ MacTalk has undergone a settings cleanup to remove non-functional settings and i
 
 ---
 
-### 🔄 Phase 2.2: Copy to Clipboard Setting (IN PROGRESS)
+### ✅ Phase 2.2: Copy to Clipboard Setting (COMPLETED)
 
-**Status:** 🔄 To be implemented
+**Status:** ✅ Fully implemented and tested
 
 **Current Behavior:** Always copies to clipboard (hardcoded)
 
@@ -62,20 +62,22 @@ MacTalk has undergone a settings cleanup to remove non-functional settings and i
 
 ---
 
-### 📋 Phase 2.3: Show Notifications Setting (PENDING)
+### ✅ Phase 2.3: Show Notifications Setting (COMPLETED)
 
-**Status:** ⏳ Pending
+**Status:** ✅ Fully implemented and tested
 
-**Current Behavior:** Always shows notifications (hardcoded)
+**Implementation:**
+- Added `showNotifications` property (defaults to true)
+- Loads setting from UserDefaults on initialization
+- Modified `showNotification()` method to check setting before displaying
+- Integration test passing
 
-**Required Changes:**
-1. Load `showNotifications` setting from UserDefaults
-2. Check setting before calling `showNotification()`
-3. Update all notification calls to respect the setting
+**Files Modified:**
+- `MacTalk/MacTalk/StatusBarController.swift`
 
-**Locations:**
-- `StatusBarController.swift` lines 509, 517, 620
-- Various notification calls throughout the app
+**Test Results:** 1 integration test passing ✅
+
+**Commit:** `feat: Implement Show Notifications setting with tests` (2a0e5f7)
 
 ---
 
@@ -200,9 +202,9 @@ MacTalk has undergone a settings cleanup to remove non-functional settings and i
 
 ### High Priority (Core Features)
 1. ✅ Auto-paste - **DONE**
-2. 🔄 Copy to Clipboard - **IN PROGRESS**
-3. ⏳ Show Notifications - Easy to implement
-4. ⏳ Language Selection - Core transcription feature
+2. ✅ Copy to Clipboard - **DONE**
+3. ✅ Show Notifications - **DONE**
+4. 🔄 Language Selection - **IN PROGRESS** - Core transcription feature
 
 ### Medium Priority (Nice to Have)
 5. ⏳ Model Selection Sync - Settings and menu should agree
@@ -226,9 +228,11 @@ MacTalk has undergone a settings cleanup to remove non-functional settings and i
 
 - `41dfe63` - Phase 1: Remove unimplemented settings (-112 lines)
 - `647068d` - Phase 2.1: Implement Auto-paste setting (+264 lines, 11 tests)
-- Next: Phase 2.2 onwards...
+- `86c8741` - Phase 2.2: Implement Copy to Clipboard setting
+- `2a0e5f7` - Phase 2.3: Implement Show Notifications setting
+- Next: Phase 2.4 onwards...
 
 ---
 
 **Last Updated:** 2025-11-09
-**Status:** Phase 2.2 (Copy to Clipboard) ready to implement
+**Status:** Phase 2.4 (Language Selection) in progress
