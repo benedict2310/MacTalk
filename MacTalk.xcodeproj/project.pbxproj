@@ -37,6 +37,7 @@
 		8C730F7115014CA1B0A7A91C /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */; };
 		9117504B467C3D18350E67A9 /* AudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09A2146139DC4C5E50571381 /* AudioMixer.swift */; };
 		9C3CFF8B7A8A8078163F8897 /* Phase4IntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */; };
+		A30DE5044D7885B483E86217 /* AsyncTimeout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936816A109576B7AC6EB9727 /* AsyncTimeout.swift */; };
 		AE41026963FA04BD04035A0D /* RingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */; };
 		BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */; };
 		C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */; };
@@ -89,6 +90,7 @@
 		739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
 		84150222B014F04E94D7B6B5 /* WhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngine.swift; sourceTree = "<group>"; };
+		936816A109576B7AC6EB9727 /* AsyncTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTimeout.swift; sourceTree = "<group>"; };
 		98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureIntegrationTests.swift; sourceTree = "<group>"; };
 		99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowControllerTests.swift; sourceTree = "<group>"; };
 		99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixerTests.swift; sourceTree = "<group>"; };
@@ -173,6 +175,7 @@
 		5FC8D1D6C4F04D17B17437B9 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				936816A109576B7AC6EB9727 /* AsyncTimeout.swift */,
 				E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */,
 			);
 			path = Utilities;
@@ -395,6 +398,7 @@
 			files = (
 				2758A4C87A0B8F80B244A10E /* AppDelegate.swift in Sources */,
 				84D42F69C99B386850434DC8 /* AppPickerWindowController.swift in Sources */,
+				A30DE5044D7885B483E86217 /* AsyncTimeout.swift in Sources */,
 				C289FCFA43BC6160F45CC5EF /* AudioCapture.swift in Sources */,
 				280C2A87D802749506DCE8E1 /* AudioLevelMeterView.swift in Sources */,
 				BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */,

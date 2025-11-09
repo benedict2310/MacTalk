@@ -8,6 +8,33 @@
 import AppKit
 import ScreenCaptureKit
 
+/// Errors that can occur during screen capture operations
+enum ScreenCaptureError: Error, LocalizedError {
+    case timeout
+    case permissionDenied
+    case noSourcesAvailable
+
+    var errorDescription: String? {
+        switch self {
+        case .timeout:
+            return """
+            Screen capture system is not responding.
+
+            This is a known macOS bug. Try:
+            1. Run: killall -9 replayd
+            2. Log out and back in
+            3. Restart your Mac
+
+            The 'replayd' daemon handles screen recording and can become unresponsive.
+            """
+        case .permissionDenied:
+            return "Screen Recording permission is not granted."
+        case .noSourcesAvailable:
+            return "No audio sources are available for capture."
+        }
+    }
+}
+
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
     private var statusItem: NSStatusItem!
@@ -237,39 +264,17 @@ final class StatusBarController {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
 
-        // Check screen recording permission first
-        Task {
-            NSLog("🔍 [StatusBar] Checking screen recording permission before showing picker...")
-            let hasPermission = await Permissions.checkScreenRecordingPermission()
+        // Check screen recording permission first (synchronous check)
+        NSLog("🔍 [StatusBar] Checking screen recording permission before showing picker...")
+        let hasPermission = Permissions.checkScreenRecordingPermission()
 
-            await MainActor.run {
-                if hasPermission {
-                    NSLog("✅ [StatusBar] Permission granted, showing app picker")
-                    showAppPicker()
-                } else {
-                    NSLog("❌ [StatusBar] Screen recording permission not granted")
-                    let alert = NSAlert()
-                    alert.messageText = "Screen Recording Permission Required"
-                    alert.informativeText = """
-                    To capture app audio, MacTalk needs Screen Recording permission.
-
-                    Steps to enable:
-                    1. Open System Settings
-                    2. Go to Privacy & Security > Screen Recording
-                    3. Turn on the toggle for MacTalk
-                    4. Restart MacTalk
-
-                    Would you like to open System Settings now?
-                    """
-                    alert.alertStyle = .warning
-                    alert.addButton(withTitle: "Open System Settings")
-                    alert.addButton(withTitle: "Cancel")
-
-                    if alert.runModal() == .alertFirstButtonReturn {
-                        Permissions.openScreenRecordingSettings()
-                    }
-                }
-            }
+        if hasPermission {
+            NSLog("✅ [StatusBar] Permission granted, showing app picker")
+            showAppPicker()
+        } else {
+            NSLog("❌ [StatusBar] Screen recording permission not granted")
+            // Show permission guide dialog
+            Permissions.ensureScreenRecordingGuide()
         }
     }
 
@@ -771,6 +776,9 @@ final class StatusBarController {
                 NSApp.activate(ignoringOtherApps: true)
                 NSLog("✅ [StatusBar] App picker window shown successfully")
 
+            } catch let error as ScreenCaptureError {
+                NSLog("❌ [StatusBar] Screen capture error: \(error)")
+                showError(error.localizedDescription ?? "Unknown screen capture error")
             } catch {
                 NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
                 showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
@@ -781,8 +789,8 @@ final class StatusBarController {
     private func loadAudioSources() async throws -> [AppPickerWindowController.AudioSource] {
         NSLog("🔍 [StatusBar] loadAudioSources() - checking screen recording permission...")
 
-        // Check screen recording permission first
-        let hasPermission = await Permissions.checkScreenRecordingPermission()
+        // Check screen recording permission first (synchronous, reliable)
+        let hasPermission = Permissions.checkScreenRecordingPermission()
         NSLog("🔍 [StatusBar] Screen recording permission: \(hasPermission)")
 
         guard hasPermission else {
@@ -791,13 +799,23 @@ final class StatusBarController {
             return []
         }
 
-        NSLog("🔍 [StatusBar] Fetching shareable content...")
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
-            onScreenWindowsOnly: true
-        )
-        NSLog("✅ [StatusBar] Successfully fetched shareable content")
-        NSLog("🔍 [StatusBar] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
+        NSLog("🔍 [StatusBar] Fetching shareable content with timeout protection...")
+
+        // Wrap SCShareableContent with timeout protection to prevent infinite hangs
+        let content: SCShareableContent
+        do {
+            content = try await withTimeout(seconds: 5) {
+                try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+            }
+            NSLog("✅ [StatusBar] Successfully fetched shareable content")
+            NSLog("🔍 [StatusBar] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
+        } catch is TimeoutError {
+            NSLog("⏱️ [StatusBar] SCShareableContent timed out after 5 seconds")
+            throw ScreenCaptureError.timeout
+        }
 
         var sources: [AppPickerWindowController.AudioSource] = []
 
