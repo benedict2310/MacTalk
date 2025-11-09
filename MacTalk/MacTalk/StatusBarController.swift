@@ -32,9 +32,18 @@ final class StatusBarController {
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
 
+    // Menu items for shortcut display
+    private var micOnlyMenuItem: NSMenuItem?
+    private var micPlusAppMenuItem: NSMenuItem?
+
     init() {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
+
+        // Load settings from UserDefaults
+        let defaults = UserDefaults.standard
+        autoPaste = defaults.bool(forKey: "autoPaste")
+        NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
@@ -126,10 +135,19 @@ final class StatusBarController {
         let menu = NSMenu()
 
         // Recording controls
-        menu.addItem(withTitle: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "").target = self
+        micOnlyMenuItem = NSMenuItem(title: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "")
+        micOnlyMenuItem?.target = self
+        menu.addItem(micOnlyMenuItem!)
+
+        micPlusAppMenuItem = NSMenuItem(title: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "")
+        micPlusAppMenuItem?.target = self
+        menu.addItem(micPlusAppMenuItem!)
+
         menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "").target = self
         menu.addItem(NSMenuItem.separator())
+
+        // Update menu shortcuts with current values
+        updateMenuShortcuts()
 
         // Settings
         let autoPasteItem = NSMenuItem(
@@ -254,6 +272,11 @@ final class StatusBarController {
     @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
         autoPaste.toggle()
         sender.state = autoPaste ? .on : .off
+
+        // Save to UserDefaults
+        let defaults = UserDefaults.standard
+        defaults.set(autoPaste, forKey: "autoPaste")
+        NSLog("🔧 [MacTalk] Auto-paste setting changed to: \(autoPaste)")
     }
 
     @objc private func selectModel(_ sender: NSMenuItem) {
@@ -612,6 +635,55 @@ final class StatusBarController {
         hudController?.close()
     }
 
+    // MARK: - Menu Shortcut Display
+
+    private func updateMenuShortcuts() {
+        let defaults = UserDefaults.standard
+
+        // Update Mic-Only shortcut
+        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcut)
+        }
+
+        // Update Mic + App Audio shortcut
+        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcut)
+        }
+    }
+
+    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut) {
+        guard let menuItem = menuItem else { return }
+
+        // Get the base title without any previous shortcut
+        let baseTitle = menuItem.title.components(separatedBy: "\t").first ?? menuItem.title
+
+        // Create attributed string with tab-separated shortcut
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.tabStops = [NSTextTab(textAlignment: .right, location: 260)]
+
+        let attributedTitle = NSMutableAttributedString(string: "\(baseTitle)\t\(shortcut.displayString)")
+        attributedTitle.addAttribute(
+            .paragraphStyle,
+            value: paragraphStyle,
+            range: NSRange(location: 0, length: attributedTitle.length)
+        )
+
+        // Make the shortcut text grey
+        let shortcutRange = NSRange(
+            location: baseTitle.count + 1,
+            length: shortcut.displayString.count
+        )
+        attributedTitle.addAttribute(
+            .foregroundColor,
+            value: NSColor.tertiaryLabelColor,
+            range: shortcutRange
+        )
+
+        menuItem.attributedTitle = attributedTitle
+    }
+
     // MARK: - App Picker
 
     private func showAppPicker() {
@@ -674,6 +746,7 @@ final class StatusBarController {
 
     @objc private func shortcutsDidChange() {
         registerShortcuts()
+        updateMenuShortcuts()
     }
 
     private func toggleRecording() {
