@@ -304,3 +304,4 @@ recordings/
 
 # Claude Code configuration (contains project-specific instructions)
 CLAUDE.md
+.claude/
