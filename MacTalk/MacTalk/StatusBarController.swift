@@ -273,6 +273,8 @@ final class StatusBarController {
             showAppPicker()
         } else {
             NSLog("❌ [StatusBar] Screen recording permission not granted")
+            // Request permission (triggers system prompt and registers with TCC)
+            Permissions.requestScreenRecordingPermission()
             // Show permission guide dialog
             Permissions.ensureScreenRecordingGuide()
         }
