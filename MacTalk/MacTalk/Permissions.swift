@@ -61,6 +61,7 @@ enum Permissions {
 
     /// Show informational alert about screen recording permission
     static func ensureScreenRecordingGuide() {
+        NSLog("📋 [Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
         alert.informativeText = """
