@@ -92,6 +92,14 @@ final class StatusBarController {
             object: nil
         )
 
+        // Listen for settings changes (including showNotifications)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsDidChange),
+            name: .settingsDidChange,
+            object: nil
+        )
+
         DLOG("=== StatusBarController.init() END ===")
     }
 
@@ -264,19 +272,26 @@ final class StatusBarController {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
 
-        // Check screen recording permission first (synchronous check)
-        NSLog("🔍 [StatusBar] Checking screen recording permission before showing picker...")
-        let hasPermission = Permissions.checkScreenRecordingPermission()
-
-        if hasPermission {
-            NSLog("✅ [StatusBar] Permission granted, showing app picker")
-            showAppPicker()
-        } else {
-            NSLog("❌ [StatusBar] Screen recording permission not granted")
-            // Request permission (triggers system prompt and registers with TCC)
-            Permissions.requestScreenRecordingPermission()
-            // Show permission guide dialog
-            Permissions.ensureScreenRecordingGuide()
+        // Check screen recording permission with ACTUAL test (not just CGPreflightScreenCaptureAccess)
+        NSLog("🔍 [StatusBar] Checking screen recording permission (testing with SCShareableContent)...")
+        Permissions.checkScreenRecordingPermissionActual { [weak self] hasPermission in
+            if hasPermission {
+                NSLog("✅ [StatusBar] Permission verified, showing app picker")
+                self?.showAppPicker()
+            } else {
+                NSLog("❌ [StatusBar] Screen recording permission not granted - requesting...")
+                // Request permission with proper flow
+                Permissions.requestScreenRecordingPermission { [weak self] granted in
+                    if granted {
+                        NSLog("✅ [StatusBar] User granted permission, showing app picker")
+                        self?.showAppPicker()
+                    } else {
+                        NSLog("⏳ [StatusBar] Permission not granted yet, showing guide")
+                        // Only show guide if permission still not granted after system dialog
+                        Permissions.showScreenRecordingGuide()
+                    }
+                }
+            }
         }
     }
 
@@ -891,6 +906,20 @@ final class StatusBarController {
     @objc private func shortcutsDidChange() {
         registerShortcuts()
         updateMenuShortcuts()
+    }
+
+    @objc private func settingsDidChange() {
+        // Reload settings from UserDefaults when they change
+        let defaults = UserDefaults.standard
+        autoPaste = defaults.bool(forKey: "autoPaste")
+
+        let newShowNotifications = defaults.object(forKey: "showNotifications") != nil ?
+            defaults.bool(forKey: "showNotifications") : true
+
+        if newShowNotifications != showNotifications {
+            NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
+            showNotifications = newShowNotifications
+        }
     }
 
     private func toggleRecording() {

@@ -429,6 +429,9 @@ final class SettingsWindowController: NSWindowController {
         // Advanced
         defaults.set(modelPopup.indexOfSelectedItem, forKey: "modelIndex")
         defaults.set(languagePopup.indexOfSelectedItem, forKey: "languageIndex")
+
+        // Notify that settings changed
+        NotificationCenter.default.post(name: .settingsDidChange, object: nil)
     }
 
     // MARK: - Actions
@@ -449,6 +452,34 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func outputSettingChanged() {
+        // Check if user is enabling auto-paste
+        let isEnablingAutoPaste = (autoPasteCheckbox.state == .on)
+
+        if isEnablingAutoPaste {
+            // Check accessibility permission proactively
+            if !Permissions.isAccessibilityTrusted() {
+                NSLog("⚠️ [Settings] Auto-paste enabled but accessibility permission not granted")
+
+                // Show alert to inform user
+                let alert = NSAlert()
+                alert.messageText = "Accessibility Permission Needed"
+                alert.informativeText = """
+                Auto-paste requires Accessibility permission.
+
+                Would you like to grant this permission now?
+                """
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Grant Permission")
+                alert.addButton(withTitle: "Later")
+
+                let response = alert.runModal()
+                if response == .alertFirstButtonReturn {
+                    // Request permission with system prompt
+                    Permissions.requestAccessibilityPermission()
+                }
+            }
+        }
+
         saveSettings()
     }
 
@@ -510,4 +541,5 @@ final class SettingsWindowController: NSWindowController {
 
 extension Notification.Name {
     static let shortcutsDidChange = Notification.Name("shortcutsDidChange")
+    static let settingsDidChange = Notification.Name("settingsDidChange")
 }
