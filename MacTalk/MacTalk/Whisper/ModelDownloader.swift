@@ -33,9 +33,9 @@ final class ModelDownloader: NSObject {
             case .noURLs: return "No download URLs are available."
             case .noSpace: return "Not enough free disk space."
             case .cancelled: return "Download was cancelled."
-            case .network(let e): return "Network error: \(e.localizedDescription)"
+            case .network(let error): return "Network error: \(error.localizedDescription)"
             case .badChecksum: return "Checksum verification failed."
-            case .io(let e): return "File error: \(e.localizedDescription)"
+            case .io(let error): return "File error: \(error.localizedDescription)"
             }
         }
     }

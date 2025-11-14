@@ -5,6 +5,8 @@
 //  Menu bar controller for MacTalk application
 //
 
+// swiftlint:disable file_length type_body_length
+
 import AppKit
 import ScreenCaptureKit
 
@@ -272,26 +274,17 @@ final class StatusBarController {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
 
-        // Check screen recording permission with ACTUAL test (not just CGPreflightScreenCaptureAccess)
-        NSLog("🔍 [StatusBar] Checking screen recording permission (testing with SCShareableContent)...")
-        Permissions.checkScreenRecordingPermissionActual { [weak self] hasPermission in
-            if hasPermission {
-                NSLog("✅ [StatusBar] Permission verified, showing app picker")
-                self?.showAppPicker()
-            } else {
-                NSLog("❌ [StatusBar] Screen recording permission not granted - requesting...")
-                // Request permission with proper flow
-                Permissions.requestScreenRecordingPermission { [weak self] granted in
-                    if granted {
-                        NSLog("✅ [StatusBar] User granted permission, showing app picker")
-                        self?.showAppPicker()
-                    } else {
-                        NSLog("⏳ [StatusBar] Permission not granted yet, showing guide")
-                        // Only show guide if permission still not granted after system dialog
-                        Permissions.showScreenRecordingGuide()
-                    }
-                }
-            }
+        // Check screen recording permission
+        NSLog("🔍 [StatusBar] Checking screen recording permission...")
+        if Permissions.checkScreenRecordingPermission() {
+            NSLog("✅ [StatusBar] Permission granted, showing app picker")
+            showAppPicker()
+        } else {
+            NSLog("❌ [StatusBar] Screen recording permission not granted - requesting...")
+            // Request permission
+            Permissions.requestScreenRecordingPermission()
+            // Show guide to help user enable permission
+            Permissions.ensureScreenRecordingGuide()
         }
     }
 

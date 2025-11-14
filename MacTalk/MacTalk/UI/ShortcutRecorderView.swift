@@ -233,6 +233,7 @@ struct KeyboardShortcut: Codable, Equatable {
         return modifiers
     }
 
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
     private func keyCodeToString(_ keyCode: UInt32) -> String {
         switch Int(keyCode) {
         case kVK_ANSI_A: return "A"

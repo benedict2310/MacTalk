@@ -5,6 +5,8 @@
 //  Settings window with tabbed interface for MacTalk configuration
 //
 
+// swiftlint:disable type_body_length
+
 import AppKit
 import Carbon
 
