@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */; };
 		0462E9547F556371A242B595 /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */; };
 		05896975E8FFB01AD53265C2 /* WhisperEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84150222B014F04E94D7B6B5 /* WhisperEngine.swift */; };
 		0804E7DC8A6B15ABA6101DAB /* AudioCaptureIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */; };
@@ -22,7 +23,9 @@
 		4743AF96C26282668AE7107A /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E9EED0C012BA63AE29807D /* HotkeyManager.swift */; };
 		495A7EE5106782C8767941CD /* WhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D973D4AAE3C8E8F6BA67C87D /* WhisperEngineTests.swift */; };
 		4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */; };
+		5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */; };
 		5AEA53717EA74573AC492E8E /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010CEA95FBEAAA77534F6D1D /* ModelStore.swift */; };
+		5DEA73CAF2F5F8B48FE6F1BD /* AudioWaveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC01F39AE8E11E437C3DB59 /* AudioWaveView.swift */; };
 		5F1333172A225DFE267FC2AE /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17A686CDEF44401730A9967E /* Metal.framework */; };
 		6D616C97722734D890E368C4 /* ModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */; };
 		6DF8C9E51C8CF1146A192820 /* ModelManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8ED5B1124AF544E69B234D2 /* ModelManagerTests.swift */; };
@@ -37,6 +40,7 @@
 		8C730F7115014CA1B0A7A91C /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */; };
 		9117504B467C3D18350E67A9 /* AudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09A2146139DC4C5E50571381 /* AudioMixer.swift */; };
 		9C3CFF8B7A8A8078163F8897 /* Phase4IntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */; };
+		A30DE5044D7885B483E86217 /* AsyncTimeout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936816A109576B7AC6EB9727 /* AsyncTimeout.swift */; };
 		AE41026963FA04BD04035A0D /* RingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */; };
 		BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */; };
 		C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */; };
@@ -47,6 +51,7 @@
 		DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4F33E65DF8138019C37275 /* RingBufferTests.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3BD2E91B633537326157C2EC /* AVFoundation.framework */; };
+		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
 		F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */; };
 		F8737753B44C1AEC16F43DC7 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E458427B2F013B3D86FF976 /* StatusBarController.swift */; };
@@ -69,9 +74,11 @@
 		010CEA95FBEAAA77534F6D1D /* ModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelStore.swift; sourceTree = "<group>"; };
 		02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMonitorTests.swift; sourceTree = "<group>"; };
 		09A2146139DC4C5E50571381 /* AudioMixer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixer.swift; sourceTree = "<group>"; };
+		0FC01F39AE8E11E437C3DB59 /* AudioWaveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWaveView.swift; sourceTree = "<group>"; };
 		135F815473A57D696974319C /* AudioLevelMeterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMeterView.swift; sourceTree = "<group>"; };
 		170191E05BBF77579A873511 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		17A686CDEF44401730A9967E /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIntegrationTests.swift; sourceTree = "<group>"; };
 		1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Phase4IntegrationTests.swift; sourceTree = "<group>"; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		35F50A54ADED08971D0A193F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -86,7 +93,9 @@
 		6E458427B2F013B3D86FF976 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
+		83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowIntegrationTests.swift; sourceTree = "<group>"; };
 		84150222B014F04E94D7B6B5 /* WhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngine.swift; sourceTree = "<group>"; };
+		936816A109576B7AC6EB9727 /* AsyncTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTimeout.swift; sourceTree = "<group>"; };
 		98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureIntegrationTests.swift; sourceTree = "<group>"; };
 		99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowControllerTests.swift; sourceTree = "<group>"; };
 		99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixerTests.swift; sourceTree = "<group>"; };
@@ -108,6 +117,7 @@
 		E29FD80FD4655CCCEB58F754 /* MacTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMonitor.swift; sourceTree = "<group>"; };
 		E76FC409C68F7574C43B90B4 /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
+		E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsTests.swift; sourceTree = "<group>"; };
 		E8ED5B1124AF544E69B234D2 /* ModelManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManagerTests.swift; sourceTree = "<group>"; };
 		EF01E16D9F042ED0D5426CE5 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		F032A713515F1C44CE66DF56 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -141,6 +151,7 @@
 			children = (
 				C657766293ADBF02FDD74B36 /* AppPickerWindowController.swift */,
 				135F815473A57D696974319C /* AudioLevelMeterView.swift */,
+				0FC01F39AE8E11E437C3DB59 /* AudioWaveView.swift */,
 				B8B6BD7A39D8B2C793828874 /* ShortcutRecorderView.swift */,
 			);
 			path = UI;
@@ -171,6 +182,7 @@
 		5FC8D1D6C4F04D17B17437B9 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				936816A109576B7AC6EB9727 /* AsyncTimeout.swift */,
 				E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */,
 			);
 			path = Utilities;
@@ -186,9 +198,12 @@
 				B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */,
 				DF15AD5D6AC92C434EB036F8 /* HUDWindowControllerTests.swift */,
 				E8ED5B1124AF544E69B234D2 /* ModelManagerTests.swift */,
+				83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */,
+				E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */,
 				1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */,
 				CC4F33E65DF8138019C37275 /* RingBufferTests.swift */,
 				44DB11AF678F4F2CB4A12F7A /* ScreenAudioCaptureTests.swift */,
+				1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */,
 				99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */,
 				82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */,
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
@@ -310,7 +325,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					A940A5D44273CD14442159B0 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 9SXL4GJ4TZ;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -381,7 +396,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "#!/bin/bash\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries...\"\n\n# Re-sign all dylibs in Frameworks\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    codesign --force --sign - \"$lib\" 2>&1 | grep -v \"replacing existing signature\" || true\n    echo \"   ✅ Signed: $(basename $lib)\"\n  fi\ndone\n\n# Re-sign the app bundle with deep option\necho \"🔐 [Post-Build] Re-signing app bundle...\"\ncodesign --force --deep --sign - \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" 2>&1 | grep -v \"replacing existing signature\" || true\n\necho \"✅ [Post-Build] Code signing complete!\"\n";
+			shellScript = "#!/bin/bash\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n# IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds\n\n# Get the code signing identity from Xcode build settings\nSIGNING_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-Apple Development}\"\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY\"\n\n# Re-sign all dylibs in Frameworks with same certificate as app\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    codesign --force --sign \"$SIGNING_IDENTITY\" \"$lib\" 2>&1 | grep -v \"replacing existing signature\" || true\n    echo \"   ✅ Signed: $(basename $lib)\"\n  fi\ndone\n\n# Re-sign the app bundle with deep option using same certificate\necho \"🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY\"\ncodesign --force --deep --sign \"$SIGNING_IDENTITY\" \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" 2>&1 | grep -v \"replacing existing signature\" || true\n\necho \"✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -392,10 +407,12 @@
 			files = (
 				2758A4C87A0B8F80B244A10E /* AppDelegate.swift in Sources */,
 				84D42F69C99B386850434DC8 /* AppPickerWindowController.swift in Sources */,
+				A30DE5044D7885B483E86217 /* AsyncTimeout.swift in Sources */,
 				C289FCFA43BC6160F45CC5EF /* AudioCapture.swift in Sources */,
 				280C2A87D802749506DCE8E1 /* AudioLevelMeterView.swift in Sources */,
 				BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */,
 				9117504B467C3D18350E67A9 /* AudioMixer.swift in Sources */,
+				5DEA73CAF2F5F8B48FE6F1BD /* AudioWaveView.swift in Sources */,
 				7486E5D8E45604B26A540018 /* ClipboardManager.swift in Sources */,
 				0462E9547F556371A242B595 /* DebugLogger.swift in Sources */,
 				7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */,
@@ -430,9 +447,12 @@
 				2ED06E3A6B8438E7C9888EAF /* HUDWindowControllerTests.swift in Sources */,
 				4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */,
 				6DF8C9E51C8CF1146A192820 /* ModelManagerTests.swift in Sources */,
+				5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */,
+				031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */,
 				9C3CFF8B7A8A8078163F8897 /* Phase4IntegrationTests.swift in Sources */,
 				DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */,
 				FE70C047F8540DB2C94D4DE5 /* ScreenAudioCaptureTests.swift in Sources */,
+				EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */,
 				2CA2A08ADEAAAC67AA9DD125 /* SettingsWindowControllerTests.swift in Sources */,
 				D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */,
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
@@ -474,7 +494,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9SXL4GJ4TZ;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
@@ -632,7 +652,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9SXL4GJ4TZ;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (

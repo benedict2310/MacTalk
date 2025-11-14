@@ -48,9 +48,7 @@ final class ShortcutRecorderView: NSView {
     private func setupUI() {
         wantsLayer = true
         layer?.cornerRadius = 4
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.cgColor
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        updateColors()
 
         // Label
         label.isEditable = false
@@ -76,6 +74,18 @@ final class ShortcutRecorderView: NSView {
         updateDisplay()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+        updateDisplay()
+    }
+
+    private func updateColors() {
+        // Use text background color which adapts properly to dark mode
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+    }
+
     // MARK: - Display
 
     private func updateDisplay() {
@@ -93,7 +103,7 @@ final class ShortcutRecorderView: NSView {
             layer?.borderColor = NSColor.controlAccentColor.cgColor
             layer?.borderWidth = 2
         } else {
-            layer?.borderColor = NSColor.separatorColor.cgColor
+            updateColors()
             layer?.borderWidth = 1
         }
     }

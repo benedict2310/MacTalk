@@ -21,8 +21,8 @@ final class AppPickerWindowController: NSWindowController {
 
     // MARK: - Data
 
-    private var allAudioSources: [AudioSource] = []
-    private var filteredSources: [AudioSource] = []
+    private var allAudioSources: [AudioSource]
+    private var filteredSources: [AudioSource]
     private var selectedSource: AudioSource?
 
     var onSelection: ((AudioSource) -> Void)?
@@ -60,7 +60,12 @@ final class AppPickerWindowController: NSWindowController {
 
     // MARK: - Initialization
 
-    convenience init() {
+    init(sources: [AudioSource]) {
+        // Initialize properties first
+        self.allAudioSources = sources
+        self.filteredSources = sources
+
+        // Create window
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
             styleMask: [.titled, .closable, .resizable],
@@ -70,10 +75,18 @@ final class AppPickerWindowController: NSWindowController {
         window.title = "Select Audio Source"
         window.center()
 
-        self.init(window: window)
+        // Call super initializer
+        super.init(window: window)
 
+        NSLog("✅ [AppPicker] Initialized with \(sources.count) audio sources")
+
+        // Setup UI after initialization
         setupUI()
-        loadAudioSources()
+        // No async loading needed - data is already available!
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     // MARK: - UI Setup
@@ -175,92 +188,6 @@ final class AppPickerWindowController: NSWindowController {
         ])
     }
 
-    // MARK: - Data Loading
-
-    private func loadAudioSources() {
-        Task {
-            NSLog("🔍 [AppPicker] Starting to load audio sources...")
-
-            do {
-                // Check screen recording permission first
-                NSLog("🔍 [AppPicker] Checking screen recording permission...")
-                let hasPermission = await Permissions.checkScreenRecordingPermission()
-                NSLog("🔍 [AppPicker] Screen recording permission: \(hasPermission)")
-
-                if !hasPermission {
-                    NSLog("❌ [AppPicker] Screen recording permission NOT granted")
-                    await MainActor.run {
-                        self.showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
-                    }
-                    return
-                }
-
-                NSLog("🔍 [AppPicker] Fetching shareable content...")
-                // Use the same API as permission check for consistency
-                let content = try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: true
-                )
-                NSLog("✅ [AppPicker] Successfully fetched shareable content")
-                NSLog("🔍 [AppPicker] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
-
-                var sources: [AudioSource] = []
-
-                // Add system audio option
-                if let display = content.displays.first {
-                    NSLog("🔍 [AppPicker] Adding system audio source for display: \(display.displayID)")
-                    sources.append(.systemAudio(display: display))
-                }
-
-                // Add running applications
-                for app in content.applications {
-                    // Filter out apps without windows
-                    let hasWindow = content.windows.contains(where: { $0.owningApplication == app })
-                    if hasWindow {
-                        NSLog("🔍 [AppPicker] Adding app: \(app.applicationName)")
-                        sources.append(.fromApp(app))
-                    }
-                }
-
-                NSLog("✅ [AppPicker] Total audio sources found: \(sources.count)")
-
-                // Sort alphabetically
-                sources.sort { $0.name < $1.name }
-
-                await MainActor.run {
-                    self.allAudioSources = sources
-                    self.filteredSources = sources
-                    self.tableView.reloadData()
-                    NSLog("✅ [AppPicker] Audio sources loaded and table view updated")
-                }
-            } catch let error as NSError {
-                NSLog("❌ [AppPicker] Error loading audio sources:")
-                NSLog("❌ [AppPicker]   Domain: \(error.domain)")
-                NSLog("❌ [AppPicker]   Code: \(error.code)")
-                NSLog("❌ [AppPicker]   Description: \(error.localizedDescription)")
-                NSLog("❌ [AppPicker]   User Info: \(error.userInfo)")
-
-                await MainActor.run {
-                    var errorMessage = "Failed to load audio sources.\n\n"
-                    errorMessage += "Error: \(error.localizedDescription)\n"
-                    errorMessage += "Domain: \(error.domain)\n"
-                    errorMessage += "Code: \(error.code)\n\n"
-
-                    // Provide helpful guidance based on the error
-                    if error.localizedDescription.contains("TCC") || error.localizedDescription.contains("declined") {
-                        errorMessage += "This usually means Screen Recording permission is not granted.\n\n"
-                        errorMessage += "Please:\n"
-                        errorMessage += "1. Open System Settings\n"
-                        errorMessage += "2. Go to Privacy & Security > Screen Recording\n"
-                        errorMessage += "3. Enable MacTalk\n"
-                        errorMessage += "4. Restart MacTalk\n"
-                    }
-
-                    self.showError(errorMessage)
-                }
-            }
-        }
-    }
 
     // MARK: - Actions
 
@@ -294,15 +221,6 @@ final class AppPickerWindowController: NSWindowController {
 
         selectedSource = filteredSources[row]
         selectButtonClicked()
-    }
-
-    private func showError(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Error"
-        alert.informativeText = message
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 }
 

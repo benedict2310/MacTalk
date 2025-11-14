@@ -6,6 +6,34 @@
 //
 
 import AppKit
+import ScreenCaptureKit
+
+/// Errors that can occur during screen capture operations
+enum ScreenCaptureError: Error, LocalizedError {
+    case timeout
+    case permissionDenied
+    case noSourcesAvailable
+
+    var errorDescription: String? {
+        switch self {
+        case .timeout:
+            return """
+            Screen capture system is not responding.
+
+            This is a known macOS bug. Try:
+            1. Run: killall -9 replayd
+            2. Log out and back in
+            3. Restart your Mac
+
+            The 'replayd' daemon handles screen recording and can become unresponsive.
+            """
+        case .permissionDenied:
+            return "Screen Recording permission is not granted."
+        case .noSourcesAvailable:
+            return "No audio sources are available for capture."
+        }
+    }
+}
 
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
@@ -16,7 +44,7 @@ final class StatusBarController {
     private var settingsController: SettingsWindowController?
 
     private var autoPaste = false
-    private var copyToClipboard = true  // Default to true
+    private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
     private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -45,21 +73,30 @@ final class StatusBarController {
         let defaults = UserDefaults.standard
         autoPaste = defaults.bool(forKey: "autoPaste")
 
-        // Copy to clipboard defaults to true if not set
-        if defaults.object(forKey: "copyToClipboard") != nil {
-            copyToClipboard = defaults.bool(forKey: "copyToClipboard")
+        // Show notifications defaults to true if not set
+        if defaults.object(forKey: "showNotifications") != nil {
+            showNotifications = defaults.bool(forKey: "showNotifications")
         } else {
-            copyToClipboard = true  // Default
+            showNotifications = true  // Default
         }
 
         NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
-        NSLog("🔧 [MacTalk] Loaded copy-to-clipboard setting: \(copyToClipboard)")
+        NSLog("🔧 [MacTalk] Loaded show-notifications setting: \(showNotifications)")
+        NSLog("📋 [MacTalk] Clipboard copy: Always enabled (required for transcription)")
 
         // Listen for shortcut changes
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(shortcutsDidChange),
             name: .shortcutsDidChange,
+            object: nil
+        )
+
+        // Listen for settings changes (including showNotifications)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsDidChange),
+            name: .settingsDidChange,
             object: nil
         )
 
@@ -235,36 +272,23 @@ final class StatusBarController {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
 
-        // Check screen recording permission first
-        Task {
-            NSLog("🔍 [StatusBar] Checking screen recording permission before showing picker...")
-            let hasPermission = await Permissions.checkScreenRecordingPermission()
-
-            await MainActor.run {
-                if hasPermission {
-                    NSLog("✅ [StatusBar] Permission granted, showing app picker")
-                    showAppPicker()
-                } else {
-                    NSLog("❌ [StatusBar] Screen recording permission not granted")
-                    let alert = NSAlert()
-                    alert.messageText = "Screen Recording Permission Required"
-                    alert.informativeText = """
-                    To capture app audio, MacTalk needs Screen Recording permission.
-
-                    Steps to enable:
-                    1. Open System Settings
-                    2. Go to Privacy & Security > Screen Recording
-                    3. Turn on the toggle for MacTalk
-                    4. Restart MacTalk
-
-                    Would you like to open System Settings now?
-                    """
-                    alert.alertStyle = .warning
-                    alert.addButton(withTitle: "Open System Settings")
-                    alert.addButton(withTitle: "Cancel")
-
-                    if alert.runModal() == .alertFirstButtonReturn {
-                        Permissions.openScreenRecordingSettings()
+        // Check screen recording permission with ACTUAL test (not just CGPreflightScreenCaptureAccess)
+        NSLog("🔍 [StatusBar] Checking screen recording permission (testing with SCShareableContent)...")
+        Permissions.checkScreenRecordingPermissionActual { [weak self] hasPermission in
+            if hasPermission {
+                NSLog("✅ [StatusBar] Permission verified, showing app picker")
+                self?.showAppPicker()
+            } else {
+                NSLog("❌ [StatusBar] Screen recording permission not granted - requesting...")
+                // Request permission with proper flow
+                Permissions.requestScreenRecordingPermission { [weak self] granted in
+                    if granted {
+                        NSLog("✅ [StatusBar] User granted permission, showing app picker")
+                        self?.showAppPicker()
+                    } else {
+                        NSLog("⏳ [StatusBar] Permission not granted yet, showing guide")
+                        // Only show guide if permission still not granted after system dialog
+                        Permissions.showScreenRecordingGuide()
                     }
                 }
             }
@@ -490,20 +514,25 @@ final class StatusBarController {
 
         controller.onFinal = { [weak self] text in
             DispatchQueue.main.async {
+                NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
                 self?.hudController?.update(text: "Final: \(text)")
 
-                // Copy to clipboard if enabled
-                if self?.copyToClipboard == true {
-                    ClipboardManager.setClipboard(text)
-                }
+                let autoPasteEnabled = self?.autoPaste ?? false
+                NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
 
-                // Auto-paste if enabled (requires clipboard copy)
-                if self?.autoPaste == true && self?.copyToClipboard == true {
+                // Always copy to clipboard
+                NSLog("📋 [StatusBar] Copying text to clipboard...")
+                ClipboardManager.setClipboard(text)
+
+                // Auto-paste if enabled
+                if autoPasteEnabled {
+                    NSLog("🔄 [StatusBar] Auto-paste is enabled - pasting...")
                     ClipboardManager.pasteIfAllowed()
                 }
 
                 // Show notification
-                let message = self?.copyToClipboard == true ? "Text copied to clipboard" : "Transcription complete"
+                let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
+                NSLog("📢 [StatusBar] Showing notification: \(message)")
                 self?.showNotification(title: "Transcription Complete", message: message)
             }
         }
@@ -549,30 +578,48 @@ final class StatusBarController {
     }
 
     private func startRecording() {
+        NSLog("🎬 [StatusBar] startRecording() called")
+        NSLog("🎬 [StatusBar] Mode: \(mode)")
+        if let source = selectedAudioSource {
+            NSLog("🎬 [StatusBar] Audio source: \(source.name)")
+        } else {
+            NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
+        }
+
         guard let engine = engine else {
+            NSLog("❌ [StatusBar] Engine not loaded!")
             showError("Model not loaded. Please check that the model file exists.")
             return
         }
 
+        NSLog("✅ [StatusBar] Engine available, creating TranscriptionController...")
         let transcriptionController = TranscriptionController(engine: engine)
         transcriptionController.autoPasteEnabled = autoPaste
+        NSLog("🎬 [StatusBar] TranscriptionController created with autoPaste=\(autoPaste)")
 
         setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
 
         Task { [self] in
             do {
+                if let source = selectedAudioSource {
+                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=\(source.name)")
+                } else {
+                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=nil")
+                }
                 try await transcriptionController.start(
                     mode: mode,
                     audioSource: selectedAudioSource
                 )
                 DispatchQueue.main.async {
+                    NSLog("✅ [StatusBar] Transcription started successfully")
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
             } catch {
+                NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 DispatchQueue.main.async { [self] in
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
@@ -640,6 +687,12 @@ final class StatusBarController {
     }
 
     private func showNotification(title: String, message: String) {
+        // Only show notifications if enabled in settings
+        guard showNotifications else {
+            NSLog("🔕 [MacTalk] Notifications disabled - skipping: \(title)")
+            return
+        }
+
         let notification = NSUserNotification()
         notification.title = title
         notification.informativeText = message
@@ -704,17 +757,106 @@ final class StatusBarController {
     // MARK: - App Picker
 
     private func showAppPicker() {
-        // FIX P0: Retain the picker controller so it stays alive
-        let picker = AppPickerWindowController()
-        self.appPickerController = picker
+        NSLog("🎬 [StatusBar] showAppPicker() - starting to load audio sources...")
 
-        picker.onSelection = { [weak self] source in
-            self?.selectedAudioSource = source
-            self?.appPickerController = nil  // Release after selection
-            self?.startRecording()
+        // Pattern 1: Preload → Inject → Then show
+        // Load data FIRST, then create window controller with data
+        Task { @MainActor in
+            do {
+                let sources = try await loadAudioSources()
+
+                guard !sources.isEmpty else {
+                    NSLog("⚠️ [StatusBar] No audio sources available")
+                    showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
+                    return
+                }
+
+                NSLog("✅ [StatusBar] Loaded \(sources.count) audio sources - creating window controller...")
+
+                // Now create window controller WITH data already available
+                let picker = AppPickerWindowController(sources: sources)
+                self.appPickerController = picker
+
+                picker.onSelection = { [weak self] source in
+                    NSLog("✅ [StatusBar] Audio source selected: \(source.name)")
+                    self?.selectedAudioSource = source
+                    self?.appPickerController = nil  // Release after selection
+                    self?.startRecording()
+                }
+
+                // Force window load synchronously BEFORE showing
+                _ = picker.window
+                NSLog("🎬 [StatusBar] Window loaded - now showing...")
+
+                // Now show the window (data is already loaded and injected)
+                picker.showWindow(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                NSLog("✅ [StatusBar] App picker window shown successfully")
+
+            } catch let error as ScreenCaptureError {
+                NSLog("❌ [StatusBar] Screen capture error: \(error)")
+                showError(error.localizedDescription ?? "Unknown screen capture error")
+            } catch {
+                NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
+                showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
+            }
         }
-        picker.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func loadAudioSources() async throws -> [AppPickerWindowController.AudioSource] {
+        NSLog("🔍 [StatusBar] loadAudioSources() - checking screen recording permission...")
+
+        // Check screen recording permission first (synchronous, reliable)
+        let hasPermission = Permissions.checkScreenRecordingPermission()
+        NSLog("🔍 [StatusBar] Screen recording permission: \(hasPermission)")
+
+        guard hasPermission else {
+            NSLog("❌ [StatusBar] Screen recording permission NOT granted")
+            showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
+            return []
+        }
+
+        NSLog("🔍 [StatusBar] Fetching shareable content with timeout protection...")
+
+        // Wrap SCShareableContent with timeout protection to prevent infinite hangs
+        let content: SCShareableContent
+        do {
+            content = try await withTimeout(seconds: 5) {
+                try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+            }
+            NSLog("✅ [StatusBar] Successfully fetched shareable content")
+            NSLog("🔍 [StatusBar] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
+        } catch is TimeoutError {
+            NSLog("⏱️ [StatusBar] SCShareableContent timed out after 5 seconds")
+            throw ScreenCaptureError.timeout
+        }
+
+        var sources: [AppPickerWindowController.AudioSource] = []
+
+        // Add system audio option
+        if let display = content.displays.first {
+            NSLog("🔍 [StatusBar] Adding system audio source for display: \(display.displayID)")
+            sources.append(.systemAudio(display: display))
+        }
+
+        // Add running applications with windows
+        for app in content.applications {
+            let hasWindow = content.windows.contains(where: { $0.owningApplication == app })
+            if hasWindow {
+                NSLog("🔍 [StatusBar] Adding app: \(app.applicationName)")
+                sources.append(.fromApp(app))
+            }
+        }
+
+        NSLog("✅ [StatusBar] Total audio sources found: \(sources.count)")
+
+        // Sort alphabetically
+        sources.sort { $0.name < $1.name }
+
+        return sources
     }
 
     // MARK: - Hotkeys
@@ -764,6 +906,20 @@ final class StatusBarController {
     @objc private func shortcutsDidChange() {
         registerShortcuts()
         updateMenuShortcuts()
+    }
+
+    @objc private func settingsDidChange() {
+        // Reload settings from UserDefaults when they change
+        let defaults = UserDefaults.standard
+        autoPaste = defaults.bool(forKey: "autoPaste")
+
+        let newShowNotifications = defaults.object(forKey: "showNotifications") != nil ?
+            defaults.bool(forKey: "showNotifications") : true
+
+        if newShowNotifications != showNotifications {
+            NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
+            showNotifications = newShowNotifications
+        }
     }
 
     private func toggleRecording() {

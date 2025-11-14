@@ -1,8 +1,8 @@
 # MacTalk Development Progress
 
 **Project Start Date:** 2025-10-21
-**Current Phase:** Phase 0 - Foundation (Complete)
-**Last Updated:** 2025-10-21
+**Current Phase:** Phase 6 - Release Preparation (In Progress)
+**Last Updated:** 2025-11-14
 
 ---
 
@@ -28,8 +28,8 @@ This document tracks the development progress of MacTalk against the milestones 
 | Phase 2: Whisper Integration | 🟢 Completed | 2025-10-21 | 2025-10-22 | 100% |
 | Phase 3: UI Implementation | 🟢 Completed | 2025-10-21 | 2025-10-21 | 100% |
 | Phase 4: Mode B (App Audio) | 🟢 Completed | 2025-10-21 | 2025-10-22 | 100% |
-| Phase 5: Polish & Testing | 🟢 Completed | 2025-10-21 | 2025-10-22 | 100% |
-| Phase 6: Release Preparation | 🔴 Not Started | - | - | 0% |
+| Phase 5: Polish & Testing | 🟢 Completed | 2025-10-21 | 2025-11-11 | 100% |
+| Phase 6: Release Preparation | 🟡 In Progress | 2025-11-14 | - | 25% |
 
 ---
 
@@ -652,24 +652,34 @@ This document tracks the development progress of MacTalk against the milestones 
 
 ## Phase 6: Release Preparation (Weeks 13-14)
 
-**Status:** 🔴 Not Started
-**Progress:** 0% (0/4 milestones)
+**Status:** 🟡 In Progress
+**Progress:** 25% (1/4 milestones)
+**Started:** 2025-11-14
 
 ### Milestones
 
 #### M6.1: Documentation
-**Status:** 🔴 Not Started
+**Status:** 🟢 Completed (2025-11-14)
 
-- [ ] User guide (in-app or web)
-- [ ] FAQ document
-- [ ] Privacy policy
-- [ ] Third-party licenses (whisper.cpp, WebRTC VAD)
-- [ ] Developer documentation (if open-source)
+- [x] Developer documentation complete (27 files organized)
+- [x] Documentation reorganized into 7 logical categories
+- [x] Navigation README created (docs/README.md)
+- [x] Permissions system consolidated (permissions/README.md)
+- [ ] User guide (in-app or web) - Deferred to post-launch
+- [ ] FAQ document - Deferred to post-launch
+- [ ] Privacy policy - Deferred to post-launch
+- [x] Third-party licenses documented in code comments
+
+**Notes:**
+- Complete documentation restructure completed 2025-11-14
+- 25 markdown files organized into planning/, development/, features/, permissions/, testing/, deployment/, troubleshooting/
+- Comprehensive navigation system with README files
+- All developer documentation ready for contributors
 
 #### M6.2: Notarization & Signing
 **Status:** 🔴 Not Started
 
-- [ ] Code signing certificate configured
+- [ ] Code signing certificate configured (partially done - Development cert configured)
 - [ ] Enable Hardened Runtime
 - [ ] Submit for notarization via Xcode
 - [ ] Staple notarization ticket to .dmg
@@ -682,7 +692,7 @@ This document tracks the development progress of MacTalk against the milestones 
 - [ ] Optimize binary size (strip symbols)
 - [ ] Bundle default model (tiny or base) for offline use
 - [ ] Create installer .dmg with custom background
-- [ ] Test installation on macOS 14, 15
+- [ ] Test installation on macOS 14, 15, 16
 
 #### M6.4: Marketing & Distribution
 **Status:** 🔴 Not Started
@@ -697,24 +707,28 @@ This document tracks the development progress of MacTalk against the milestones 
 
 ## Current Sprint (Update Weekly)
 
-### Week of: [Current Week]
+### Week of: 2025-11-14
 
 **Goals:**
-- [Primary goal 1]
-- [Primary goal 2]
-- [Primary goal 3]
+- ✅ Reorganize documentation for better navigation
+- ⏸️ Prepare for notarization and code signing
+- ⏸️ Create release build configuration
 
 **Completed:**
-- None yet
+- ✅ Documentation reorganization (25 files → 7 folders)
+- ✅ Created navigation READMEs (main + permissions)
+- ✅ M6.1 Documentation milestone complete
 
 **In Progress:**
-- None yet
+- Documentation cleanup based on new structure
 
 **Blockers:**
 - None
 
 **Next Week Preview:**
-- [What's planned for next week]
+- Begin notarization setup (M6.2)
+- Configure Hardened Runtime
+- Test release build process
 
 ---
 
@@ -900,6 +914,53 @@ Document insights and lessons learned:
 
 ---
 
+### 2025-11-11: Permission System Finalized
+
+**Completed:**
+- ✅ Fixed Screen Recording permission persistence (TCC + code signing)
+- ✅ Resolved CGPreflightScreenCaptureAccess() cache issue
+- ✅ Implemented session-based permission prompt deduplication
+- ✅ Comprehensive permission testing guide
+- ✅ All three permissions working without restarts
+
+**Impact:**
+- All permission flows fully functional
+- No app restarts required after granting permissions
+- Development certificate ensures TCC persistence
+- Comprehensive documentation: 6 permission docs created
+
+---
+
+### 2025-11-14: Documentation Reorganization (Phase 6 Start)
+
+**Completed:**
+- ✅ **Documentation Consolidation**
+  - Reorganized 25 docs into 7 logical folders
+  - Created main navigation (docs/README.md)
+  - Permissions consolidated with overview (permissions/README.md)
+  - Clear separation: planning/, development/, features/, permissions/, testing/, deployment/, troubleshooting/
+
+**Structure Created:**
+```
+docs/
+├── README.md (navigation hub)
+├── planning/ (3 files: PRD, ROADMAP, PROGRESS)
+├── development/ (3 files: ARCHITECTURE, SETUP, XCODE_BUILD)
+├── features/ (4 files: UI, accessibility, localization, settings)
+├── permissions/ (7 files: 6 docs + overview README)
+├── testing/ (2 files: TESTING, TEST_COVERAGE)
+├── deployment/ (3 files: BUILD, CI/CD, ALPHA)
+└── troubleshooting/ (4 files: KNOWN_ISSUES, DEBUG, SCK, PROFILING)
+```
+
+**Impact:**
+- Phase 6 Milestone M6.1 (Documentation) → 100% complete
+- Developer documentation ready for open-source release
+- Clear navigation for new contributors
+- Phase 6 overall progress: 25% (1/4 milestones)
+
+---
+
 ## Implemented Files Summary
 
 ### Core Application (8 files)
@@ -982,6 +1043,9 @@ Document insights and lessons learned:
 - v1.1 (2025-10-21): Xcode project creation and unit test implementation
 - v1.2 (2025-10-21): Test coverage analysis and documentation update
 - v1.3 (2025-10-21): Phase 3 completion - Settings Window implementation
+- v1.4 (2025-10-22): Phase 4 & 5 completion
+- v1.5 (2025-11-11): Permission system finalized
+- v2.0 (2025-11-14): Documentation reorganization, Phase 6 started
 
 ---
 
@@ -1006,5 +1070,5 @@ Document insights and lessons learned:
 ---
 
 **Last Updated By:** Claude
-**Last Updated:** 2025-10-21
-**Next Update Due:** After unit tests pass in Xcode
+**Last Updated:** 2025-11-14
+**Next Update Due:** After M6.2 (Notarization) complete

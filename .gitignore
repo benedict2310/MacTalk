@@ -145,6 +145,11 @@ MacTalk/Cache/
 *.swo
 *~
 
+# Temporary test scripts in root
+/test_*.swift
+/test_*.sh
+/debug_*.swift
+
 # macOS Keychain (never commit!)
 *.keychain
 *.keychain-db
@@ -304,3 +309,4 @@ recordings/
 
 # Claude Code configuration (contains project-specific instructions)
 CLAUDE.md
+.claude/

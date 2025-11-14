@@ -8,6 +8,7 @@
 import AVFoundation
 import ScreenCaptureKit
 import ApplicationServices
+import CoreGraphics
 
 enum Permissions {
     // MARK: - Microphone Permission
@@ -41,42 +42,49 @@ enum Permissions {
 
     // MARK: - Screen Recording Permission
 
+    /// Check if screen recording permission is granted
+    /// Uses CGPreflightScreenCaptureAccess() for reliable, synchronous check
+    /// This will NOT hang like SCShareableContent can
+    static func checkScreenRecordingPermission() -> Bool {
+        NSLog("🔍 [Permissions] Checking screen recording permission with CGPreflightScreenCaptureAccess...")
+        let hasPermission = CGPreflightScreenCaptureAccess()
+        NSLog(hasPermission ? "✅ [Permissions] Screen recording permission GRANTED" : "❌ [Permissions] Screen recording permission NOT granted")
+        return hasPermission
+    }
+
+    /// Request screen recording permission from the user
+    /// This will trigger the system permission dialog if not already granted
+    static func requestScreenRecordingPermission() {
+        NSLog("🚨 [Permissions] Requesting screen recording permission...")
+        CGRequestScreenCaptureAccess()
+    }
+
+    /// Show informational alert about screen recording permission
     static func ensureScreenRecordingGuide() {
-        // ScreenCaptureKit will automatically trigger the system prompt
-        // when attempting to capture screen content
+        NSLog("📋 [Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
         alert.informativeText = """
-        To capture app audio (Mode B), MacTalk needs Screen Recording permission.
+        To capture app audio (Mic + App mode), MacTalk needs Screen Recording permission.
 
-        When you start capturing app audio, macOS will prompt you to grant this permission.
+        Steps:
+        1. Open System Settings
+        2. Go to Privacy & Security > Screen Recording
+        3. Enable MacTalk
+        4. Restart MacTalk
 
-        You can also enable it manually:
-        System Settings > Privacy & Security > Screen Recording > MacTalk
+        Would you like to open System Settings now?
         """
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
 
-    static func checkScreenRecordingPermission() async -> Bool {
-        // Try to get shareable content - this will trigger permission if needed
-        NSLog("🔍 [Permissions] Checking screen recording permission...")
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnly: true
-            )
-            NSLog("✅ [Permissions] Screen recording permission GRANTED")
-            NSLog("🔍 [Permissions] Available: \(content.displays.count) displays, \(content.applications.count) apps, \(content.windows.count) windows")
-            return true
-        } catch let error as NSError {
-            NSLog("❌ [Permissions] Screen recording permission check FAILED")
-            NSLog("❌ [Permissions]   Domain: \(error.domain)")
-            NSLog("❌ [Permissions]   Code: \(error.code)")
-            NSLog("❌ [Permissions]   Description: \(error.localizedDescription)")
-            NSLog("❌ [Permissions]   User Info: \(error.userInfo)")
-            return false
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            NSLog("👤 [Permissions] User chose to open System Settings")
+            openScreenRecordingSettings()
+        } else {
+            NSLog("👤 [Permissions] User cancelled permission request")
         }
     }
 
@@ -90,10 +98,15 @@ enum Permissions {
     }
 
     static func isAccessibilityTrusted() -> Bool {
-        return AXIsProcessTrusted()
+        let trusted = AXIsProcessTrusted()
+        NSLog("🔐 [Permissions] Accessibility permission check: \(trusted ? "TRUSTED ✅" : "NOT TRUSTED ❌")")
+        return trusted
     }
 
     static func requestAccessibilityPermission() {
+        NSLog("🚨 [Permissions] Requesting accessibility permission from user...")
+        NSLog("🚨 [Permissions] Showing permission dialog...")
+
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
         alert.informativeText = """
@@ -103,6 +116,7 @@ enum Permissions {
         1. Open System Settings
         2. Go to Privacy & Security > Accessibility
         3. Enable MacTalk
+        4. IMPORTANT: Restart MacTalk after granting permission
 
         Would you like to open System Settings now?
         """
@@ -110,8 +124,12 @@ enum Permissions {
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
 
-        if alert.runModal() == .alertFirstButtonReturn {
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            NSLog("👤 [Permissions] User chose to open System Settings")
             openAccessibilitySettings()
+        } else {
+            NSLog("👤 [Permissions] User cancelled permission request")
         }
     }
 

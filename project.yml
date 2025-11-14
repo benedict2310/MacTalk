@@ -55,7 +55,7 @@ targets:
         - "@loader_path/../Frameworks"
       ENABLE_HARDENED_RUNTIME: NO
       CODE_SIGN_STYLE: Automatic
-      DEVELOPMENT_TEAM: ""
+      DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
       GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - sdk: Accelerate.framework
@@ -117,22 +117,26 @@ targets:
           #!/bin/bash
           # CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch
           # This must run AFTER Xcode's CodeSign phase
+          # IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds
 
-          echo "🔐 [Post-Build] Re-signing whisper.cpp libraries..."
+          # Get the code signing identity from Xcode build settings
+          SIGNING_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-Apple Development}"
 
-          # Re-sign all dylibs in Frameworks
+          echo "🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY"
+
+          # Re-sign all dylibs in Frameworks with same certificate as app
           for lib in "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"/*.dylib; do
             if [ -f "$lib" ]; then
-              codesign --force --sign - "$lib" 2>&1 | grep -v "replacing existing signature" || true
+              codesign --force --sign "$SIGNING_IDENTITY" "$lib" 2>&1 | grep -v "replacing existing signature" || true
               echo "   ✅ Signed: $(basename $lib)"
             fi
           done
 
-          # Re-sign the app bundle with deep option
-          echo "🔐 [Post-Build] Re-signing app bundle..."
-          codesign --force --deep --sign - "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
+          # Re-sign the app bundle with deep option using same certificate
+          echo "🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY"
+          codesign --force --deep --sign "$SIGNING_IDENTITY" "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
 
-          echo "✅ [Post-Build] Code signing complete!"
+          echo "✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY"
 
   MacTalkTests:
     type: bundle.unit-test
