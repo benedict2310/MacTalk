@@ -1,0 +1,97 @@
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1400" height="800" fill="#14141a"/>
+
+  <!-- Title -->
+  <text x="70" y="80" font-family="Helvetica, Arial, sans-serif" font-size="48" font-weight="bold" fill="#f2f2f7">Features</text>
+
+  <!-- Feature Grid - 2x3 layout -->
+
+  <!-- Row 1, Col 1: Real-Time Transcription -->
+  <g id="feature-1">
+    <rect x="70" y="130" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="90" y="170" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Real-Time Transcription</text>
+    <text x="90" y="210" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Streaming inference with partial</text>
+    <text x="90" y="235" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">results appearing as you speak.</text>
+    <text x="90" y="260" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Powered by Whisper with</text>
+    <text x="90" y="285" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Metal acceleration.</text>
+    <!-- Visual indicator -->
+    <circle cx="420" cy="370" r="30" fill="none" stroke="#33b34d" stroke-width="3"/>
+    <circle cx="420" cy="370" r="20" fill="#33b34d" opacity="0.3"/>
+    <text x="405" y="380" font-family="monospace" font-size="20" fill="#33b34d">●</text>
+  </g>
+
+  <!-- Row 1, Col 2: Dual Modes -->
+  <g id="feature-2">
+    <rect x="500" y="130" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="520" y="170" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Dual Capture Modes</text>
+    <text x="520" y="210" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Mode A: Microphone-only</text>
+    <text x="520" y="235" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">dictation for quick notes.</text>
+    <text x="520" y="275" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Mode B: Mic + App/System</text>
+    <text x="520" y="300" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">audio for meeting transcripts.</text>
+    <!-- Dual bars representing two modes -->
+    <rect x="540" y="340" width="80" height="15" fill="#6699ff"/>
+    <rect x="540" y="365" width="130" height="15" fill="#33b34d"/>
+  </g>
+
+  <!-- Row 1, Col 3: Privacy First -->
+  <g id="feature-3">
+    <rect x="930" y="130" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="950" y="170" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Privacy First</text>
+    <text x="950" y="210" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">100% on-device processing.</text>
+    <text x="950" y="235" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Zero network requests during</text>
+    <text x="950" y="260" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">transcription. Your voice never</text>
+    <text x="950" y="285" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">leaves your Mac.</text>
+    <!-- Lock icon representation -->
+    <rect x="1250" y="350" width="40" height="50" rx="5" fill="none" stroke="#ff9933" stroke-width="3"/>
+    <circle cx="1270" cy="345" r="15" fill="none" stroke="#ff9933" stroke-width="3"/>
+    <rect x="1265" y="370" width="10" height="20" fill="#ff9933"/>
+  </g>
+
+  <!-- Row 2, Col 1: Menu Bar Integration -->
+  <g id="feature-4">
+    <rect x="70" y="440" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="90" y="480" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Menu Bar Integration</text>
+    <text x="90" y="520" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Lightweight, always accessible.</text>
+    <text x="90" y="545" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Global hotkeys for hands-free</text>
+    <text x="90" y="570" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">operation. HUD overlay shows</text>
+    <text x="90" y="595" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">live transcription.</text>
+    <!-- Menu bar representation -->
+    <rect x="90" y="640" width="140" height="30" fill="#26262b"/>
+    <text x="100" y="662" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#e5e5ea">🎙️ MacTalk</text>
+  </g>
+
+  <!-- Row 2, Col 2: Model Selection -->
+  <g id="feature-5">
+    <rect x="500" y="440" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="520" y="480" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Multiple Models</text>
+    <text x="520" y="520" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Choose from tiny (fast) to</text>
+    <text x="520" y="545" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">large-v3-turbo (accurate).</text>
+    <text x="520" y="570" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Automatic downloads with</text>
+    <text x="520" y="595" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">progress tracking.</text>
+    <!-- Size comparison bars -->
+    <rect x="540" y="630" width="40" height="10" fill="#808085"/>
+    <text x="540" y="655" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#666673">tiny</text>
+    <rect x="600" y="625" width="60" height="15" fill="#808085"/>
+    <text x="595" y="655" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#666673">small</text>
+    <rect x="680" y="620" width="90" height="20" fill="#808085"/>
+    <text x="675" y="655" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#666673">medium</text>
+    <rect x="790" y="615" width="120" height="25" fill="#808085"/>
+    <text x="795" y="655" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#666673">large-v3</text>
+  </g>
+
+  <!-- Row 2, Col 3: Auto-Paste -->
+  <g id="feature-6">
+    <rect x="930" y="440" width="400" height="280" rx="12" fill="#1a1a20" stroke="#2a2a30" stroke-width="2"/>
+    <text x="950" y="480" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#f2f2f7">Smart Output</text>
+    <text x="950" y="520" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Automatic clipboard copy.</text>
+    <text x="950" y="545" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Optional auto-paste at cursor.</text>
+    <text x="950" y="570" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Auto-punctuation and casing.</text>
+    <text x="950" y="595" font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#9999a6">Save transcripts as .txt files.</text>
+    <!-- Clipboard icon representation -->
+    <rect x="1260" y="630" width="50" height="65" rx="5" fill="none" stroke="#6699ff" stroke-width="3"/>
+    <rect x="1270" y="620" width="30" height="15" rx="3" fill="#6699ff"/>
+    <line x1="1275" y1="650" x2="1300" y2="650" stroke="#6699ff" stroke-width="2"/>
+    <line x1="1275" y1="665" x2="1290" y2="665" stroke="#6699ff" stroke-width="2"/>
+  </g>
+</svg>

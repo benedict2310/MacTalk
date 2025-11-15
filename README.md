@@ -35,7 +35,15 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ## Screenshots
 
-_Coming soon_
+### MacTalk in Action
+![MacTalk Hero](docs/screenshots/mactalk-hero.svg)
+
+*Real-time voice transcription with live HUD overlay showing audio levels and transcript.*
+
+### Key Features
+![Features Overview](docs/screenshots/feature-grid.svg)
+
+*Comprehensive feature set: real-time transcription, dual capture modes, privacy-first architecture, menu bar integration, multiple models, and smart output.*
 
 ---
 
