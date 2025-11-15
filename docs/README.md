@@ -18,10 +18,9 @@ Welcome to the MacTalk documentation hub. All technical documentation has been o
 ## Documentation Structure
 
 ### 📋 [Planning](planning/)
-Project roadmap, requirements, and progress tracking
+Project requirements and progress tracking
 
 - **[PRD.md](planning/PRD.md)** - Product Requirements Document (what we're building)
-- **[ROADMAP.md](planning/ROADMAP.md)** - Development phases and milestones
 - **[PROGRESS.md](planning/PROGRESS.md)** - Current development status and progress tracking
 
 ### 🛠️ [Development](development/)
@@ -98,10 +97,7 @@ Issue resolution, debugging, and known problems
 1. [PRD.md](planning/PRD.md) - Full product requirements
 2. [LIQUID_GLASS_UI.md](features/LIQUID_GLASS_UI.md) - UI design system
 3. [ACCESSIBILITY.md](features/ACCESSIBILITY.md) - Accessibility standards
-
-**Tracking progress:**
-1. [PROGRESS.md](planning/PROGRESS.md) - Current status
-2. [ROADMAP.md](planning/ROADMAP.md) - Future plans
+4. [PROGRESS.md](planning/PROGRESS.md) - Current status
 
 ### For QA/Testing
 

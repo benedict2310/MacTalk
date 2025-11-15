@@ -8,7 +8,7 @@
 
 ## Overview
 
-This document tracks the development progress of MacTalk against the milestones defined in [ROADMAP.md](ROADMAP.md).
+This document tracks the development progress of MacTalk.
 
 **Status Legend:**
 - 🔴 Not Started
@@ -810,8 +810,7 @@ Track issues discovered during development:
 Document insights and lessons learned:
 
 ### 2025-10-21: Project Initialization
-- Created comprehensive project documentation (PRD, ARCHITECTURE, ROADMAP, SETUP)
-- Defined 6 development phases spanning 14 weeks
+- Created comprehensive project documentation (PRD, ARCHITECTURE, SETUP)
 - Key dependencies identified: whisper.cpp, ScreenCaptureKit, AVAudioEngine
 - Decision to use menu bar app paradigm for minimal UI footprint
 
@@ -944,7 +943,7 @@ Document insights and lessons learned:
 ```
 docs/
 ├── README.md (navigation hub)
-├── planning/ (3 files: PRD, ROADMAP, PROGRESS)
+├── planning/ (2 files: PRD, PROGRESS)
 ├── development/ (3 files: ARCHITECTURE, SETUP, XCODE_BUILD)
 ├── features/ (4 files: UI, accessibility, localization, settings)
 ├── permissions/ (7 files: 6 docs + overview README)
@@ -1029,12 +1028,11 @@ docs/
 ## References
 
 - [PRD.md](PRD.md) - Product requirements
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Technical design
-- [ROADMAP.md](ROADMAP.md) - Development phases
-- [SETUP.md](SETUP.md) - Build instructions
-- [TESTING.md](TESTING.md) - Testing guide and procedures
-- [TEST_COVERAGE.md](TEST_COVERAGE.md) - Detailed test coverage report
-- [XCODE_BUILD.md](XCODE_BUILD.md) - Xcode build configuration guide
+- [ARCHITECTURE.md](../development/ARCHITECTURE.md) - Technical design
+- [SETUP.md](../development/SETUP.md) - Build instructions
+- [TESTING.md](../testing/TESTING.md) - Testing guide and procedures
+- [TEST_COVERAGE.md](../testing/TEST_COVERAGE.md) - Detailed test coverage report
+- [XCODE_BUILD.md](../development/XCODE_BUILD.md) - Xcode build configuration guide
 
 ---
 
@@ -1063,9 +1061,8 @@ docs/
 
 **Monthly Review:**
 1. Review overall timeline adherence
-2. Adjust roadmap if needed (update ROADMAP.md)
-3. Celebrate milestones achieved
-4. Plan next phase
+2. Celebrate milestones achieved
+3. Plan next phase
 
 ---
 

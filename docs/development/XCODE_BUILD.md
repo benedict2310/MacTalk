@@ -444,7 +444,6 @@ Once the app builds and runs:
 2. Test app audio capture (Mode B)
 3. Verify auto-paste works
 4. Profile performance with Instruments
-5. Package for distribution (see ROADMAP.md Phase 6)
 
 ---
 
@@ -485,7 +484,6 @@ MacTalk/
 
 - [SETUP.md](SETUP.md) - General development setup
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Technical architecture
-- [ROADMAP.md](ROADMAP.md) - Development roadmap
 - [whisper.cpp GitHub](https://github.com/ggerganov/whisper.cpp)
 - [Xcode Build Settings Reference](https://developer.apple.com/documentation/xcode/build-settings-reference)
 

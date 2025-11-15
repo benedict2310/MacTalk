@@ -57,7 +57,6 @@ Tests try to run without code signing, which may cause issues with:
 Verifies all documentation files are present:
 - README.md
 - PROGRESS.md
-- ROADMAP.md
 - PROFILING.md
 - ACCESSIBILITY.md
 - LOCALIZATION.md
