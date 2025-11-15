@@ -130,13 +130,11 @@ Transcribe both your mic and app audio (e.g., Zoom, FaceTime):
 
 ## Documentation
 
-- **[PRD.md](docs/PRD.md)** - Product Requirements Document
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Technical design and architecture
-- **[ROADMAP.md](docs/ROADMAP.md)** - Development phases and timeline
-- **[SETUP.md](docs/SETUP.md)** - Build and development setup guide
-- **[PROGRESS.md](docs/PROGRESS.md)** - Current development status
-- **[TESTING.md](docs/TESTING.md)** - Testing guide and procedures
-- **[TEST_COVERAGE.md](docs/TEST_COVERAGE.md)** - Test coverage report
+- **[PRD.md](docs/planning/PRD.md)** - Product Requirements Document
+- **[ARCHITECTURE.md](docs/development/ARCHITECTURE.md)** - Technical design and architecture
+- **[SETUP.md](docs/development/SETUP.md)** - Build and development setup guide
+- **[TESTING.md](docs/testing/TESTING.md)** - Testing guide and procedures
+- **[TEST_COVERAGE.md](docs/testing/TEST_COVERAGE.md)** - Test coverage report
 
 ---
 
@@ -278,115 +276,38 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for performance optimization strateg
 
 ---
 
-## Roadmap
-
-### v1.0 (MVP) - Target: Q2 2025
-- ✅ Project foundation and architecture
-- ✅ Xcode project setup with test target (XcodeGen)
-- ✅ Core audio processing components (RingBuffer, AudioMixer, AudioLevelMonitor)
-- ✅ Comprehensive unit tests (100% core logic coverage)
-- ✅ **whisper.cpp integration with Metal acceleration**
-- ✅ **Project builds on Xcode 26 / macOS 15+**
-- ✅ Mic-only transcription (Mode A) - Implementation complete, comprehensive tests
-- ✅ Mic + app audio transcription (Mode B) - Implementation complete, comprehensive tests
-- ✅ Streaming inference with partials - Implementation complete, comprehensive tests
-- ✅ Clipboard + auto-paste - Implementation complete, comprehensive tests
-- ✅ Menu bar UI + HUD overlay - Implementation complete, comprehensive tests
-- ✅ Model management (tiny → large-v3-turbo) - Implementation complete, comprehensive tests
-- ✅ **Automatic model downloads with resume support** - Implementation complete
-
-### v1.1 - Target: Q3 2025
-- Per-app presets (model, language)
-- Command vocabulary ("new line", "comma")
-- Export transcript history
-
-### v1.2 - Target: Q4 2025
-- Speaker diarization (basic)
-- SRT/VTT export for subtitles
-- Session logs with playback
-
-### v2.0 - Target: 2026
-- iOS companion app
-- iCloud sync
-- AI-powered summarization (local)
-- Plugin architecture
-
-See [ROADMAP.md](docs/ROADMAP.md) for detailed development phases.
-
----
-
 ## Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) (coming soon) for guidelines.
-
-### Development Status
-
-MacTalk is currently in **final development** (Phase 5: Complete, Phase 6: Release Preparation Starting).
-
-**What's Done:**
-- ✅ Complete Swift implementation (~3,900 lines)
-- ✅ Xcode project with comprehensive test target (XcodeGen-based)
-- ✅ 350+ comprehensive unit & integration tests
-- ✅ CI/CD pipeline (GitHub Actions)
-- ✅ Performance monitoring and optimization tools
-- ✅ Core audio processing pipeline with adaptive quality
-- ✅ Multi-channel audio level monitoring
-- ✅ Model management system
-- ✅ Full UI implementation with accessibility support (menu bar, HUD, Settings window, level meters)
-- ✅ Mode A (mic-only) & Mode B (mic + app audio) fully functional
-- ✅ Robust error handling and recovery mechanisms
-- ✅ Alpha testing materials and distribution guides
-- ✅ **whisper.cpp built with Metal support** (v1.8.2)
-- ✅ **Project builds successfully on Xcode 26 / macOS 15+**
-- ✅ **macOS 26 (Tahoe) compatibility fixes** (main.swift, VAD, automated signing)
-
-**What's Next:**
-- ⏳ First end-to-end test with Whisper integration and real audio
-- ⏳ Final bug fixes and polish
-- ⏳ Prepare for v1.0 release
-
-See [PROGRESS.md](docs/PROGRESS.md) for detailed status and [ROADMAP.md](docs/ROADMAP.md) for planned milestones.
-
-### Areas for Contribution
+Contributions are welcome! Areas for contribution include:
 
 - Testing and bug reports (especially on M1/M2/M3 Macs)
 - UI/UX design and feedback
 - Performance optimization
 - Additional language support
 - Documentation improvements
-- Integration test development
 
 ---
 
 ## FAQ
 
 ### Q: Does MacTalk work offline?
-**A:** Yes, completely. Once models are downloaded, no network connection is required.
+**A:** Yes. Once models are downloaded, no network connection is required for transcription.
 
 ### Q: Which model should I use?
-**A:** Start with `small` (default) for balanced speed/accuracy. Use `tiny` or `base` for faster performance, or `medium`/`large-v3-turbo` for maximum accuracy.
+**A:** Start with `small` for balanced speed and accuracy. Use `tiny` or `base` for faster performance, or `medium`/`large-v3-turbo` for maximum accuracy.
 
 ### Q: Can I transcribe calls from Zoom/Teams/FaceTime?
 **A:** Yes, using Mode B (Mic + App Audio). Requires Screen Recording permission.
 
-### Q: How accurate is it?
-**A:** Accuracy depends on model size and audio quality. The `large-v3-turbo` model achieves near-human accuracy for clear English speech. Smaller models trade some accuracy for speed.
-
 ### Q: Does it work with languages other than English?
-**A:** Yes, Whisper supports 99+ languages. Select language in Settings or use auto-detect.
-
-### Q: What about speaker diarization (who said what)?
-**A:** Basic diarization (distinguishing mic vs. app audio) is planned for v1.2. Advanced multi-speaker diarization is a future goal.
-
-### Q: Can I use this for live captions?
-**A:** Yes, streaming partials appear in real-time in the HUD overlay. Export to SRT/VTT coming in v1.2.
+**A:** Yes, Whisper supports 99+ languages. The app defaults to English for best accuracy.
 
 ### Q: How is this different from macOS Dictation?
 **A:**
-- MacTalk works offline (Apple Dictation requires network for best quality)
-- Supports app audio capture (transcribe calls)
-- Choice of models (speed vs. accuracy)
-- Open source and privacy-focused
+- MacTalk works completely offline (Apple Dictation requires network for best quality)
+- Supports app audio capture for transcribing calls
+- Choice of multiple models (speed vs. accuracy tradeoff)
+- Privacy-focused with no telemetry or network calls
 
 ---
 
@@ -411,71 +332,9 @@ MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for detail
 
 ## Support
 
-- **Issues:** [GitHub Issues](https://github.com/yourusername/MacTalk/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/yourusername/MacTalk/discussions)
-- **Email:** support@mactalk.app (coming soon)
-
----
-
-## Project Status
-
-**Current Phase:** Phase 5 Complete - Polish & Testing with Whisper Integration
-**Next Milestone:** M6.1 - Final end-to-end testing and v1.0 release preparation
-**Progress:** 85% (5/6 phases complete, final release phase remaining)
-
-**Recent Achievements:**
-- ✅ **Automatic model downloads with intelligent UX** (November 2025)
-  - User confirmation dialogs before downloading
-  - Resume support across app restarts
-  - Concurrent download prevention
-  - Real-time progress tracking in menu bar
-  - Accurate file size validation (10% tolerance)
-- ✅ **Transcription quality fixes** (November 2025)
-  - Default to English language (fixes incorrect auto-detection)
-  - Full recording transcription for accuracy (no repetition/missing words)
-  - Lower silence threshold for quieter speech
-  - 3-second streaming chunks for better real-time context
-- ✅ **HUD improvements** (November 2025)
-  - Stop button added to HUD for easy access
-  - No need to return to menu bar to stop recording
-- ✅ **whisper.cpp v1.8.2 built with Metal acceleration** (November 2025)
-- ✅ **Project builds successfully on Xcode 26 / macOS 15+**
-- ✅ **macOS 26 (Tahoe) compatibility fixes** (main.swift, VAD, automated signing)
-- ✅ Phase 5 Complete: Polish & Testing with performance optimization
-- ✅ Phase 4 Complete: App Audio Capture (Mode B) with error handling
-- ✅ Performance monitoring and adaptive quality (battery mode)
-- ✅ CI/CD pipeline with automated testing and security scans
-- ✅ Comprehensive alpha testing materials and build guides
-- ✅ Accessibility support (VoiceOver) and localization infrastructure
-- ✅ 350+ unit & integration tests (85.2% overall coverage)
-- ✅ 5 comprehensive guides (2,900+ lines of documentation)
-- ✅ Migrated to XcodeGen for better project management
-- ✅ Fixed API compatibility issues for macOS 15/16 (ScreenCaptureKit, NSColor, Whisper)
-- ✅ Production-ready codebase with professional tooling
-
-**Lines of Code:**
-- Source: ~3,900 lines (across 21 files)
-- Tests: ~5,770 lines (across 14 files)
-- Test-to-code ratio: 1.48:1
-- Docs: ~25,000+ words (10 comprehensive guides)
-
-Track detailed progress in [PROGRESS.md](docs/PROGRESS.md).
-See test coverage details in [TEST_COVERAGE.md](docs/TEST_COVERAGE.md).
-
----
-
-## Quick Links
-
-- [Download Latest Release](https://github.com/yourusername/MacTalk/releases) (coming soon)
-- [Documentation](docs/)
-- [Roadmap](docs/ROADMAP.md)
-- [Contributing Guide](CONTRIBUTING.md) (coming soon)
-- [Change Log](CHANGELOG.md) (coming soon)
+- **Issues:** [GitHub Issues](https://github.com/benedict2310/MacTalk/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/benedict2310/MacTalk/discussions)
 
 ---
 
 **Built with privacy, powered by Metal, made for macOS.**
-
----
-
-**Star this repo** if you're excited about local, privacy-focused voice transcription!

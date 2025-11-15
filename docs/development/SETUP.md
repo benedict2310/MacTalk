@@ -630,9 +630,7 @@ Once setup is complete:
 
 1. Verify all tests pass: `Cmd+U` in Xcode
 2. Read [ARCHITECTURE.md](ARCHITECTURE.md) for design details
-3. Review [ROADMAP.md](ROADMAP.md) for development phases
-4. Start with Phase 0 tasks (see ROADMAP.md)
-5. Update [PROGRESS.md](PROGRESS.md) as you complete milestones
+3. Review [PROGRESS.md](../planning/PROGRESS.md) for current status
 
 ---
 
