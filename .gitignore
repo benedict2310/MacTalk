@@ -298,8 +298,10 @@ yarn-error.log*
 *.dtps
 
 # Screenshots and recordings (unless explicitly added)
-screenshots/
-recordings/
+# Note: docs/screenshots/ is allowed for marketing materials
+/screenshots/
+/recordings/
+!docs/screenshots/
 
 # Backup files
 *.backup
