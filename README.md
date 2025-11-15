@@ -5,7 +5,6 @@
 [![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg)](https://swift.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-in%20development-yellow.svg)](docs/PROGRESS.md)
 
 MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time using the Whisper speech recognition model. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
 
@@ -13,23 +12,14 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ## Features
 
-### Core Capabilities
-- **Real-time Transcription:** Streaming inference with partial results appearing as you speak
-- **Dual Capture Modes:**
-  - **Mode A:** Microphone-only dictation
-  - **Mode B:** Mic + App/System audio (perfect for transcribing calls or meetings)
-- **Clipboard & Auto-Paste:** Instantly copy transcripts to clipboard, optionally paste at cursor
-- **Multiple Model Sizes:** Choose from tiny (fast) to large-v3-turbo (accurate)
-- **Privacy First:** 100% on-device processing, zero network requests during transcription
-- **Metal Acceleration:** Optimized for Apple Silicon (M1/M2/M3/M4)
-
-### User Experience
-- **Menu Bar Integration:** Lightweight, always accessible, no Dock clutter
-- **HUD Overlay:** Live transcript preview with audio level meters and stop button
-- **Easy Controls:** Stop recording directly from HUD - no need to go back to menu bar
-- **Global Hotkeys:** Start/stop transcription without switching apps
-- **Automatic Model Downloads:** One-click model selection with progress tracking
-- **Customizable Settings:** Model selection, language, auto-punctuation, and more
+- **Real-time Transcription** - Streaming inference with live results
+- **Dual Capture Modes** - Mic-only or mic + app audio (for calls/meetings)
+- **100% Local Processing** - Zero network calls, complete privacy
+- **Metal Accelerated** - Optimized for Apple Silicon
+- **Menu Bar App** - Lightweight, always accessible
+- **Multiple Models** - Choose from tiny (fast) to large (accurate)
+- **Auto-Paste** - Transcripts copied to clipboard and optionally pasted
+- **Global Hotkeys** - Start/stop without switching apps
 
 ---
 
@@ -49,242 +39,62 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ## Requirements
 
-- **macOS:** 14.0 (Sonoma) or later
-- **Hardware:** Apple Silicon (M1 or newer) recommended
-  - Intel Macs may work but are not optimized
-- **RAM:** 8 GB minimum, 16 GB recommended for large models
-- **Disk Space:** 5 GB (for models and build artifacts)
+- macOS 14.0 (Sonoma) or later
+- Apple Silicon (M1 or newer) recommended
+- 8 GB RAM minimum
 
 ---
 
 ## Installation
 
-### Option 1: Download Release
+### Download Release
 
-1. Download the latest `MacTalk-v1.0.0.zip` from [Releases](https://github.com/benedict2310/MacTalk/releases)
-2. Unzip the archive and move `MacTalk.app` to your Applications folder
-3. Right-click MacTalk.app and select "Open" (first launch only, due to unsigned app)
-4. Grant required permissions when prompted (Microphone, Screen Recording, Accessibility)
-5. Choose a Whisper model to download (recommended: small or medium)
+1. Download `MacTalk-v1.0.0.zip` from [Releases](https://github.com/benedict2310/MacTalk/releases)
+2. Unzip and move `MacTalk.app` to your Applications folder
+3. Right-click and select "Open" (first launch only)
+4. Grant permissions when prompted (Microphone, Screen Recording, Accessibility)
+5. Select a model to download (recommended: small)
 
-### Option 2: Build from Source
+### Build from Source
 
-See [SETUP.md](docs/SETUP.md) for detailed build instructions.
-
-**Quick Start:**
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/MacTalk.git
-cd MacTalk
-
-# Initialize submodules (whisper.cpp)
-git submodule update --init --recursive
-
-# Build whisper.cpp with Metal support
-cd Vendor/whisper.cpp
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
-cmake --build . --config Release
-cd ../../..
-
-# Open Xcode project
-open MacTalk.xcodeproj
-```
+See [docs/development/SETUP.md](docs/development/SETUP.md) for build instructions.
 
 ---
 
 ## Usage
 
-### Quick Start
-
-1. **Launch MacTalk:** Icon appears in menu bar
-2. **Download a Model:** Select a model from the Model submenu (auto-downloads if needed)
-3. **Start Recording:** Click menu bar icon → "Start (Mic Only)"
-4. **Speak:** Your words appear in the HUD overlay with live audio levels
-5. **Stop:** Click the "Stop Recording" button in the HUD or use menu bar
-6. **Result:** Transcript copied to clipboard (and auto-pasted if enabled)
-
-### Mode A: Dictation (Mic-Only)
-
-Perfect for writing emails, documents, or notes:
-
-1. Click menu bar icon → Select "Mic Only" mode
-2. Press hotkey to start
-3. Speak naturally
-4. Press hotkey to stop
-5. Paste transcript (Cmd-V) into any app
-
-### Mode B: Call/Meeting Transcription
-
-Transcribe both your mic and app audio (e.g., Zoom, FaceTime):
-
-1. Click menu bar icon → Select "Mic + App Audio" mode
-2. Choose app from picker (requires Screen Recording permission)
-3. Press hotkey to start
-4. Your voice + remote speaker transcribed together
-5. Press hotkey to stop
-6. Review and copy transcript
+1. Click the menu bar icon and select a transcription mode
+2. For call transcription, choose "Mic + App Audio" and select the app
+3. Press the hotkey or click "Start" to begin recording
+4. Speak - your words appear in real-time in the HUD overlay
+5. Press the hotkey or click "Stop" when done
+6. Transcript is automatically copied to clipboard
 
 ---
 
-## Documentation
+## Models
 
-- **[PRD.md](docs/planning/PRD.md)** - Product Requirements Document
-- **[ARCHITECTURE.md](docs/development/ARCHITECTURE.md)** - Technical design and architecture
-- **[SETUP.md](docs/development/SETUP.md)** - Build and development setup guide
-- **[TESTING.md](docs/testing/TESTING.md)** - Testing guide and procedures
-- **[TEST_COVERAGE.md](docs/testing/TEST_COVERAGE.md)** - Test coverage report
+MacTalk supports multiple Whisper model sizes:
 
----
+| Model | Size | Speed | Use Case |
+|-------|------|-------|----------|
+| tiny | ~32 MB | Fastest | Quick dictation |
+| base | ~60 MB | Very Fast | Everyday use |
+| small | ~190 MB | Fast | Recommended default |
+| medium | ~539 MB | Moderate | High accuracy |
+| large-v3-turbo | ~574 MB | Slower | Maximum accuracy |
 
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     User Speaks / Audio Plays               │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│              Audio Capture Layer                            │
-│  • AVAudioEngine (Mic)                                      │
-│  • ScreenCaptureKit (App/System Audio)                      │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│           Audio Processing Pipeline                         │
-│  • Mix & Resample to 16kHz Mono                             │
-│  • Ring Buffer (lock-free)                                  │
-│  • Optional VAD (Voice Activity Detection)                  │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│              Whisper.cpp Inference                          │
-│  • Metal-accelerated GPU processing                         │
-│  • Streaming chunks (0.5-1.0s windows)                      │
-│  • Emit partial transcripts                                 │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│             Post-Processing                                 │
-│  • Punctuation insertion                                    │
-│  • Capitalization                                           │
-│  • Timestamp alignment                                      │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│                Output Layer                                 │
-│  • Copy to Clipboard                                        │
-│  • Auto-Paste (via Accessibility APIs)                      │
-│  • HUD Display                                              │
-└─────────────────────────────────────────────────────────────┘
-```
+Models download automatically when selected. No manual setup required.
 
 ---
 
-## Technology Stack
+## Privacy
 
-- **Language:** Swift 5.9+
-- **UI Framework:** AppKit (macOS native)
-- **Audio:** AVFoundation (AVAudioEngine, AVAudioMixerNode)
-- **App Audio Capture:** ScreenCaptureKit (macOS 12.3+)
-- **Inference Engine:** [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (Metal backend)
-- **Model Format:** GGML/GGUF (quantized: Q5_0, Q8_0)
-- **Permissions:** Microphone, Screen Recording, Accessibility
-- **Minimum Target:** macOS 14.0 (Sonoma)
+- **100% local processing** - No data ever leaves your Mac
+- **No telemetry** - No analytics or tracking
+- **Open source** - Review the code yourself
 
----
-
-## Model Sizes
-
-MacTalk supports multiple Whisper model sizes, allowing you to balance speed vs. accuracy:
-
-| Model | Size (Q5_0/Q5_1) | Speed (M4) | Accuracy | Use Case |
-|-------|------------------|------------|----------|----------|
-| **tiny** | ~32 MB | Fastest | Good | Quick dictation, constrained systems |
-| **base** | ~60 MB | Very Fast | Better | Everyday use, balanced |
-| **small** | ~190 MB | Fast | Great | Recommended default |
-| **medium** | ~539 MB | Moderate | Excellent | High accuracy needs |
-| **large-v3-turbo** | ~574 MB | Slower | Best | Maximum accuracy |
-
-### Automatic Downloads
-
-**NEW:** MacTalk now features intelligent automatic model downloads:
-
-**User Experience:**
-- **User Confirmation:** Dialog appears before downloading, showing model name and file size
-- **One-Click Download:** Simple "Download" button starts the process
-- **Resume Support:** Downloads automatically resume if interrupted (network issue, app quit, etc.)
-- **Progress Tracking:** Real-time download progress shown in menu bar with percentage
-- **Prevention:** Only one download at a time - no confusing concurrent downloads
-- **Verification:** File size validation ensures downloads completed correctly
-
-**Technical Features:**
-- **Mirror Fallback:** Automatically tries alternate mirrors if primary source fails
-- **Smart Storage:** Models stored in `~/Library/Application Support/MacTalk/Models/`
-- **Integrity Checks:** 10% file size tolerance to catch corrupted downloads
-- **Optional SHA-256:** When checksums are available, full cryptographic verification
-
-**How to Use:**
-1. Select a model from the menu bar → Model submenu
-2. If not downloaded, a dialog appears with model details
-3. Click "Download" to start, "Use Different Model" to choose another, or "Cancel"
-4. Watch progress in menu bar as the model downloads
-5. Model is automatically verified and ready to use when complete
-
-No manual downloads or terminal commands required!
-
----
-
-## Permissions
-
-MacTalk requires the following permissions:
-
-- **Microphone:** To capture your voice
-- **Screen Recording:** To capture app/system audio (Mode B only)
-- **Accessibility:** To auto-paste transcripts (optional)
-
-All permissions are requested only when needed and can be managed in System Settings.
-
----
-
-## Performance
-
-**Target Metrics (M4, small model Q5_0):**
-- Streaming latency: < 500ms (first partial transcript)
-- End-to-end finalization: < 2s for 10-second utterance
-- GPU utilization: < 60% during streaming
-- Memory footprint: < 1 GB (with small model loaded)
-
-**Tested Configurations:**
-- macOS 14.5+ on M4 MacBook Pro (optimized)
-- macOS 14.5+ on M1 MacBook Air (supported)
-
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for performance optimization strategies.
-
----
-
-## Privacy & Security
-
-- **Zero Network Calls:** All transcription happens locally on your Mac
-- **No Telemetry:** No analytics, crash reporting, or usage tracking
-- **Local Storage:** Models and settings stored only on your device
-- **Open Source:** Review the code, build it yourself (coming soon)
-- **Sandboxed:** Runs in macOS App Sandbox (if distributed via Mac App Store)
-
-**Legal Note:** When using Mode B (app audio capture), ensure compliance with local recording laws. MacTalk displays a one-time consent reminder for two-party consent jurisdictions.
-
----
-
-## Contributing
-
-Contributions are welcome! Areas for contribution include:
-
-- Testing and bug reports (especially on M1/M2/M3 Macs)
-- UI/UX design and feedback
-- Performance optimization
-- Additional language support
-- Documentation improvements
+Microphone and Screen Recording permissions are required for transcription. Accessibility permission enables auto-paste.
 
 ---
 
@@ -311,22 +121,17 @@ Contributions are welcome! Areas for contribution include:
 
 ---
 
-## License
+## Technology
 
-MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for details.
-
-### Third-Party Licenses
-
-- **whisper.cpp:** MIT License ([link](https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE))
-- **Whisper Models:** MIT License ([OpenAI Whisper](https://github.com/openai/whisper/blob/main/LICENSE))
+- Built with Swift and AppKit for native macOS performance
+- Powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal acceleration
+- Based on [OpenAI Whisper](https://github.com/openai/whisper) speech recognition
 
 ---
 
-## Acknowledgments
+## License
 
-- [OpenAI Whisper](https://github.com/openai/whisper) for the foundational speech recognition model
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov for the excellent C/C++ implementation
-- The open-source community for tools and inspiration
+MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
@@ -334,7 +139,3 @@ MacTalk is released under the **MIT License**. See [LICENSE](LICENSE) for detail
 
 - **Issues:** [GitHub Issues](https://github.com/benedict2310/MacTalk/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/benedict2310/MacTalk/discussions)
-
----
-
-**Built with privacy, powered by Metal, made for macOS.**
