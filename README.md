@@ -59,12 +59,13 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ## Installation
 
-### Option 1: Download Release (Coming Soon)
+### Option 1: Download Release
 
-1. Download the latest `.dmg` from [Releases](https://github.com/yourusername/MacTalk/releases)
-2. Open the `.dmg` and drag MacTalk to Applications
-3. Launch MacTalk from Applications or Spotlight
-4. Grant required permissions when prompted (Microphone, Accessibility)
+1. Download the latest `MacTalk-v1.0.0.zip` from [Releases](https://github.com/benedict2310/MacTalk/releases)
+2. Unzip the archive and move `MacTalk.app` to your Applications folder
+3. Right-click MacTalk.app and select "Open" (first launch only, due to unsigned app)
+4. Grant required permissions when prompted (Microphone, Screen Recording, Accessibility)
+5. Choose a Whisper model to download (recommended: small or medium)
 
 ### Option 2: Build from Source
 
