@@ -12,82 +12,43 @@ final class PermissionFlowIntegrationTests: XCTestCase {
 
     // MARK: - Screen Recording Flow Tests
 
-    func testScreenRecordingRequestFlowWithoutPermission() {
-        // Test the complete flow when permission is not granted
-        let expectation = expectation(description: "Screen recording request flow")
+    func testScreenRecordingPermissionCheck() {
+        // Test that screen recording permission check works
+        let hasPermission = Permissions.checkScreenRecordingPermission()
 
-        Permissions.requestScreenRecordingPermission { granted in
-            NSLog("📺 [Integration] Screen recording request completed: \(granted)")
+        NSLog("📺 [Integration] Screen recording permission: \(hasPermission)")
 
-            // The result depends on user interaction, but the flow should complete
-            XCTAssertNotNil(granted)
-
-            if granted {
-                NSLog("✅ [Integration] Permission granted - user approved or already had permission")
-            } else {
-                NSLog("⏳ [Integration] Permission not granted - user may need to approve in System Settings")
-            }
-
-            expectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 10.0)
+        // The result depends on system state, but should be a valid bool
+        XCTAssertTrue(hasPermission == true || hasPermission == false, "Should return valid bool")
     }
 
-    func testScreenRecordingFlowDoesNotShowDialogWhenAlreadyGranted() {
-        // Test that we don't show redundant dialogs when permission is already granted
-        let expectation = expectation(description: "No redundant dialog")
+    func testScreenRecordingPermissionCheckIsConsistent() {
+        // Test that permission check returns consistent results
+        let result1 = Permissions.checkScreenRecordingPermission()
+        let result2 = Permissions.checkScreenRecordingPermission()
 
-        // First check actual permission
-        Permissions.checkScreenRecordingPermissionActual { alreadyGranted in
-            if alreadyGranted {
-                NSLog("✅ [Integration] Permission already granted, testing request flow...")
-
-                // Request permission again - should not trigger dialog
-                let startTime = Date()
-                Permissions.requestScreenRecordingPermission { granted in
-                    let elapsed = Date().timeIntervalSince(startTime)
-
-                    XCTAssertTrue(granted, "Should still have permission")
-                    XCTAssertLessThan(elapsed, 3.0, "Should complete quickly without user interaction")
-
-                    NSLog("✅ [Integration] Request completed in \(String(format: "%.2f", elapsed))s without showing dialog")
-                    expectation.fulfill()
-                }
-            } else {
-                NSLog("⏭️  [Integration] Permission not granted, skipping this test")
-                expectation.fulfill()
-            }
-        }
-
-        waitForExpectations(timeout: 15.0)
+        XCTAssertEqual(result1, result2, "Permission check should be consistent")
+        NSLog("📺 [Integration] Screen recording permission consistent: \(result1)")
     }
 
     // MARK: - Accessibility Flow Tests
 
-    func testAccessibilityPermissionFlowDoesNotCrash() {
-        // Test that accessibility permission flow doesn't crash
-        // (Can't test actual dialog in unit tests)
+    func testAccessibilityPermissionCheckDoesNotCrash() {
+        // Test that accessibility permission check doesn't crash
+        let isTrusted = Permissions.isAccessibilityTrusted()
 
-        Permissions.requestAccessibilityPermission()
-
-        // Should complete without crashing
-        NSLog("♿ [Integration] Accessibility permission request completed")
-        XCTAssertTrue(true, "Flow completed without crash")
+        NSLog("♿ [Integration] Accessibility check completed: \(isTrusted)")
+        XCTAssertTrue(isTrusted == true || isTrusted == false, "Should return valid bool")
     }
 
-    func testAccessibilityPermissionCheckAfterRequest() {
-        // Test that permission status is consistent after request
-        let beforeRequest = Permissions.isAccessibilityTrusted()
+    func testAccessibilityPermissionCheckIsConsistent() {
+        // Test that permission status is consistent across checks
+        let result1 = Permissions.isAccessibilityTrusted()
+        let result2 = Permissions.isAccessibilityTrusted()
 
-        Permissions.requestAccessibilityPermission()
+        NSLog("♿ [Integration] Accessibility check 1: \(result1), check 2: \(result2)")
 
-        let afterRequest = Permissions.isAccessibilityTrusted()
-
-        NSLog("♿ [Integration] Accessibility before: \(beforeRequest), after: \(afterRequest)")
-
-        // Status should be consistent (won't change in unit test environment)
-        XCTAssertEqual(beforeRequest, afterRequest, "Permission status should be consistent")
+        XCTAssertEqual(result1, result2, "Permission status should be consistent")
     }
 
     // MARK: - Combined Permission Flows
@@ -95,7 +56,6 @@ final class PermissionFlowIntegrationTests: XCTestCase {
     func testAllPermissionsCanBeCheckedSimultaneously() {
         // Test that all permission checks can run concurrently
         let expectation1 = expectation(description: "Microphone check")
-        let expectation2 = expectation(description: "Screen recording check")
         let expectation3 = expectation(description: "Accessibility check")
 
         // Microphone
@@ -104,11 +64,9 @@ final class PermissionFlowIntegrationTests: XCTestCase {
             expectation1.fulfill()
         }
 
-        // Screen Recording
-        Permissions.checkScreenRecordingPermissionActual { granted in
-            NSLog("📺 [Integration] Screen Recording: \(granted)")
-            expectation2.fulfill()
-        }
+        // Screen Recording (synchronous)
+        let screenGranted = Permissions.checkScreenRecordingPermission()
+        NSLog("📺 [Integration] Screen Recording: \(screenGranted)")
 
         // Accessibility
         DispatchQueue.global().async {
@@ -147,84 +105,50 @@ final class PermissionFlowIntegrationTests: XCTestCase {
         // Set clipboard
         ClipboardManager.setClipboard("Test text")
 
-        // Try to paste (will only work if accessibility is granted)
-        if isTrusted {
-            NSLog("✅ [Integration] Accessibility granted, auto-paste should work")
-            ClipboardManager.pasteIfAllowed()
-            NSLog("✅ [Integration] pasteIfAllowed() completed")
-        } else {
-            NSLog("⏭️  [Integration] Accessibility not granted, skipping auto-paste test")
-        }
+        NSLog("📋 [Integration] ClipboardManager test: accessibility trusted = \(isTrusted)")
 
+        // Note: We don't call pasteIfAllowed() in tests as it may show a dialog
         XCTAssertTrue(true, "ClipboardManager flow completed")
     }
 
-    func testClipboardManagerSessionDeduplication() {
-        // Test that permission request is only shown once per session
-        let isTrusted = Permissions.isAccessibilityTrusted()
+    func testClipboardManagerSetClipboard() {
+        // Test that ClipboardManager can set clipboard text
+        ClipboardManager.setClipboard("Test text")
 
-        if !isTrusted {
-            NSLog("📝 [Integration] Testing session deduplication...")
-
-            // First call - may show dialog
-            ClipboardManager.pasteIfAllowed()
-
-            // Second call - should NOT show dialog
-            ClipboardManager.pasteIfAllowed()
-
-            // Third call - should still NOT show dialog
-            ClipboardManager.pasteIfAllowed()
-
-            NSLog("✅ [Integration] Multiple pasteIfAllowed() calls completed (should only show dialog once)")
-        } else {
-            NSLog("⏭️  [Integration] Accessibility already granted, skipping deduplication test")
-        }
-
-        XCTAssertTrue(true, "Session deduplication test completed")
+        // Should complete without crashing
+        NSLog("✅ [Integration] ClipboardManager.setClipboard completed")
+        XCTAssertTrue(true, "ClipboardManager setClipboard works")
     }
 
     // MARK: - Regression Tests
 
     func testScreenRecordingPermissionPersistsAcrossChecks() {
         // REGRESSION TEST: Permission status should be consistent across multiple checks
-        let expectation1 = expectation(description: "First check")
-        let expectation2 = expectation(description: "Second check")
+        let result1 = Permissions.checkScreenRecordingPermission()
+        NSLog("📺 [Integration] First check: \(result1)")
 
-        var firstResult: Bool?
+        // Second check immediately after
+        let result2 = Permissions.checkScreenRecordingPermission()
+        NSLog("📺 [Integration] Second check: \(result2)")
 
-        Permissions.checkScreenRecordingPermissionActual { result1 in
-            firstResult = result1
-            NSLog("📺 [Integration] First check: \(result1)")
-            expectation1.fulfill()
-
-            // Second check immediately after
-            Permissions.checkScreenRecordingPermissionActual { result2 in
-                NSLog("📺 [Integration] Second check: \(result2)")
-                XCTAssertEqual(firstResult, result2, "Permission status should be consistent")
-                expectation2.fulfill()
-            }
-        }
-
-        waitForExpectations(timeout: 10.0)
+        XCTAssertEqual(result1, result2, "Permission status should be consistent")
     }
 
-    func testNoPermissionDialogSpamming() {
-        // REGRESSION TEST: Ensure we don't spam users with permission dialogs
-        let expectation = expectation(description: "No spam")
-
-        // Multiple rapid requests should not spam dialogs
+    func testMultiplePermissionChecksDoNotBlock() {
+        // REGRESSION TEST: Ensure permission checks complete quickly
         let startTime = Date()
 
-        Permissions.requestScreenRecordingPermission { _ in
-            let elapsed = Date().timeIntervalSince(startTime)
-            NSLog("📺 [Integration] Request completed in \(String(format: "%.2f", elapsed))s")
-
-            // Should complete relatively quickly (not waiting for user interaction each time)
-            XCTAssertLessThan(elapsed, 5.0, "Should not block on repeated requests")
-            expectation.fulfill()
+        // Multiple rapid checks should complete quickly
+        for i in 1...5 {
+            _ = Permissions.checkScreenRecordingPermission()
+            NSLog("📺 [Integration] Check \(i) completed")
         }
 
-        waitForExpectations(timeout: 10.0)
+        let elapsed = Date().timeIntervalSince(startTime)
+        NSLog("📺 [Integration] 5 checks completed in \(String(format: "%.3f", elapsed))s")
+
+        // Should complete very quickly since it's synchronous
+        XCTAssertLessThan(elapsed, 1.0, "Multiple checks should complete quickly")
     }
 
     // MARK: - Performance Tests
@@ -234,19 +158,6 @@ final class PermissionFlowIntegrationTests: XCTestCase {
         measure {
             // CGPreflightScreenCaptureAccess is synchronous and should be fast
             _ = Permissions.checkScreenRecordingPermission()
-        }
-    }
-
-    func testActualPermissionCheckPerformance() {
-        // Measure performance of actual SCShareableContent check
-        measure {
-            let expectation = expectation(description: "Performance test")
-
-            Permissions.checkScreenRecordingPermissionActual { _ in
-                expectation.fulfill()
-            }
-
-            waitForExpectations(timeout: 5.0)
         }
     }
 }

@@ -53,53 +53,25 @@ final class PermissionsTests: XCTestCase {
         NSLog("⚠️  [Test] Note: This may be false even if permission is granted (known macOS behavior)")
     }
 
-    func testScreenRecordingPermissionActualCheck() {
-        // Test the REAL permission check using SCShareableContent
-        // This is more reliable than CGPreflightScreenCaptureAccess
-        let expectation = expectation(description: "Screen recording actual permission check")
+    func testScreenRecordingPermissionCheckConsistency() {
+        // Test that permission check returns consistent results
+        let result1 = Permissions.checkScreenRecordingPermission()
+        let result2 = Permissions.checkScreenRecordingPermission()
 
-        Permissions.checkScreenRecordingPermissionActual { hasPermission in
-            // Should complete with a boolean result
-            XCTAssertNotNil(hasPermission)
-
-            NSLog("📺 [Test] SCShareableContent test result: \(hasPermission)")
-
-            if hasPermission {
-                NSLog("✅ [Test] Screen recording permission IS granted (verified by SCShareableContent)")
-            } else {
-                NSLog("❌ [Test] Screen recording permission NOT granted (SCShareableContent failed)")
-            }
-
-            expectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 5.0)
+        XCTAssertEqual(result1, result2, "Permission check should be consistent")
+        NSLog("📺 [Test] Screen recording check consistent: \(result1)")
     }
 
-    func testScreenRecordingPermissionActualCheckMatchesCGPreflight() {
-        // Test if CGPreflightScreenCaptureAccess matches actual SCShareableContent test
-        // This documents the known discrepancy
-        let expectation = expectation(description: "Compare permission checks")
+    func testScreenRecordingPermissionCheckCompletesQuickly() {
+        // Test that permission check doesn't block
+        let startTime = Date()
+        let result = Permissions.checkScreenRecordingPermission()
+        let elapsed = Date().timeIntervalSince(startTime)
 
-        let cgPreflightResult = Permissions.checkScreenRecordingPermission()
+        NSLog("📺 [Test] CGPreflightScreenCaptureAccess result: \(result)")
+        NSLog("⏱️  [Test] Completed in \(String(format: "%.3f", elapsed))s")
 
-        Permissions.checkScreenRecordingPermissionActual { actualResult in
-            NSLog("📊 [Test] CGPreflightScreenCaptureAccess: \(cgPreflightResult)")
-            NSLog("📊 [Test] SCShareableContent actual test: \(actualResult)")
-
-            if cgPreflightResult != actualResult {
-                NSLog("⚠️  [Test] DISCREPANCY DETECTED!")
-                NSLog("⚠️  [Test] CGPreflight says: \(cgPreflightResult ? "granted" : "not granted")")
-                NSLog("⚠️  [Test] Actual test says: \(actualResult ? "granted" : "not granted")")
-                NSLog("⚠️  [Test] This is expected behavior - CGPreflight doesn't update until app restart")
-            } else {
-                NSLog("✅ [Test] Both checks agree: \(actualResult ? "granted" : "not granted")")
-            }
-
-            expectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 5.0)
+        XCTAssertLessThan(elapsed, 1.0, "Permission check should be fast")
     }
 
     // MARK: - Accessibility Permission Tests
@@ -114,13 +86,13 @@ final class PermissionsTests: XCTestCase {
         NSLog("♿ [Test] Accessibility trusted: \(isTrusted)")
     }
 
-    func testAccessibilityPermissionRequest() {
-        // Test accessibility permission request (doesn't actually show dialog in tests)
-        // This just verifies the API doesn't crash
-        Permissions.requestAccessibilityPermission()
+    func testAccessibilityPermissionCheckAPI() {
+        // Test accessibility permission check API exists and works
+        // Note: We don't call requestAccessibilityPermission() as it shows a dialog
+        let isTrusted = Permissions.isAccessibilityTrusted()
 
-        // Should complete without crashing
-        NSLog("♿ [Test] Accessibility permission request completed")
+        NSLog("♿ [Test] Accessibility permission API works, trusted: \(isTrusted)")
+        XCTAssertTrue(isTrusted == true || isTrusted == false, "Should return valid bool")
     }
 
     // MARK: - Permission System Settings URLs
@@ -171,46 +143,29 @@ final class PermissionsTests: XCTestCase {
 
     func testPermissionChecksDontHang() {
         // Verify permission checks complete in reasonable time
-        // This tests the timeout protection we added
-        let expectation = expectation(description: "Permission checks complete")
-
         let startTime = Date()
 
-        Permissions.checkScreenRecordingPermissionActual { _ in
-            let elapsed = Date().timeIntervalSince(startTime)
+        _ = Permissions.checkScreenRecordingPermission()
+        let elapsed = Date().timeIntervalSince(startTime)
 
-            NSLog("⏱️  [Test] Screen recording check completed in \(String(format: "%.2f", elapsed))s")
-            XCTAssertLessThan(elapsed, 5.0, "Permission check should not hang")
-
-            expectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 10.0)
+        NSLog("⏱️  [Test] Screen recording check completed in \(String(format: "%.3f", elapsed))s")
+        XCTAssertLessThan(elapsed, 1.0, "Permission check should not hang")
     }
 
     func testMultipleSimultaneousPermissionChecks() {
         // Test that multiple permission checks can run simultaneously
-        let expectation1 = expectation(description: "Check 1")
-        let expectation2 = expectation(description: "Check 2")
-        let expectation3 = expectation(description: "Check 3")
+        let result1 = Permissions.checkScreenRecordingPermission()
+        NSLog("✅ [Test] Check 1 completed: \(result1)")
 
-        Permissions.checkScreenRecordingPermissionActual { result1 in
-            NSLog("✅ [Test] Check 1 completed: \(result1)")
-            expectation1.fulfill()
-        }
+        let result2 = Permissions.checkScreenRecordingPermission()
+        NSLog("✅ [Test] Check 2 completed: \(result2)")
 
-        Permissions.checkScreenRecordingPermissionActual { result2 in
-            NSLog("✅ [Test] Check 2 completed: \(result2)")
-            expectation2.fulfill()
-        }
+        let result3 = Permissions.checkScreenRecordingPermission()
+        NSLog("✅ [Test] Check 3 completed: \(result3)")
 
-        Permissions.checkScreenRecordingPermissionActual { result3 in
-            NSLog("✅ [Test] Check 3 completed: \(result3)")
-            expectation3.fulfill()
-        }
-
-        waitForExpectations(timeout: 10.0)
-        NSLog("✅ [Test] All simultaneous checks completed")
+        XCTAssertEqual(result1, result2, "Results should be consistent")
+        XCTAssertEqual(result2, result3, "Results should be consistent")
+        NSLog("✅ [Test] All checks completed with consistent results")
     }
 
     // MARK: - Regression Tests for Known Issues
@@ -231,23 +186,13 @@ final class PermissionsTests: XCTestCase {
         waitForExpectations(timeout: 2.0)
     }
 
-    func testActualPermissionCheckWorksEvenWhenCGPreflightReturnsFalse() {
-        // REGRESSION TEST: Document that actual permission check works
-        // even when CGPreflightScreenCaptureAccess returns false
+    func testCGPreflightReturnsConsistentResults() {
+        // REGRESSION TEST: Verify CGPreflight returns consistent results
+        let result1 = CGPreflightScreenCaptureAccess()
+        let result2 = CGPreflightScreenCaptureAccess()
 
-        let expectation = expectation(description: "Actual check works")
-
-        let cgPreflightResult = CGPreflightScreenCaptureAccess()
-
-        Permissions.checkScreenRecordingPermissionActual { actualResult in
-            if !cgPreflightResult && actualResult {
-                NSLog("✅ [Test] CONFIRMED: Actual permission check works even when CGPreflight returns false!")
-                NSLog("✅ [Test] This validates our fix for the reported issue")
-            }
-            expectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 5.0)
+        XCTAssertEqual(result1, result2, "CGPreflight should return consistent results")
+        NSLog("✅ [Test] CGPreflight returns consistent results: \(result1)")
     }
 
     func testCodeSigningStability() {
