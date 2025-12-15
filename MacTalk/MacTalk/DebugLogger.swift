@@ -7,13 +7,18 @@
 
 import Foundation
 
-class DebugLogger {
+/// Thread-safe debug logger using a serial dispatch queue
+/// Marked @unchecked Sendable because we manage thread safety internally
+final class DebugLogger: @unchecked Sendable {
     static let shared = DebugLogger()
     private let logFile = "/tmp/mactalk_debug.log"
+    private let queue = DispatchQueue(label: "com.mactalk.debuglogger", qos: .utility)
 
     init() {
         // Clear log file on init
-        try? "=== MacTalk Debug Log Started ===\n".write(toFile: logFile, atomically: true, encoding: .utf8)
+        queue.async { [logFile] in
+            try? "=== MacTalk Debug Log Started ===\n".write(toFile: logFile, atomically: true, encoding: .utf8)
+        }
         log("DebugLogger initialized")
     }
 
@@ -22,17 +27,20 @@ class DebugLogger {
         let fileName = (file as NSString).lastPathComponent
         let logMessage = "[\(timestamp)] [\(fileName):\(line)] \(message)\n"
 
-        if let handle = FileHandle(forWritingAtPath: logFile) {
-            handle.seekToEndOfFile()
-            if let data = logMessage.data(using: .utf8) {
-                handle.write(data)
+        // Write to file on serial queue for thread safety
+        queue.async { [logFile] in
+            if let handle = FileHandle(forWritingAtPath: logFile) {
+                handle.seekToEndOfFile()
+                if let data = logMessage.data(using: .utf8) {
+                    handle.write(data)
+                }
+                handle.closeFile()
+            } else {
+                try? logMessage.write(toFile: logFile, atomically: false, encoding: .utf8)
             }
-            handle.closeFile()
-        } else {
-            try? logMessage.write(toFile: logFile, atomically: false, encoding: .utf8)
         }
 
-        // Also print to stderr
+        // Also print to stderr (thread-safe)
         fputs(logMessage, stderr)
     }
 }

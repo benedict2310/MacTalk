@@ -30,12 +30,12 @@ final class TranscriptionController {
     private var allAudio: [Float] = []  // Store all audio for final transcription
     private let chunkLock = NSLock()
 
-    var onPartial: ((String) -> Void)?
-    var onFinal: ((String) -> Void)?
-    var onMicLevel: ((AudioLevelMonitor.LevelData) -> Void)?
-    var onAppLevel: ((AudioLevelMonitor.LevelData) -> Void)?
-    var onAppAudioLost: (() -> Void)?  // Callback when app audio is lost
-    var onFallbackToMicOnly: (() -> Void)?  // Callback when falling back to mic-only
+    var onPartial: (@Sendable @MainActor (String) -> Void)?
+    var onFinal: (@Sendable @MainActor (String) -> Void)?
+    var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
+    var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
+    var onAppAudioLost: (@Sendable @MainActor () -> Void)?  // Callback when app audio is lost
+    var onFallbackToMicOnly: (@Sendable @MainActor () -> Void)?  // Callback when falling back to mic-only
     var language: String? = "en"  // Default to English to avoid incorrect auto-detection
     var autoPasteEnabled = false
 
@@ -54,9 +54,13 @@ final class TranscriptionController {
         self.engine = engine
         self.currentChunkDuration = chunkDurationMs
 
-        // Adapt to battery mode if enabled
-        if adaptiveQualityEnabled && PerformanceMonitor.shared.isBatteryMode {
-            configureBatteryMode(true)
+        // Adapt to battery mode if enabled (check asynchronously)
+        if adaptiveQualityEnabled {
+            Task { @MainActor in
+                if PerformanceMonitor.currentBatteryMode {
+                    self.configureBatteryMode(true)
+                }
+            }
         }
     }
 
@@ -139,7 +143,11 @@ final class TranscriptionController {
 
         // Update microphone level
         let micLevel = levelMonitor.update(channel: .microphone, buffer: samples)
-        onMicLevel?(micLevel)
+        if let onMicLevel {
+            Task { @MainActor [micLevel] in
+                onMicLevel(micLevel)
+            }
+        }
 
         appendSamples(samples)
     }
@@ -151,7 +159,11 @@ final class TranscriptionController {
 
         // Update app audio level
         let appLevel = levelMonitor.update(channel: .application, buffer: samples)
-        onAppLevel?(appLevel)
+        if let onAppLevel {
+            Task { @MainActor [appLevel] in
+                onAppLevel(appLevel)
+            }
+        }
 
         appendSamples(samples)
     }
@@ -205,7 +217,7 @@ final class TranscriptionController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let result = PerformanceMonitor.shared.measure("WhisperInference") {
+            let result = PerformanceMonitor.shared.measureSync("WhisperInference") {
                 return self.engine.transcribeStreaming(
                     samples: chunkSamples,
                     language: self.language
@@ -269,7 +281,11 @@ final class TranscriptionController {
         let cleaned = cleanTranscript(combined)
 
         if !cleaned.isEmpty {
-            onFinal?(cleaned)
+            if let onFinal {
+                Task { @MainActor in
+                    onFinal(cleaned)
+                }
+            }
         }
 
         // Clear transcript to prevent duplicate emissions if stop() is called multiple times
@@ -309,8 +325,10 @@ final class TranscriptionController {
         print("⚠️ App audio error: \(error)")
 
         // Notify that app audio was lost
-        DispatchQueue.main.async { [weak self] in
-            self?.onAppAudioLost?()
+        if let onAppAudioLost {
+            Task { @MainActor in
+                onAppAudioLost()
+            }
         }
 
         // Immediately fall back to mic-only mode
@@ -330,8 +348,10 @@ final class TranscriptionController {
         currentMode = .micOnly
 
         // Notify
-        DispatchQueue.main.async { [weak self] in
-            self?.onFallbackToMicOnly?()
+        if let onFallbackToMicOnly {
+            Task { @MainActor in
+                onFallbackToMicOnly()
+            }
         }
     }
 
@@ -355,6 +375,10 @@ final class TranscriptionController {
             return  // Throttle UI updates
         }
         lastUIUpdateTime = now
-        onPartial?(text)
+        if let onPartial {
+            Task { @MainActor in
+                onPartial(text)
+            }
+        }
     }
 }

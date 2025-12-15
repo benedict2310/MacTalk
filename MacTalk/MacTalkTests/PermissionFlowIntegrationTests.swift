@@ -98,6 +98,7 @@ final class PermissionFlowIntegrationTests: XCTestCase {
 
     // MARK: - ClipboardManager Integration
 
+    @MainActor
     func testClipboardManagerPermissionCheck() {
         // Test that ClipboardManager properly checks accessibility permission
         let isTrusted = Permissions.isAccessibilityTrusted()
@@ -111,6 +112,7 @@ final class PermissionFlowIntegrationTests: XCTestCase {
         XCTAssertTrue(true, "ClipboardManager flow completed")
     }
 
+    @MainActor
     func testClipboardManagerSetClipboard() {
         // Test that ClipboardManager can set clipboard text
         ClipboardManager.setClipboard("Test text")

@@ -8,16 +8,18 @@
 import Foundation
 import AppKit
 
-/// Enhanced ModelManager with automatic download capabilities
+/// Enhanced ModelManager with automatic download capabilities.
+/// @MainActor ensures thread-safe access to download state and callbacks.
+@MainActor
 final class ModelManager {
     static let shared = ModelManager()
     private let downloader = ModelDownloader()
 
     /// Legacy compatibility - points to ModelStore directory
-    static let modelsDirectory: URL = ModelStore.modelsDir
+    nonisolated static let modelsDirectory: URL = ModelStore.modelsDir
 
     /// Bind this from UI to receive progress updates
-    var onDownloadState: ((ModelDownloader.State) -> Void)?
+    var onDownloadState: (@MainActor @Sendable (ModelDownloader.State) -> Void)?
 
     /// Track if a download is currently in progress
     private var isDownloading = false
@@ -26,21 +28,26 @@ final class ModelManager {
     private init() {
         // Set up the downloader state forwarding
         downloader.onState = { [weak self] state in
-            // Forward to UI callback if set
-            self?.onDownloadState?(state)
+            // Forward state updates on main actor
+            Task { @MainActor in
+                guard let self = self else { return }
 
-            // Forward to any completion handlers
-            self?.completionHandler?(state)
+                // Forward to UI callback if set
+                self.onDownloadState?(state)
 
-            // Update download state tracking
-            switch state {
-            case .running:
-                self?.isDownloading = true
-            case .done, .failed:
-                self?.isDownloading = false
-                self?.currentDownloadSpec = nil
-            default:
-                break
+                // Forward to any completion handlers
+                self.completionHandler?(state)
+
+                // Update download state tracking
+                switch state {
+                case .running:
+                    self.isDownloading = true
+                case .done, .failed:
+                    self.isDownloading = false
+                    self.currentDownloadSpec = nil
+                default:
+                    break
+                }
             }
         }
     }
@@ -102,7 +109,7 @@ final class ModelManager {
     // MARK: - Legacy Compatibility Methods
 
     /// Legacy method - now uses ModelStore
-    static func ensureModelDownloaded(name: String) -> URL {
+    nonisolated static func ensureModelDownloaded(name: String) -> URL {
         // Create models directory if it doesn't exist
         try? FileManager.default.createDirectory(
             at: modelsDirectory,
@@ -157,21 +164,21 @@ final class ModelManager {
         return modelURL
     }
 
-    static func listAvailableModels() -> [String] {
+    nonisolated static func listAvailableModels() -> [String] {
         return ModelStore.listAvailableModels()
     }
 
-    static func modelExists(name: String) -> Bool {
+    nonisolated static func modelExists(name: String) -> Bool {
         let modelURL = modelsDirectory.appendingPathComponent(name)
         return FileManager.default.fileExists(atPath: modelURL.path)
     }
 
-    static func deleteModel(name: String) throws {
+    nonisolated static func deleteModel(name: String) throws {
         let modelURL = modelsDirectory.appendingPathComponent(name)
         try FileManager.default.removeItem(at: modelURL)
     }
 
-    static func modelSize(name: String) -> Int64? {
+    nonisolated static func modelSize(name: String) -> Int64? {
         let modelURL = modelsDirectory.appendingPathComponent(name)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: modelURL.path) else {
             return nil
@@ -179,7 +186,7 @@ final class ModelManager {
         return attributes[.size] as? Int64
     }
 
-    static func openModelsDirectory() {
+    nonisolated static func openModelsDirectory() {
         ModelStore.openModelsDirectory()
     }
 }
@@ -187,7 +194,7 @@ final class ModelManager {
 // MARK: - Model Download
 
 extension ModelManager {
-    enum DownloadError: Error {
+    enum DownloadError: Error, Sendable {
         case invalidURL
         case downloadFailed
         case checksumMismatch
@@ -197,8 +204,8 @@ extension ModelManager {
     /// This is now implemented via ensureAvailable() method
     static func downloadModel(
         name: String,
-        progressHandler: @escaping (Double) -> Void,
-        completion: @escaping (Result<URL, Error>) -> Void
+        progressHandler: @escaping @MainActor (Double) -> Void,
+        completion: @escaping @MainActor (Result<URL, Error>) -> Void
     ) {
         // Find the model spec from catalog
         guard let spec = ModelCatalog.findByFilename(name) else {

@@ -1,7 +1,11 @@
 import Foundation
 
-final class ModelDownloader: NSObject {
-    enum State: Equatable {
+/// Model downloader handling URLSession delegate callbacks.
+/// Marked @unchecked Sendable because NSObject is not Sendable, but we ensure
+/// thread safety by dispatching all state callbacks to the main actor.
+final class ModelDownloader: NSObject, @unchecked Sendable {
+    /// Download state enumeration
+    enum State: Equatable, Sendable {
         case idle
         case running(progress: Double)   // 0…1
         case verifying
@@ -20,7 +24,7 @@ final class ModelDownloader: NSObject {
         }
     }
 
-    enum ErrorType: Swift.Error, LocalizedError {
+    enum ErrorType: Swift.Error, LocalizedError, Sendable {
         case noURLs
         case noSpace
         case cancelled
@@ -47,7 +51,15 @@ final class ModelDownloader: NSObject {
     private var resumeURL: URL!
     private var tempFileURL: URL?
 
-    var onState: ((State) -> Void)?
+    /// State callback - always dispatched to main actor
+    var onState: (@MainActor (State) -> Void)?
+
+    /// Helper to notify state changes on main actor
+    private func notifyState(_ state: State) {
+        Task { @MainActor in
+            self.onState?(state)
+        }
+    }
 
     override init() {
         super.init()
@@ -63,16 +75,12 @@ final class ModelDownloader: NSObject {
         self.resumeURL = ModelStore.downloadsDir.appendingPathComponent("\(spec.id).resume")
 
         if ModelStore.exists(spec) {
-            DispatchQueue.main.async { [weak self] in
-                self?.onState?(.done(ModelStore.path(for: spec)))
-            }
+            notifyState(.done(ModelStore.path(for: spec)))
             return
         }
 
         if let free = ModelStore.freeSpaceBytes(), free < spec.sizeBytes + 200_000_000 {
-            DispatchQueue.main.async { [weak self] in
-                self?.onState?(.failed(ErrorType.noSpace))
-            }
+            notifyState(.failed(ErrorType.noSpace))
             return
         }
 
@@ -82,16 +90,12 @@ final class ModelDownloader: NSObject {
 
     func cancel() {
         task?.cancel()
-        DispatchQueue.main.async { [weak self] in
-            self?.onState?(.failed(ErrorType.cancelled))
-        }
+        notifyState(.failed(ErrorType.cancelled))
     }
 
     private func kick() {
         guard currentURLIndex < spec.urls.count else {
-            DispatchQueue.main.async { [weak self] in
-                self?.onState?(.failed(ErrorType.noURLs))
-            }
+            notifyState(.failed(ErrorType.noURLs))
             return
         }
 
@@ -105,9 +109,7 @@ final class ModelDownloader: NSObject {
             task = session.downloadTask(with: req)
         }
 
-        DispatchQueue.main.async { [weak self] in
-            self?.onState?(.running(progress: 0))
-        }
+        notifyState(.running(progress: 0))
         task?.resume()
     }
 
@@ -118,18 +120,14 @@ final class ModelDownloader: NSObject {
             try? FileManager.default.removeItem(at: resumeURL)
             kick()
         } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.onState?(.failed(ErrorType.network(err)))
-            }
+            notifyState(.failed(ErrorType.network(err)))
         }
     }
 
     private func verifyAndMove(tempURL: URL) {
-        DispatchQueue.main.async { [weak self] in
-            self?.onState?(.verifying)
-        }
+        notifyState(.verifying)
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             guard let self = self else { return }
 
             do {
@@ -161,13 +159,9 @@ final class ModelDownloader: NSObject {
                 try FileManager.default.moveItem(at: tempURL, to: dest)
                 try? FileManager.default.removeItem(at: self.resumeURL)
 
-                DispatchQueue.main.async {
-                    self.onState?(.done(dest))
-                }
+                self.notifyState(.done(dest))
             } catch {
-                DispatchQueue.main.async {
-                    self.onState?(.failed(error))
-                }
+                self.notifyState(.failed(error))
             }
         }
     }
@@ -183,9 +177,7 @@ extension ModelDownloader: URLSessionDownloadDelegate {
             self.tempFileURL = tmp
             verifyAndMove(tempURL: tmp)
         } catch {
-            DispatchQueue.main.async { [weak self] in
-                self?.onState?(.failed(ErrorType.io(error)))
-            }
+            notifyState(.failed(ErrorType.io(error)))
         }
     }
 
@@ -195,9 +187,7 @@ extension ModelDownloader: URLSessionDownloadDelegate {
                     totalBytesExpectedToWrite: Int64) {
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
-        DispatchQueue.main.async { [weak self] in
-            self?.onState?(.running(progress: progress))
-        }
+        notifyState(.running(progress: progress))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask,

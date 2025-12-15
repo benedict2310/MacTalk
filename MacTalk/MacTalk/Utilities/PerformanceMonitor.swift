@@ -9,7 +9,9 @@ import Foundation
 import os.log
 import Darwin  // FIX P0: For Mach APIs (task_info, thread_info, etc.)
 
-final class PerformanceMonitor {
+/// Performance monitor using Swift actor for thread-safe metric collection.
+/// Battery monitoring is handled on the main actor separately.
+actor PerformanceMonitor {
 
     // MARK: - Singleton
 
@@ -19,48 +21,49 @@ final class PerformanceMonitor {
 
     private let logger = OSLog(subsystem: "com.mactalk.app", category: "Performance")
     private var timers: [String: CFAbsoluteTime] = [:]
-    private let timerLock = NSLock()
 
-    // Battery mode tracking
-    private(set) var isBatteryMode: Bool = false
-    private var batteryMonitorTimer: Timer?
+    // Battery mode tracking - accessed from main actor for timer
+    @MainActor private static var _isBatteryMode: Bool = false
+    @MainActor private static var batteryMonitorTimer: Timer?
+
+    /// Current battery mode status (async accessor for non-MainActor contexts)
+    var isBatteryMode: Bool {
+        get async { await MainActor.run { Self._isBatteryMode } }
+    }
+
+    /// Synchronous battery mode check - only call from MainActor context
+    @MainActor
+    static var currentBatteryMode: Bool {
+        _isBatteryMode
+    }
 
     // Performance metrics
     private var metrics: [String: [TimeInterval]] = [:]
-    private let metricsLock = NSLock()
 
     // MARK: - Initialization
 
     private init() {
-        startBatteryMonitoring()
-    }
-
-    deinit {
-        batteryMonitorTimer?.invalidate()
+        Task { @MainActor in
+            Self.startBatteryMonitoring()
+        }
     }
 
     // MARK: - Timer Methods
 
     /// Start a performance timer with a given identifier
     func startTimer(_ identifier: String) {
-        timerLock.lock()
         timers[identifier] = CFAbsoluteTimeGetCurrent()
-        timerLock.unlock()
     }
 
     /// Stop a performance timer and log the duration
     @discardableResult
     func stopTimer(_ identifier: String) -> TimeInterval? {
-        timerLock.lock()
-        defer { timerLock.unlock() }
-
-        guard let startTime = timers[identifier] else {
+        guard let startTime = timers.removeValue(forKey: identifier) else {
             os_log(.error, log: logger, "Timer '%{public}@' was never started", identifier)
             return nil
         }
 
         let duration = CFAbsoluteTimeGetCurrent() - startTime
-        timers.removeValue(forKey: identifier)
 
         // Log performance
         os_log(.info, log: logger, "⏱️ %{public}@: %.3fms", identifier, duration * 1000)
@@ -71,26 +74,26 @@ final class PerformanceMonitor {
         return duration
     }
 
-    /// Measure the execution time of a block
-    func measure<T>(_ identifier: String, block: () throws -> T) rethrows -> T {
+    /// Measure the execution time of a block (async version)
+    func measure<T>(_ identifier: String, block: () async throws -> T) async rethrows -> T {
         startTimer(identifier)
-        defer { stopTimer(identifier) }
-        return try block()
+        defer { _ = stopTimer(identifier) }
+        return try await block()
     }
 
-    /// Measure async execution time
-    func measureAsync<T>(_ identifier: String, block: () async throws -> T) async rethrows -> T {
-        startTimer(identifier)
-        defer { stopTimer(identifier) }
-        return try await block()
+    /// Convenience for synchronous contexts - records metric asynchronously
+    nonisolated func measureSync<T>(_ identifier: String, block: () throws -> T) rethrows -> T {
+        let start = CFAbsoluteTimeGetCurrent()
+        defer {
+            let duration = CFAbsoluteTimeGetCurrent() - start
+            Task { await self.recordMetric(identifier, duration: duration) }
+        }
+        return try block()
     }
 
     // MARK: - Metrics
 
     private func recordMetric(_ identifier: String, duration: TimeInterval) {
-        metricsLock.lock()
-        defer { metricsLock.unlock() }
-
         if metrics[identifier] == nil {
             metrics[identifier] = []
         }
@@ -104,9 +107,6 @@ final class PerformanceMonitor {
 
     /// Get statistics for a metric
     func getStatistics(for identifier: String) -> MetricStatistics? {
-        metricsLock.lock()
-        defer { metricsLock.unlock() }
-
         guard let durations = metrics[identifier], !durations.isEmpty else {
             return nil
         }
@@ -128,37 +128,33 @@ final class PerformanceMonitor {
 
     /// Get all metric statistics
     func getAllStatistics() -> [MetricStatistics] {
-        metricsLock.lock()
-        let identifiers = Array(metrics.keys)
-        metricsLock.unlock()
-
-        return identifiers.compactMap { getStatistics(for: $0) }
+        return metrics.keys.compactMap { getStatistics(for: $0) }
     }
 
     /// Clear all metrics
     func clearMetrics() {
-        metricsLock.lock()
         metrics.removeAll()
-        metricsLock.unlock()
     }
 
     // MARK: - Battery Monitoring
 
-    private func startBatteryMonitoring() {
+    @MainActor
+    private static func startBatteryMonitoring() {
         updateBatteryStatus()
 
         // Update battery status every 30 seconds
-        batteryMonitorTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.updateBatteryStatus()
+        batteryMonitorTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+            Task { @MainActor in
+                updateBatteryStatus()
+            }
         }
     }
 
-    private func updateBatteryStatus() {
+    @MainActor
+    private static func updateBatteryStatus() {
         #if os(macOS)
         // Run pmset on background queue to avoid blocking UI
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-
+        Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
             process.arguments = ["-g", "batt"]
@@ -174,19 +170,21 @@ final class PerformanceMonitor {
                 if let output = String(data: data, encoding: .utf8) {
                     let newBatteryMode = !output.contains("AC Power")
 
-                    // Update isBatteryMode on main thread
-                    DispatchQueue.main.async {
-                        let wasOnBattery = self.isBatteryMode
-                        self.isBatteryMode = newBatteryMode
+                    // Update isBatteryMode on main actor
+                    await MainActor.run {
+                        let wasOnBattery = _isBatteryMode
+                        _isBatteryMode = newBatteryMode
 
                         // Log battery mode changes
                         if wasOnBattery != newBatteryMode {
-                            os_log(.info, log: self.logger, "🔋 Battery mode: %{public}@", newBatteryMode ? "ON" : "OFF")
+                            let logger = OSLog(subsystem: "com.mactalk.app", category: "Performance")
+                            os_log(.info, log: logger, "🔋 Battery mode: %{public}@", newBatteryMode ? "ON" : "OFF")
                         }
                     }
                 }
             } catch {
-                os_log(.error, log: self.logger, "Failed to check battery status: %{public}@", error.localizedDescription)
+                let logger = OSLog(subsystem: "com.mactalk.app", category: "Performance")
+                os_log(.error, log: logger, "Failed to check battery status: %{public}@", error.localizedDescription)
             }
         }
         #endif
@@ -244,10 +242,11 @@ final class PerformanceMonitor {
 
     // MARK: - Performance Report
 
-    func generateReport() -> String {
+    func generateReport() async -> String {
         var report = "=== MacTalk Performance Report ===\n\n"
 
-        report += "Battery Mode: \(isBatteryMode ? "ON" : "OFF")\n\n"
+        let batteryMode = await isBatteryMode
+        report += "Battery Mode: \(batteryMode ? "ON" : "OFF")\n\n"
 
         let stats = getAllStatistics().sorted { $0.identifier < $1.identifier }
 
@@ -274,7 +273,7 @@ final class PerformanceMonitor {
 
     // MARK: - Types
 
-    struct MetricStatistics {
+    struct MetricStatistics: Sendable {
         let identifier: String
         let count: Int
         let min: TimeInterval
