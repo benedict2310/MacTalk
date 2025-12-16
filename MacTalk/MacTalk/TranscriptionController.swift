@@ -6,11 +6,25 @@
 //
 
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
+@preconcurrency import CoreMedia
 import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
+import os
 
-final class TranscriptionController {
-    enum Mode {
+/// Orchestrates audio capture, mixing, and transcription.
+///
+/// ## Thread Safety
+/// This class is marked `@unchecked Sendable` because:
+/// - Audio buffers are protected by `OSAllocatedUnfairLock`
+/// - All member classes (AudioCapture, ScreenAudioCapture, AudioMixer, etc.) are Sendable
+/// - UI callbacks are dispatched to MainActor
+///
+/// ## Threading Model
+/// - Audio callbacks arrive from audio render threads (high priority)
+/// - Transcription runs on background queues (userInitiated)
+/// - UI updates are dispatched to MainActor
+final class TranscriptionController: @unchecked Sendable {
+    enum Mode: Sendable {
         case micOnly
         case micPlusAppAudio
     }
@@ -26,9 +40,21 @@ final class TranscriptionController {
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let samplesPerMs = 16  // 16kHz sample rate
 
-    private var audioChunk: [Float] = []
-    private var allAudio: [Float] = []  // Store all audio for final transcription
-    private let chunkLock = NSLock()
+    /// Audio buffer state protected by OSAllocatedUnfairLock.
+    private struct AudioState {
+        var audioChunk: [Float] = []
+        var allAudio: [Float] = []  // Store all audio for final transcription
+        var fullTranscript: [String] = []
+        var currentMode: Mode = .micOnly
+        var currentChunkDuration: Int
+        var lastUIUpdateTime: TimeInterval = 0
+
+        init(chunkDuration: Int) {
+            self.currentChunkDuration = chunkDuration
+        }
+    }
+
+    private let audioState: OSAllocatedUnfairLock<AudioState>
 
     var onPartial: (@Sendable @MainActor (String) -> Void)?
     var onFinal: (@Sendable @MainActor (String) -> Void)?
@@ -39,24 +65,20 @@ final class TranscriptionController {
     var language: String? = "en"  // Default to English to avoid incorrect auto-detection
     var autoPasteEnabled = false
 
-    private var fullTranscript: [String] = []
-    private var currentMode: Mode = .micOnly
-
     // Performance optimization
     private var adaptiveQualityEnabled = true
-    private var currentChunkDuration: Int
-    private var lastUIUpdateTime: TimeInterval = 0
     private let uiUpdateThrottle: TimeInterval = 0.1  // 100ms
 
     // MARK: - Initialization
 
     init(engine: WhisperEngine) {
         self.engine = engine
-        self.currentChunkDuration = chunkDurationMs
+        self.audioState = OSAllocatedUnfairLock(initialState: AudioState(chunkDuration: chunkDurationMs))
 
         // Adapt to battery mode if enabled (check asynchronously)
         if adaptiveQualityEnabled {
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 if PerformanceMonitor.currentBatteryMode {
                     self.configureBatteryMode(true)
                 }
@@ -68,13 +90,12 @@ final class TranscriptionController {
 
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
         // Clear previous state
-        chunkLock.lock()
-        audioChunk.removeAll()
-        allAudio.removeAll()
-        fullTranscript.removeAll()
-        chunkLock.unlock()
-
-        currentMode = mode
+        audioState.withLock { state in
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            state.fullTranscript.removeAll()
+            state.currentMode = mode
+        }
 
         // Set up microphone capture
         micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
@@ -177,30 +198,31 @@ final class TranscriptionController {
             print("📊 Audio samples: count=\(samples.count), RMS=\(String(format: "%.4f", rms)), Peak=\(String(format: "%.4f", peak))")
         }
 
-        chunkLock.lock()
-        audioChunk.append(contentsOf: samples)
-        allAudio.append(contentsOf: samples)  // Store all audio for final transcription
-        let chunkCount = audioChunk.count
-        chunkLock.unlock()
+        let (chunkCount, threshold) = audioState.withLock { state -> (Int, Int) in
+            state.audioChunk.append(contentsOf: samples)
+            state.allAudio.append(contentsOf: samples)  // Store all audio for final transcription
+            return (state.audioChunk.count, samplesPerMs * chunkDurationMs)
+        }
 
         // Check if we have enough samples for a chunk
-        let threshold = samplesPerMs * chunkDurationMs
         if chunkCount >= threshold {
             processChunk()
         }
     }
 
     private func processChunk() {
-        chunkLock.lock()
-        let threshold = samplesPerMs * currentChunkDuration
-        guard audioChunk.count >= threshold else {
-            chunkLock.unlock()
-            return
+        let chunkSamples: [Float]? = audioState.withLock { state in
+            let threshold = samplesPerMs * state.currentChunkDuration
+            guard state.audioChunk.count >= threshold else {
+                return nil
+            }
+
+            let samples = Array(state.audioChunk.prefix(threshold))
+            state.audioChunk.removeFirst(threshold)
+            return samples
         }
 
-        let chunkSamples = Array(audioChunk.prefix(threshold))
-        audioChunk.removeFirst(threshold)
-        chunkLock.unlock()
+        guard let chunkSamples = chunkSamples else { return }
 
         // Simple Voice Activity Detection (VAD) - skip if chunk is too quiet
         let rms = sqrt(chunkSamples.map { $0 * $0 }.reduce(0, +) / Float(chunkSamples.count))
@@ -227,7 +249,9 @@ final class TranscriptionController {
             if let result = result {
                 let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
-                    self.fullTranscript.append(trimmedText)
+                    self.audioState.withLock { state in
+                        state.fullTranscript.append(trimmedText)
+                    }
                     self.throttledUIUpdate(trimmedText)
                 }
             }
@@ -235,11 +259,12 @@ final class TranscriptionController {
     }
 
     private func flushFinalChunk() {
-        chunkLock.lock()
-        let finalAudio = allAudio  // Use ALL accumulated audio for best quality
-        audioChunk.removeAll()
-        allAudio.removeAll()
-        chunkLock.unlock()
+        let finalAudio: [Float] = audioState.withLock { state in
+            let audio = state.allAudio  // Use ALL accumulated audio for best quality
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            return audio
+        }
 
         guard !finalAudio.isEmpty else {
             // Emit final combined transcript
@@ -260,7 +285,9 @@ final class TranscriptionController {
         print("🎤 Processing final transcription with ALL audio: \(finalAudio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
         // Clear streaming transcript and transcribe ALL audio at once for best quality
-        fullTranscript.removeAll()
+        audioState.withLock { state in
+            state.fullTranscript.removeAll()
+        }
 
         // Transcribe complete audio recording
         if let result = engine.transcribeFinal(
@@ -269,7 +296,9 @@ final class TranscriptionController {
         ) {
             let trimmedText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedText.isEmpty {
-                fullTranscript.append(trimmedText)
+                audioState.withLock { state in
+                    state.fullTranscript.append(trimmedText)
+                }
             }
         }
 
@@ -277,7 +306,12 @@ final class TranscriptionController {
     }
 
     private func emitFinalTranscript() {
-        let combined = fullTranscript.joined(separator: " ")
+        let combined: String = audioState.withLock { state in
+            let result = state.fullTranscript.joined(separator: " ")
+            state.fullTranscript.removeAll()  // Clear to prevent duplicate emissions
+            return result
+        }
+
         let cleaned = cleanTranscript(combined)
 
         if !cleaned.isEmpty {
@@ -287,9 +321,6 @@ final class TranscriptionController {
                 }
             }
         }
-
-        // Clear transcript to prevent duplicate emissions if stop() is called multiple times
-        fullTranscript.removeAll()
     }
 
     // MARK: - Text Post-Processing
@@ -345,7 +376,9 @@ final class TranscriptionController {
         screenCapture.stop()
 
         // Update mode
-        currentMode = .micOnly
+        audioState.withLock { state in
+            state.currentMode = .micOnly
+        }
 
         // Notify
         if let onFallbackToMicOnly {
@@ -358,26 +391,34 @@ final class TranscriptionController {
     // MARK: - Adaptive Quality
 
     private func configureBatteryMode(_ enabled: Bool) {
-        if enabled {
-            // Increase chunk duration to reduce inference frequency
-            currentChunkDuration = 1000  // 1 second instead of 750ms
-            print("Battery mode enabled: Reduced inference frequency")
-        } else {
-            // Restore normal chunk duration
-            currentChunkDuration = chunkDurationMs
-            print("Battery mode disabled: Normal inference frequency")
+        audioState.withLock { state in
+            if enabled {
+                // Increase chunk duration to reduce inference frequency
+                state.currentChunkDuration = 1000  // 1 second instead of 750ms
+                print("Battery mode enabled: Reduced inference frequency")
+            } else {
+                // Restore normal chunk duration
+                state.currentChunkDuration = chunkDurationMs
+                print("Battery mode disabled: Normal inference frequency")
+            }
         }
     }
 
     private func throttledUIUpdate(_ text: String) {
-        let now = CACurrentMediaTime()
-        guard now - lastUIUpdateTime >= uiUpdateThrottle else {
-            return  // Throttle UI updates
+        let shouldUpdate = audioState.withLock { state -> Bool in
+            let now = CACurrentMediaTime()
+            guard now - state.lastUIUpdateTime >= uiUpdateThrottle else {
+                return false  // Throttle UI updates
+            }
+            state.lastUIUpdateTime = now
+            return true
         }
-        lastUIUpdateTime = now
-        if let onPartial {
-            Task { @MainActor in
-                onPartial(text)
+
+        if shouldUpdate {
+            if let onPartial {
+                Task { @MainActor in
+                    onPartial(text)
+                }
             }
         }
     }

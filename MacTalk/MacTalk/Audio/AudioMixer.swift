@@ -5,10 +5,22 @@
 //  Audio format conversion and downmixing to 16kHz mono float32
 //
 
-import AVFoundation
-import CoreMedia
+@preconcurrency import AVFoundation
+@preconcurrency import CoreMedia
+import os
 
-final class AudioMixer {
+/// Thread-safe audio format converter.
+///
+/// ## Thread Safety
+/// This class uses `OSAllocatedUnfairLock` to protect the converter cache,
+/// preventing data races when called from multiple audio threads (mic + app audio).
+///
+/// ## Sendable Conformance
+/// Marked `@unchecked Sendable` because:
+/// - The converter cache is protected by `OSAllocatedUnfairLock`
+/// - `targetFormat` is immutable after initialization
+/// - AVAudioConverter instances are thread-safe for conversion operations
+final class AudioMixer: @unchecked Sendable {
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16000,
@@ -16,21 +28,29 @@ final class AudioMixer {
         interleaved: false
     )!
 
-    private var converter: AVAudioConverter?
-    private var lastInputFormat: AVAudioFormat?
+    /// Cache of converters keyed by input format's ObjectIdentifier.
+    /// Protected by OSAllocatedUnfairLock for thread-safe access.
+    private let converterCache = OSAllocatedUnfairLock<[ObjectIdentifier: AVAudioConverter]>(
+        initialState: [:]
+    )
 
     init() {}
 
     /// Convert an AVAudioPCMBuffer to 16kHz mono float32 array
     func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
-        // Create or update converter if format changed
-        if lastInputFormat == nil || lastInputFormat != buffer.format {
+        // Get or create converter for this format (thread-safe)
+        let formatID = ObjectIdentifier(buffer.format)
+
+        let converter: AVAudioConverter? = converterCache.withLock { cache in
+            if let existing = cache[formatID] {
+                return existing
+            }
             guard let newConverter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
                 print("Failed to create audio converter")
                 return nil
             }
-            converter = newConverter
-            lastInputFormat = buffer.format
+            cache[formatID] = newConverter
+            return newConverter
         }
 
         guard let converter = converter else { return nil }

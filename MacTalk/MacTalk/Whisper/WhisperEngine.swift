@@ -7,11 +7,23 @@
 
 import Foundation
 
-final class WhisperEngine {
+/// Swift wrapper around whisper.cpp C API for audio transcription.
+///
+/// ## Thread Safety
+/// This class is marked `@unchecked Sendable` because:
+/// - All transcription operations are serialized through a dedicated DispatchQueue
+/// - The whisper context (`ctx`) is only accessed within the serial queue
+/// - The queue provides a full memory barrier ensuring visibility across threads
+///
+/// ## C++ Bridge
+/// The whisper.cpp context is NOT thread-safe internally. This class ensures
+/// serial access to prevent data races in the underlying C++ code.
+final class WhisperEngine: @unchecked Sendable {
     private var ctx: OpaquePointer?
     private let queue = DispatchQueue(label: "com.mactalk.whisper.engine", qos: .userInitiated)
 
-    struct Result {
+    /// Transcription result containing text and timing information.
+    struct Result: Sendable {
         let text: String
         let processingTime: TimeInterval
     }
