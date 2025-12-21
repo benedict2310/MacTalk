@@ -8,6 +8,7 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class SettingsIntegrationTests: XCTestCase {
 
     override func setUpWithError() throws {

@@ -8,6 +8,7 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class SettingsWindowControllerTests: XCTestCase {
 
     var settingsController: SettingsWindowController!

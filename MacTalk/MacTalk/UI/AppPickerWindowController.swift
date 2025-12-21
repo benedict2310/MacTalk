@@ -8,6 +8,7 @@
 import AppKit
 import ScreenCaptureKit
 
+@MainActor
 final class AppPickerWindowController: NSWindowController {
 
     // MARK: - UI Components
@@ -40,11 +41,17 @@ final class AppPickerWindowController: NSWindowController {
         }
 
         static func fromApp(_ app: SCRunningApplication) -> AudioSource {
-            AudioSource(
+            let icon: NSImage?
+            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleIdentifier) {
+                icon = NSWorkspace.shared.icon(forFile: appURL.path)
+            } else {
+                icon = NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
+            }
+            return AudioSource(
                 app: app,
                 display: nil,
                 name: app.applicationName,
-                icon: NSWorkspace.shared.icon(forFile: app.bundleIdentifier ?? "")
+                icon: icon
             )
         }
 

@@ -13,22 +13,32 @@ import CoreGraphics
 enum Permissions {
     // MARK: - Microphone Permission
 
-    static func ensureMic(completion: @escaping (Bool) -> Void) {
+    static func ensureMic(completion: @escaping @MainActor @Sendable (Bool) -> Void) {
         #if os(macOS)
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            completion(true)
+            Task { @MainActor in
+                completion(true)
+            }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { granted in
-                completion(granted)
+                Task { @MainActor in
+                    completion(granted)
+                }
             }
         case .denied, .restricted:
-            completion(false)
+            Task { @MainActor in
+                completion(false)
+            }
         @unknown default:
-            completion(false)
+            Task { @MainActor in
+                completion(false)
+            }
         }
         #else
-        completion(false)
+        Task { @MainActor in
+            completion(false)
+        }
         #endif
     }
 
@@ -60,6 +70,7 @@ enum Permissions {
     }
 
     /// Show informational alert about screen recording permission
+    @MainActor
     static func ensureScreenRecordingGuide() {
         NSLog("📋 [Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
         let alert = NSAlert()
@@ -90,6 +101,7 @@ enum Permissions {
 
     // MARK: - Accessibility Permission
 
+    @MainActor
     static func ensureAccessibilityPrompt() {
         let options = [
             kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true
@@ -103,6 +115,7 @@ enum Permissions {
         return trusted
     }
 
+    @MainActor
     static func requestAccessibilityPermission() {
         NSLog("🚨 [Permissions] Requesting accessibility permission from user...")
         NSLog("🚨 [Permissions] Showing permission dialog...")
@@ -135,18 +148,21 @@ enum Permissions {
 
     // MARK: - System Settings
 
+    @MainActor
     static func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
         }
     }
 
+    @MainActor
     static func openScreenRecordingSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
     }
 
+    @MainActor
     static func openAccessibilitySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
@@ -164,7 +180,7 @@ enum Permissions {
         }
     }
 
-    static func getPermissionStatus(completion: @escaping (PermissionStatus) -> Void) {
+    static func getPermissionStatus(completion: @escaping @MainActor (PermissionStatus) -> Void) {
         ensureMic { micGranted in
             let status = PermissionStatus(
                 microphone: micGranted,

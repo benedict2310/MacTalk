@@ -10,6 +10,7 @@
 import AppKit
 import Carbon
 
+@MainActor
 final class SettingsWindowController: NSWindowController {
 
     // MARK: - Properties

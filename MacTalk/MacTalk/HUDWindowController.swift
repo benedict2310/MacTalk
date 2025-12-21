@@ -8,6 +8,7 @@
 import AppKit
 import QuartzCore
 
+@MainActor
 final class HUDWindowController: NSWindowController {
     private let waveView = AudioWaveView()
     private let backgroundView = NSVisualEffectView()
@@ -234,8 +235,10 @@ final class HUDWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.25
             window.animator().alphaValue = 0
-        }, completionHandler: {
-            window.orderOut(nil)
+        }, completionHandler: { [weak window] in
+            MainActor.assumeIsolated {
+                window?.orderOut(nil)
+            }
         })
 
         CATransaction.commit()

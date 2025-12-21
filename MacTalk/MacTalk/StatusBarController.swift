@@ -37,6 +37,7 @@ enum ScreenCaptureError: Error, LocalizedError {
     }
 }
 
+@MainActor
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
     private var statusItem: NSStatusItem!
@@ -66,6 +67,7 @@ final class StatusBarController {
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
     private var micPlusAppMenuItem: NSMenuItem?
+    private var notificationTokens: [NSObjectProtocol] = []
 
     init() {
         DLOG("=== StatusBarController.init() START ===")
@@ -87,22 +89,34 @@ final class StatusBarController {
         NSLog("📋 [MacTalk] Clipboard copy: Always enabled (required for transcription)")
 
         // Listen for shortcut changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(shortcutsDidChange),
-            name: .shortcutsDidChange,
-            object: nil
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .shortcutsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.shortcutsDidChange()
+            }
         )
 
         // Listen for settings changes (including showNotifications)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(settingsDidChange),
-            name: .settingsDidChange,
-            object: nil
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .settingsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.settingsDidChange()
+            }
         )
 
         DLOG("=== StatusBarController.init() END ===")
+    }
+
+    deinit {
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     func show() {
@@ -247,13 +261,11 @@ final class StatusBarController {
 
         // Bind download progress updates
         ModelManager.shared.onDownloadState = { [weak self] state in
-            DispatchQueue.main.async {
-                self?.handleDownloadState(state)
-            }
+            self?.handleDownloadState(state)
         }
 
         // Load default model (async to avoid blocking menu bar icon)
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.prepareModel()
         }
     }
@@ -353,18 +365,16 @@ final class StatusBarController {
 
     @objc private func checkPermissions() {
         Permissions.ensureMic { micGranted in
-            DispatchQueue.main.async {
-                let alert = NSAlert()
-                alert.messageText = "Permissions Status"
-                alert.informativeText = """
-                Microphone: \(micGranted ? "✅ Granted" : "❌ Denied")
-                Screen Recording: Check System Settings
-                Accessibility: \(Permissions.isAccessibilityTrusted() ? "✅ Granted" : "❌ Denied")
-                """
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
+            let alert = NSAlert()
+            alert.messageText = "Permissions Status"
+            alert.informativeText = """
+            Microphone: \(micGranted ? "✅ Granted" : "❌ Denied")
+            Screen Recording: Check System Settings
+            Accessibility: \(Permissions.isAccessibilityTrusted() ? "✅ Granted" : "❌ Denied")
+            """
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 
@@ -455,16 +465,14 @@ final class StatusBarController {
 
     private func startModelDownload(spec: ModelSpec) {
         ModelManager.shared.ensureAvailable(spec) { [weak self] result in
-            DispatchQueue.main.async {
-                self?.setStartItemsEnabled(true)
-                switch result {
-                case .success(let url):
-                    self?.engine = WhisperEngine(modelURL: url)
-                case .failure(let error):
-                    self?.progressItem?.title = "Model error: \(error.localizedDescription)"
-                    self?.progressItem?.isHidden = false
-                    self?.showError("Failed to load model: \(error.localizedDescription)")
-                }
+            self?.setStartItemsEnabled(true)
+            switch result {
+            case .success(let url):
+                self?.engine = WhisperEngine(modelURL: url)
+            case .failure(let error):
+                self?.progressItem?.title = "Model error: \(error.localizedDescription)"
+                self?.progressItem?.isHidden = false
+                self?.showError("Failed to load model: \(error.localizedDescription)")
             }
         }
     }
@@ -506,67 +514,57 @@ final class StatusBarController {
         }
 
         controller.onFinal = { [weak self] text in
-            DispatchQueue.main.async {
-                NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
-                self?.hudController?.update(text: "Final: \(text)")
+            NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
+            self?.hudController?.update(text: "Final: \(text)")
 
-                let autoPasteEnabled = self?.autoPaste ?? false
-                NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
+            let autoPasteEnabled = self?.autoPaste ?? false
+            NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
 
-                // Always copy to clipboard
-                NSLog("📋 [StatusBar] Copying text to clipboard...")
-                ClipboardManager.setClipboard(text)
+            // Always copy to clipboard
+            NSLog("📋 [StatusBar] Copying text to clipboard...")
+            ClipboardManager.setClipboard(text)
 
-                // Auto-paste if enabled
-                if autoPasteEnabled {
-                    NSLog("🔄 [StatusBar] Auto-paste is enabled - pasting...")
-                    ClipboardManager.pasteIfAllowed()
-                }
-
-                // Show notification
-                let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
-                NSLog("📢 [StatusBar] Showing notification: \(message)")
-                self?.showNotification(title: "Transcription Complete", message: message)
+            // Auto-paste if enabled
+            if autoPasteEnabled {
+                NSLog("🔄 [StatusBar] Auto-paste is enabled - pasting...")
+                ClipboardManager.pasteIfAllowed()
             }
+
+            // Show notification
+            let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
+            NSLog("📢 [StatusBar] Showing notification: \(message)")
+            self?.showNotification(title: "Transcription Complete", message: message)
         }
 
         controller.onMicLevel = { [weak self] levelData in
-            DispatchQueue.main.async {
-                self?.hudController?.updateMicLevel(
-                    rms: levelData.rms,
-                    peak: levelData.peak,
-                    peakHold: levelData.peakHold
-                )
-            }
+            self?.hudController?.updateMicLevel(
+                rms: levelData.rms,
+                peak: levelData.peak,
+                peakHold: levelData.peakHold
+            )
         }
 
         controller.onAppLevel = { [weak self] levelData in
-            DispatchQueue.main.async {
-                self?.hudController?.updateAppLevel(
-                    rms: levelData.rms,
-                    peak: levelData.peak,
-                    peakHold: levelData.peakHold
-                )
-            }
+            self?.hudController?.updateAppLevel(
+                rms: levelData.rms,
+                peak: levelData.peak,
+                peakHold: levelData.peakHold
+            )
         }
 
         controller.onAppAudioLost = { [weak self] in
-            DispatchQueue.main.async {
-                self?.showNotification(
-                    title: "App Audio Lost",
-                    message: "The selected app's audio stream was interrupted. Retrying..."
-                )
-            }
+            self?.showNotification(
+                title: "App Audio Lost",
+                message: "The selected app's audio stream was interrupted. Retrying..."
+            )
         }
 
         controller.onFallbackToMicOnly = { [weak self] in
-            DispatchQueue.main.async {
-                self?.showNotification(
-                    title: "Switched to Mic-Only Mode",
-                    message: "App audio could not be restored. Continuing with microphone only."
-                )
-                self?.hudController?.setAppMeterVisible(false)
-            }
+            self?.showNotification(
+                title: "Switched to Mic-Only Mode",
+                message: "App audio could not be restored. Continuing with microphone only."
+            )
+            self?.hudController?.setAppMeterVisible(false)
         }
     }
 
@@ -593,7 +591,8 @@ final class StatusBarController {
         setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
 
-        Task { [self] in
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 if let source = selectedAudioSource {
                     NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=\(source.name)")
@@ -604,16 +603,16 @@ final class StatusBarController {
                     mode: mode,
                     audioSource: selectedAudioSource
                 )
-                DispatchQueue.main.async {
+                await MainActor.run {
                     NSLog("✅ [StatusBar] Transcription started successfully")
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
-                    self.hudController?.setAppMeterVisible(mode == .micPlusAppAudio)
+                    self.hudController?.setAppMeterVisible(self.mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
             } catch {
                 NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
-                DispatchQueue.main.async { [self] in
+                await MainActor.run {
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
             }
@@ -621,25 +620,23 @@ final class StatusBarController {
     }
 
     private func updateMenuBarIcon(recording: Bool) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let button = self.statusItem.button else { return }
+        guard let button = statusItem.button else { return }
 
-            if recording {
-                if let image = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
-                    image.isTemplate = true
-                    button.image = image
-                    button.imagePosition = .imageOnly
-                } else {
-                    button.title = "🔴"
-                }
+        if recording {
+            if let image = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
+                image.isTemplate = true
+                button.image = image
+                button.imagePosition = .imageOnly
             } else {
-                if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
-                    image.isTemplate = true
-                    button.image = image
-                    button.imagePosition = .imageOnly
-                } else {
-                    button.title = "🎙️"
-                }
+                button.title = "🔴"
+            }
+        } else {
+            if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+                image.isTemplate = true
+                button.image = image
+                button.imagePosition = .imageOnly
+            } else {
+                button.title = "🎙️"
             }
         }
     }

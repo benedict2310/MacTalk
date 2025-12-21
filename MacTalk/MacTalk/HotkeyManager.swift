@@ -9,7 +9,7 @@ import Carbon
 import AppKit
 
 final class HotkeyManager {
-    typealias HotkeyHandler = () -> Void
+    typealias HotkeyHandler = @MainActor @Sendable () -> Void
 
     private var hotkeys: [UInt32: (EventHotKeyRef, HotkeyHandler)] = [:]
     private var nextHotkeyID: UInt32 = 1
@@ -121,7 +121,7 @@ final class HotkeyManager {
 
     private func handleHotkeyPressed(id: UInt32) {
         guard let (_, handler) = hotkeys[id] else { return }
-        DispatchQueue.main.async {
+        Task { @MainActor in
             handler()
         }
     }

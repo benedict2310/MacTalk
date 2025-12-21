@@ -9,6 +9,7 @@ import XCTest
 import AVFoundation
 @testable import MacTalk
 
+@MainActor
 final class TranscriptionControllerTests: XCTestCase {
 
     var mockEngine: WhisperEngine!

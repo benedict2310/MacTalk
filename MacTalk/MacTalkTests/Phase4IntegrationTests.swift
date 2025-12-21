@@ -10,6 +10,7 @@ import ScreenCaptureKit
 import AVFoundation
 @testable import MacTalk
 
+@MainActor
 final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - Test Helpers

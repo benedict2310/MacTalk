@@ -265,6 +265,117 @@ final class AudioMixerTests: XCTestCase {
         XCTAssertEqual(samples.count, 160000, accuracy: 1000)
     }
 
+    // MARK: - Thread Safety Tests (S.02.2a)
+
+    /// Tests concurrent conversion from multiple threads with different formats.
+    /// This validates the OSAllocatedUnfairLock-based thread safety implementation.
+    func test_concurrentConversionDifferentFormats() async {
+        let mixer = AudioMixer()
+
+        let format48k = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48000,
+            channels: 1,
+            interleaved: false
+        )!
+        let format44k = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 44100,
+            channels: 1,
+            interleaved: false
+        )!
+
+        await withTaskGroup(of: Void.self) { group in
+            // 100 concurrent conversions from each format
+            for _ in 0..<100 {
+                group.addTask {
+                    let buffer48k = self.createTestBuffer(format: format48k, frameCount: 1024)
+                    _ = mixer.convert(buffer: buffer48k)
+                }
+                group.addTask {
+                    let buffer44k = self.createTestBuffer(format: format44k, frameCount: 1024)
+                    _ = mixer.convert(buffer: buffer44k)
+                }
+            }
+        }
+
+        // If we get here without crash or TSan warnings, test passed
+    }
+
+    /// Tests concurrent conversion with same format from multiple threads.
+    /// Validates that converter cache reuse is thread-safe.
+    func test_concurrentConversionSameFormat() async {
+        let mixer = AudioMixer()
+
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48000,
+            channels: 2,
+            interleaved: false
+        )!
+
+        await withTaskGroup(of: Void.self) { group in
+            // 200 concurrent conversions all using same format
+            for _ in 0..<200 {
+                group.addTask {
+                    let buffer = self.createTestBuffer(format: format, frameCount: 512)
+                    let result = mixer.convert(buffer: buffer)
+                    // Verify conversion succeeded
+                    XCTAssertNotNil(result)
+                }
+            }
+        }
+    }
+
+    /// Simulates real-world scenario: mic + app audio callbacks running concurrently.
+    func test_concurrentMicAndAppAudioSimulation() async {
+        let mixer = AudioMixer()
+
+        // Mic typically runs at 48kHz mono
+        let micFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48000,
+            channels: 1,
+            interleaved: false
+        )!
+
+        // App audio typically runs at 44.1kHz or 48kHz stereo
+        let appFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 44100,
+            channels: 2,
+            interleaved: false
+        )!
+
+        // Use actor to collect results safely
+        let resultsCollector = ResultsCollector()
+
+        await withTaskGroup(of: Void.self) { group in
+            // Simulate mic callbacks (high frequency, small buffers)
+            group.addTask {
+                for _ in 0..<50 {
+                    let buffer = self.createTestBuffer(format: micFormat, frameCount: 256)
+                    let success = mixer.convert(buffer: buffer) != nil
+                    await resultsCollector.addMicResult(success)
+                }
+            }
+
+            // Simulate app audio callbacks (lower frequency, larger buffers)
+            group.addTask {
+                for _ in 0..<30 {
+                    let buffer = self.createTestBuffer(format: appFormat, frameCount: 1024)
+                    let success = mixer.convert(buffer: buffer) != nil
+                    await resultsCollector.addAppResult(success)
+                }
+            }
+        }
+
+        // Verify all conversions succeeded
+        let (micSuccesses, appSuccesses) = await resultsCollector.getResults()
+        XCTAssertEqual(micSuccesses.filter { $0 }.count, 50, "All mic conversions should succeed")
+        XCTAssertEqual(appSuccesses.filter { $0 }.count, 30, "All app audio conversions should succeed")
+    }
+
     // MARK: - Performance Tests
 
     func testPerformanceConversion48kHzTo16kHz() {
@@ -347,5 +458,25 @@ final class AudioMixerTests: XCTestCase {
         }
 
         return buffer
+    }
+}
+
+// MARK: - Helper Actor for Thread-Safe Result Collection
+
+/// Actor to safely collect results from concurrent test tasks.
+private actor ResultsCollector {
+    private var micResults: [Bool] = []
+    private var appResults: [Bool] = []
+
+    func addMicResult(_ success: Bool) {
+        micResults.append(success)
+    }
+
+    func addAppResult(_ success: Bool) {
+        appResults.append(success)
+    }
+
+    func getResults() -> (mic: [Bool], app: [Bool]) {
+        return (micResults, appResults)
     }
 }

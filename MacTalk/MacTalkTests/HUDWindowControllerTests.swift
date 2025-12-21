@@ -8,6 +8,7 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class HUDWindowControllerTests: XCTestCase {
 
     var hudController: HUDWindowController!
