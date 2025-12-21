@@ -6,7 +6,7 @@ options:
   developmentLanguage: en
 
 settings:
-  SWIFT_VERSION: "5.0"
+  SWIFT_VERSION: "6.0"
   SWIFT_STRICT_CONCURRENCY: complete
   MACOSX_DEPLOYMENT_TARGET: "14.0"
 

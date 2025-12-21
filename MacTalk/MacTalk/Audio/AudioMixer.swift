@@ -68,7 +68,9 @@ final class AudioMixer: @unchecked Sendable {
         }
 
         var error: NSError?
-        var inputConsumed = false
+        // Use nonisolated(unsafe) because this closure is synchronous and called
+        // on the same thread - AVAudioConverter.convert() is blocking.
+        nonisolated(unsafe) var inputConsumed = false
 
         let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
             if inputConsumed {

@@ -11,7 +11,7 @@ import AppKit
 import Carbon
 
 @MainActor
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
     // MARK: - Properties
 

@@ -11,6 +11,7 @@ import ScreenCaptureKit
 import ApplicationServices
 @testable import MacTalk
 
+@MainActor
 final class PermissionsTests: XCTestCase {
 
     // MARK: - Microphone Permission Tests

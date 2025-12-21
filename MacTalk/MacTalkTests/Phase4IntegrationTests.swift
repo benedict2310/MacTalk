@@ -412,7 +412,7 @@ final class Phase4IntegrationTests: XCTestCase {
         let mixer = AudioMixer()
         let capture = AudioCapture()
 
-        var samplesReceived = false
+        nonisolated(unsafe) var samplesReceived = false
 
         capture.onPCMFloatBuffer = { buffer, timestamp in
             if let samples = mixer.convert(buffer: buffer) {
@@ -422,6 +422,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
         // We can't actually start capture in tests, but verify the chain is set up
         XCTAssertNotNil(capture.onPCMFloatBuffer, "Callback should be connected")
+        _ = samplesReceived // Silence unused warning
     }
 
     // MARK: - Configuration Tests

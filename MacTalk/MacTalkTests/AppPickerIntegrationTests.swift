@@ -6,16 +6,17 @@
 //
 
 import XCTest
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 @testable import MacTalk
 
+@MainActor
 final class AppPickerIntegrationTests: XCTestCase {
 
     var windowController: AppPickerWindowController!
 
     override func setUp() {
         super.setUp()
-        windowController = AppPickerWindowController()
+        windowController = AppPickerWindowController(sources: [])
     }
 
     override func tearDown() {
@@ -225,7 +226,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         weak var weakController: AppPickerWindowController?
 
         autoreleasepool {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             weakController = controller
             XCTAssertNotNil(weakController)
         }
@@ -237,7 +238,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         weak var weakController: AppPickerWindowController?
 
         autoreleasepool {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             weakController = controller
 
             controller.onSelection = { [weak controller] source in
@@ -254,7 +255,7 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     func testWindowCreationPerformance() {
         measure {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             controller.close()
         }
     }
@@ -340,7 +341,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         for _ in 0..<iterations {
             group.enter()
             DispatchQueue.main.async {
-                let controller = AppPickerWindowController()
+                let controller = AppPickerWindowController(sources: [])
                 controllers.append(controller)
                 group.leave()
             }

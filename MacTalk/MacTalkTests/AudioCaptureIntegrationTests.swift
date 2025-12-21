@@ -9,6 +9,7 @@ import XCTest
 import AVFoundation
 @testable import MacTalk
 
+@MainActor
 final class AudioCaptureIntegrationTests: XCTestCase {
 
     var capture: AudioCapture!
@@ -184,7 +185,7 @@ final class AudioCaptureIntegrationTests: XCTestCase {
     }
 
     func testCallbackAfterStop() {
-        var callbackInvoked = false
+        nonisolated(unsafe) var callbackInvoked = false
 
         capture.onPCMFloatBuffer = { buffer, timestamp in
             callbackInvoked = true
@@ -195,6 +196,7 @@ final class AudioCaptureIntegrationTests: XCTestCase {
         // Callback should not be invoked after stop
         // (We can't easily test this without actual audio, but we verify the setup)
         XCTAssertNotNil(capture.onPCMFloatBuffer, "Callback should still be assigned")
+        _ = callbackInvoked // Silence warning
     }
 
     // MARK: - AVAudioEngine Integration Tests
@@ -255,8 +257,8 @@ final class AudioCaptureIntegrationTests: XCTestCase {
         let capture1 = AudioCapture()
         let capture2 = AudioCapture()
 
-        var callback1Invoked = false
-        var callback2Invoked = false
+        nonisolated(unsafe) var callback1Invoked = false
+        nonisolated(unsafe) var callback2Invoked = false
 
         capture1.onPCMFloatBuffer = { buffer, timestamp in
             callback1Invoked = true
@@ -268,6 +270,7 @@ final class AudioCaptureIntegrationTests: XCTestCase {
 
         XCTAssertNotNil(capture1.onPCMFloatBuffer)
         XCTAssertNotNil(capture2.onPCMFloatBuffer)
+        _ = (callback1Invoked, callback2Invoked) // Silence warnings
 
         // Clean up
         capture1.stop()

@@ -341,7 +341,7 @@ final class ScreenAudioCaptureTests: XCTestCase {
     }
 
     func testCallbackExecutionOrder() {
-        var callbackCount = 0
+        nonisolated(unsafe) var callbackCount = 0
         let lock = NSLock()
 
         capture.onAudioSampleBuffer = { buffer in
@@ -358,7 +358,7 @@ final class ScreenAudioCaptureTests: XCTestCase {
     // MARK: - Error Callback Tests
 
     func testErrorCallbackNotCalledOnSuccess() {
-        var errorCallbackCalled = false
+        nonisolated(unsafe) var errorCallbackCalled = false
 
         capture.onStreamError = { error in
             errorCallbackCalled = true
@@ -374,7 +374,7 @@ final class ScreenAudioCaptureTests: XCTestCase {
         let expectation = XCTestExpectation(description: "Error callback")
         expectation.isInverted = true // We don't expect this to be called in normal test execution
 
-        var capturedError: Error?
+        nonisolated(unsafe) var capturedError: Error?
 
         capture.onStreamError = { error in
             capturedError = error

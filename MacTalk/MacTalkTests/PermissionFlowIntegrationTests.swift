@@ -8,6 +8,7 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class PermissionFlowIntegrationTests: XCTestCase {
 
     // MARK: - Screen Recording Flow Tests

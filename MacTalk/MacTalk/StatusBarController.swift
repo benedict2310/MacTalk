@@ -8,7 +8,7 @@
 // swiftlint:disable file_length type_body_length
 
 import AppKit
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 /// Errors that can occur during screen capture operations
 enum ScreenCaptureError: Error, LocalizedError {
@@ -67,7 +67,8 @@ final class StatusBarController {
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
     private var micPlusAppMenuItem: NSMenuItem?
-    private var notificationTokens: [NSObjectProtocol] = []
+    // Use nonisolated(unsafe) because deinit cannot access @MainActor-isolated properties
+    private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
 
     init() {
         DLOG("=== StatusBarController.init() START ===")

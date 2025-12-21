@@ -7,7 +7,7 @@
 
 import AVFoundation
 import ScreenCaptureKit
-import ApplicationServices
+@preconcurrency import ApplicationServices
 import CoreGraphics
 
 enum Permissions {

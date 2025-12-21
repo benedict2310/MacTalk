@@ -18,9 +18,9 @@ struct TimeoutError: Error, LocalizedError {
 
 /// Execute an async operation with a timeout
 /// Throws TimeoutError if the operation doesn't complete in time
-func withTimeout<T>(
+func withTimeout<T: Sendable>(
     seconds: TimeInterval,
-    operation: @escaping () async throws -> T
+    operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
         // Start the operation

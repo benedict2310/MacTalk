@@ -30,7 +30,10 @@ final class AppPickerWindowController: NSWindowController {
 
     // MARK: - Types
 
-    struct AudioSource {
+    /// Audio source for capture (app or system audio).
+    /// Marked @unchecked Sendable because SCK types are immutable snapshots
+    /// and this type is only used within MainActor context.
+    struct AudioSource: @unchecked Sendable {
         let app: SCRunningApplication?
         let display: SCDisplay?
         let name: String
