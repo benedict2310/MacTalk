@@ -3,7 +3,7 @@
 > A native macOS app for local voice transcription powered by Whisper
 
 [![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg)](https://swift.org/)
+[![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time using the Whisper speech recognition model. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
@@ -16,10 +16,11 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 - **Dual Capture Modes** - Mic-only or mic + app audio (for calls/meetings)
 - **100% Local Processing** - Zero network calls, complete privacy
 - **Metal Accelerated** - Optimized for Apple Silicon
+- **Swift 6 Concurrency** - Built with Swift 6 strict concurrency for thread-safe, responsive performance
 - **Menu Bar App** - Lightweight, always accessible
 - **Multiple Models** - Choose from tiny (fast) to large (accurate)
 - **Auto-Paste** - Transcripts copied to clipboard and optionally pasted
-- **Global Hotkeys** - Start/stop without switching apps
+- **Customizable Hotkeys** - Configure your own keyboard shortcuts for hands-free control
 
 ---
 
@@ -49,8 +50,8 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ### Download Release
 
-1. Download `MacTalk-v1.0.0.zip` from [Releases](https://github.com/benedict2310/MacTalk/releases)
-2. Unzip and move `MacTalk.app` to your Applications folder
+1. Download `MacTalk-v1.1.0.dmg` from [Releases](https://github.com/benedict2310/MacTalk/releases)
+2. Open the DMG and drag `MacTalk.app` to your Applications folder
 3. Right-click and select "Open" (first launch only)
 4. Grant permissions when prompted (Microphone, Screen Recording, Accessibility)
 5. Select a model to download (recommended: small)
@@ -123,7 +124,7 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 
 ## Technology
 
-- Built with Swift and AppKit for native macOS performance
+- Built with Swift 6 and AppKit for native macOS performance with strict concurrency
 - Powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal acceleration
 - Based on [OpenAI Whisper](https://github.com/openai/whisper) speech recognition
 

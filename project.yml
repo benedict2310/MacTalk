@@ -10,6 +10,11 @@ settings:
   SWIFT_STRICT_CONCURRENCY: complete
   MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+packages:
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: 0.7.11
+
 targets:
   MacTalk:
     type: application
@@ -24,7 +29,7 @@ targets:
       properties:
         CFBundleIdentifier: com.mactalk.app
         CFBundleVersion: "1"
-        CFBundleShortVersionString: "1.0.0"
+        CFBundleShortVersionString: "1.1.0"
         LSUIElement: true
         NSMicrophoneUsageDescription: "MacTalk needs microphone access to transcribe your voice."
         NSAppleEventsUsageDescription: "MacTalk needs accessibility permission to auto-paste transcriptions."
@@ -65,6 +70,8 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: AppKit.framework
       - sdk: ScreenCaptureKit.framework
+      - sdk: CoreML.framework
+      - package: FluidAudio
     postBuildScripts:
       - name: Copy Whisper Libraries
         inputFiles:
@@ -163,6 +170,33 @@ schemes:
       config: Debug
       targets:
         - MacTalkTests
+      # Thread Sanitizer disabled by default for faster test runs.
+      # Enable with: xcodebuild test -enableThreadSanitizer YES
+      # Or use the MacTalk-TSan scheme below.
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  # Thread Sanitizer scheme for concurrency validation (S.02.3a)
+  MacTalk-TSan:
+    build:
+      targets:
+        MacTalk: all
+    run:
+      config: Debug
+      environmentVariables:
+        TSAN_OPTIONS: "halt_on_error=0"
+    test:
+      config: Debug
+      targets:
+        - MacTalkTests
+      diagnostics:
+        threadSanitizer: true
+      environmentVariables:
+        TSAN_OPTIONS: "suppressions=$(PROJECT_DIR)/tsan_suppressions.txt:halt_on_error=0"
     profile:
       config: Release
     analyze:
