@@ -1,18 +1,19 @@
 # MacTalk
 
-> A native macOS app for local voice transcription powered by Whisper
+> A native macOS app for local voice transcription powered by Whisper and Parakeet
 
 [![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time using the Whisper speech recognition model. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
+MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time. Choose between Whisper for accuracy or Parakeet for blazing-fast, real-time streaming transcription. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
 
 ---
 
 ## Features
 
-- **Real-time Transcription** - Streaming inference with live results
+- **Dual Engine Support** - Choose Whisper for accuracy or Parakeet for ultra-fast real-time streaming
+- **Real-time Transcription** - Streaming inference with live results as you speak
 - **Dual Capture Modes** - Mic-only or mic + app audio (for calls/meetings)
 - **100% Local Processing** - Zero network calls, complete privacy
 - **Metal Accelerated** - Optimized for Apple Silicon
@@ -73,9 +74,21 @@ See [docs/development/SETUP.md](docs/development/SETUP.md) for build instruction
 
 ---
 
-## Models
+## Engines & Models
 
-MacTalk supports multiple Whisper model sizes:
+MacTalk supports two transcription engines:
+
+### Parakeet (Recommended for speed)
+
+Ultra-fast streaming transcription with real-time results. Words appear instantly as you speak.
+
+| Model | Size | Speed | Use Case |
+|-------|------|-------|----------|
+| Parakeet TDT 0.6B | ~600 MB | Instant | Real-time streaming, live dictation |
+
+### Whisper (Recommended for accuracy)
+
+High-accuracy batch transcription with multiple model sizes:
 
 | Model | Size | Speed | Use Case |
 |-------|------|-------|----------|
@@ -104,8 +117,8 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 ### Q: Does MacTalk work offline?
 **A:** Yes. Once models are downloaded, no network connection is required for transcription.
 
-### Q: Which model should I use?
-**A:** Start with `small` for balanced speed and accuracy. Use `tiny` or `base` for faster performance, or `medium`/`large-v3-turbo` for maximum accuracy.
+### Q: Which engine should I use?
+**A:** Use **Parakeet** for real-time streaming where words appear instantly as you speak—ideal for live dictation. Use **Whisper** when you need maximum accuracy or multilingual support. Start with Whisper `small` for balanced speed and accuracy.
 
 ### Q: Can I transcribe calls from Zoom/Teams/FaceTime?
 **A:** Yes, using Mode B (Mic + App Audio). Requires Screen Recording permission.
@@ -126,7 +139,8 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 
 - Built with Swift 6 and AppKit for native macOS performance with strict concurrency
 - Powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal acceleration
-- Based on [OpenAI Whisper](https://github.com/openai/whisper) speech recognition
+- Parakeet engine via [FluidAudio](https://github.com/FluidInference/FluidAudio) for real-time streaming
+- Based on [OpenAI Whisper](https://github.com/openai/whisper) and [NVIDIA Parakeet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/canary/models/parakeet-tdt-0.6b-v2)
 
 ---
 
