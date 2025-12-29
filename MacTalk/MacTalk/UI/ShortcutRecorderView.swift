@@ -9,6 +9,7 @@ import AppKit
 import Carbon
 
 /// A view that captures and displays keyboard shortcuts
+@MainActor
 final class ShortcutRecorderView: NSView {
 
     // MARK: - Properties
@@ -20,12 +21,12 @@ final class ShortcutRecorderView: NSView {
         }
     }
 
-    var onShortcutChanged: ((KeyboardShortcut?) -> Void)?
+    var onShortcutChanged: (@Sendable @MainActor (KeyboardShortcut?) -> Void)?
 
     private let label = NSTextField(labelWithString: "Click to record")
     private let clearButton = NSButton(title: "✕", target: nil, action: nil)
     private var isRecording = false
-    private var eventMonitor: Any?
+    nonisolated(unsafe) private var eventMonitor: Any?
 
     // MARK: - Initialization
 
@@ -40,7 +41,10 @@ final class ShortcutRecorderView: NSView {
     }
 
     deinit {
-        stopRecording()
+        // Remove event monitor in deinit (safe to call from any context)
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
     }
 
     // MARK: - UI Setup

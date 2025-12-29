@@ -8,12 +8,14 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class SettingsWindowControllerTests: XCTestCase {
 
     var settingsController: SettingsWindowController!
     let testDefaults = UserDefaults(suiteName: "com.mactalk.tests")!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
+        try await super.setUp()
         // Clear test defaults before each test
         testDefaults.removePersistentDomain(forName: "com.mactalk.tests")
 
@@ -21,9 +23,10 @@ final class SettingsWindowControllerTests: XCTestCase {
         settingsController = SettingsWindowController()
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         settingsController = nil
         testDefaults.removePersistentDomain(forName: "com.mactalk.tests")
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests

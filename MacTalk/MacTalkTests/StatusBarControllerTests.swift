@@ -8,6 +8,7 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class StatusBarControllerTests: XCTestCase {
 
     var statusBarController: StatusBarController!

@@ -1,17 +1,33 @@
 //
-//  WhisperEngine.swift
+//  NativeWhisperEngine.swift
 //  MacTalk
 //
 //  Swift wrapper around whisper.cpp C API
 //
 
 import Foundation
+@preconcurrency import AVFoundation
 
-final class WhisperEngine {
+/// Swift wrapper around whisper.cpp C API for audio transcription.
+///
+/// ## Thread Safety
+/// This class is marked `@unchecked Sendable` because:
+/// - All transcription operations are serialized through a dedicated DispatchQueue
+/// - The whisper context (`ctx`) is only accessed within the serial queue
+/// - The queue provides a full memory barrier ensuring visibility across threads
+///
+/// ## C++ Bridge
+/// The whisper.cpp context is NOT thread-safe internally. This class ensures
+/// serial access to prevent data races in the underlying C++ code.
+final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
     private var ctx: OpaquePointer?
     private let queue = DispatchQueue(label: "com.mactalk.whisper.engine", qos: .userInitiated)
+    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
 
-    struct Result {
+    let provider: ASRProvider = .whisper
+
+    /// Transcription result containing text and timing information.
+    struct Result: Sendable {
         let text: String
         let processingTime: TimeInterval
     }
@@ -36,6 +52,37 @@ final class WhisperEngine {
         if let ctx = ctx {
             wt_whisper_free(UnsafeMutableRawPointer(ctx))
         }
+    }
+
+    func prepare() async throws {}
+
+    func reset() async {}
+
+    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
+        partialHandler = handler
+    }
+
+    func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
+        guard let samples = samples(from: buffer) else {
+            return nil
+        }
+        guard let result = transcribeStreaming(samples: samples, language: language) else {
+            return nil
+        }
+
+        let partial = ASRPartial(text: result.text, words: [])
+        partialHandler?(partial)
+        return partial
+    }
+
+    func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
+        guard let samples = samples(from: buffer) else {
+            return nil
+        }
+        guard let result = transcribeFinal(samples: samples, language: language) else {
+            return nil
+        }
+        return ASRFinalSegment(text: result.text, words: [])
     }
 
     /// Transcribe audio samples (16kHz mono float32)
@@ -96,5 +143,13 @@ final class WhisperEngine {
     /// Convenience method for final transcription with full context
     func transcribeFinal(samples: [Float], language: String? = nil) -> Result? {
         return transcribe(samples: samples, language: language, translate: false, noContext: false)
+    }
+
+    private func samples(from buffer: AVAudioPCMBuffer) -> [Float]? {
+        guard let channelData = buffer.floatChannelData else {
+            return nil
+        }
+        let count = Int(buffer.frameLength)
+        return Array(UnsafeBufferPointer(start: channelData[0], count: count))
     }
 }

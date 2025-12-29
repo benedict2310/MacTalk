@@ -5,13 +5,34 @@
 //  App/System audio capture via ScreenCaptureKit
 //
 
-import ScreenCaptureKit
-import AVFoundation
+@preconcurrency import ScreenCaptureKit
+@preconcurrency import AVFoundation
+@preconcurrency import CoreMedia
 
-final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
+/// App/System audio capture via ScreenCaptureKit.
+///
+/// ## Thread Safety
+/// This class is marked `@unchecked Sendable` because:
+/// - `SCStream` is documented as thread-safe by Apple
+/// - The callback closures are only set during setup, before concurrent usage
+/// - Stream output callbacks are delivered on a user-specified queue
+///
+/// ## Audio Callback
+/// The `onAudioSampleBuffer` callback is invoked from a background queue
+/// (.global(qos: .userInitiated)), not a real-time thread. It is safe to
+/// perform async operations in the handler.
+final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
     private var stream: SCStream?
-    var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
-    var onStreamError: ((Error) -> Void)?
+
+    /// Callback invoked with each audio sample buffer from the captured source.
+    ///
+    /// - Note: Called from a background queue, not a real-time thread.
+    /// - Note: `CMSampleBuffer` is not Sendable, but is safe to use within
+    ///   the callback scope as ownership is transferred.
+    var onAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
+
+    /// Callback invoked when the stream encounters an error.
+    var onStreamError: (@Sendable (Error) -> Void)?
 
     func selectFirstWindow(named name: String) async throws {
         let content = try await SCShareableContent.current

@@ -10,6 +10,7 @@ import AppKit
 
 // Note: Entry point is now in main.swift (explicit initialization)
 // This fixes macOS 26 initialization issues with @main attribute
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController!
 
@@ -60,10 +61,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DLOG("=== applicationDidFinishLaunching END ===")
 
         // Request microphone permission on first launch
-        Permissions.ensureMic { granted in
+        Permissions.ensureMic { [weak self] granted in
             if !granted {
-                DispatchQueue.main.async {
-                    self.showPermissionAlert(type: "Microphone")
+                Task { @MainActor in
+                    self?.showPermissionAlert(type: "Microphone")
                 }
             }
         }

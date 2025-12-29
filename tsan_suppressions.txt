@@ -1,0 +1,48 @@
+# Thread Sanitizer Suppressions for MacTalk
+# ===========================================
+# This file contains suppressions for known-safe races in Apple frameworks
+# and third-party libraries (whisper.cpp/ggml).
+#
+# IMPORTANT: Never suppress TSan warnings in MacTalk code.
+# Only add suppressions for external code that we cannot modify.
+#
+# Usage:
+#   xcodebuild test -project MacTalk.xcodeproj -scheme MacTalk-TSan
+#   Or set TSAN_OPTIONS="suppressions=/path/to/this/file"
+#
+# Documentation: https://clang.llvm.org/docs/ThreadSanitizer.html
+
+# Apple Audio Frameworks
+# ----------------------
+# AVAudioEngine has internal threading that TSan may flag
+race:AVAudioEngine*
+race:AudioConverterFillComplexBuffer
+race:AUBase*
+race:AudioOutputUnitStart
+race:AudioOutputUnitStop
+
+# ScreenCaptureKit
+# ----------------
+# SCStream has internal async operations
+race:SCStream*
+race:SCContentFilter*
+
+# whisper.cpp / ggml
+# ------------------
+# Metal GPU operations have their own synchronization
+race:ggml_metal_*
+race:ggml_backend_metal*
+race:whisper_*
+
+# AppKit / Core Animation
+# -----------------------
+# UI framework internals
+race:CA::*
+race:NSView*
+race:NSWindow*
+
+# libdispatch
+# -----------
+# Known-safe internal races in GCD
+race:dispatch_*
+race:_dispatch_*

@@ -1,0 +1,165 @@
+architecture_hints:
+  asr_engines_detected: []
+  notes:
+    - Xcode project is generated via XcodeGen (project.yml).
+    - Skip build/DerivedData and hidden directories for indexing; regenerate index after refactors.
+  swift_protocols_detected:
+    - ASREngine
+commands:
+  build_only: ./build.sh
+  clean: ./build.sh clean
+  dev_loop: ./build.sh run
+  tests: xcodebuild test -project MacTalk.xcodeproj -scheme MacTalk
+  xcodegen: xcodegen generate
+exclusions:
+  also_skipped:
+    - Vendor/whisper.cpp/build
+  max_bytes_per_file: 524288
+  skip_dir_names:
+    - .build
+    - .swiftpm
+    - Build
+    - DerivedData
+    - __pycache__
+    - build
+    - node_modules
+    - xcuserdata
+  skip_file_names:
+    - .DS_Store
+  skip_hidden: true
+generated_at: "2025-12-23T14:56:27+01:00"
+git:
+  branch: feat/swift-6-migration
+  commit: ef132410e6d236f7173a99315d0ec97300b4a4e5
+  dirty: true
+  remotes:
+    - "origin\thttps://github.com/benedict2310/MacTalk.git (fetch)"
+    - "origin\thttps://github.com/benedict2310/MacTalk.git (push)"
+high_level_structure:
+  -     path: MacTalk/MacTalk
+        role: Main macOS app source (Swift/AppKit)
+  -     path: MacTalk/MacTalkTests
+        role: XCTest test target
+  -     path: Vendor/whisper.cpp
+        role: C++ inference engine submodule
+  -     path: scripts
+        role: Build/sign helpers
+  -     path: docs
+        role: Architecture + planning docs
+key_paths:
+  - AGENTS.md
+  - README.md
+  - build.sh
+  - project.yml
+  - MacTalk/MacTalk/main.swift
+  - MacTalk/MacTalk/TranscriptionController.swift
+  - MacTalk/MacTalk/Audio/AudioCapture.swift
+  - MacTalk/MacTalk/Audio/ScreenAudioCapture.swift
+  - MacTalk/MacTalk/Audio/AudioMixer.swift
+  - MacTalk/MacTalk/Audio/RingBuffer.swift
+  - MacTalk/MacTalk/Whisper/ModelManager.swift
+  - MacTalk/MacTalk/Whisper/WhisperBridge.h
+  - MacTalk/MacTalk/Whisper/WhisperBridge.mm
+  - docs/development/ARCHITECTURE.md
+  - docs/development/SETUP.md
+  - docs/testing/TESTING.md
+  - scripts/post-build-sign.sh
+repo_root: /Users/bene/Dev-Source-NoBackup/MacTalk
+stats:
+  category_stats:
+    AppSource: 37
+    Docs: 60
+    Other: 13
+    Scripts: 3
+    Tests: 21
+    Vendor: 1150
+    Xcode: 2
+  file_count: 1286
+  key_files:
+    -       hint: Contributor/agent workflow and architecture context.
+            path: AGENTS.md
+    -       hint: Generated Xcode project; prefer editing project.yml.
+            path: MacTalk.xcodeproj/project.pbxproj
+    -       hint: Central state machine (recording/processing).
+            path: MacTalk/MacTalk/TranscriptionController.swift
+    -       hint: Objective-C++ bridge to whisper.cpp.
+            path: MacTalk/MacTalk/Whisper/WhisperBridge.h
+    -       hint: Objective-C++ bridge to whisper.cpp.
+            path: MacTalk/MacTalk/Whisper/WhisperBridge.mm
+    -       hint: Swift entry point (explicit main).
+            path: MacTalk/MacTalk/main.swift
+    -       hint: Primary dev loop helper (build/run/clean).
+            path: build.sh
+    -       hint: XcodeGen config (source of truth for Xcode project).
+            path: project.yml
+  language_stats:
+    C: 24
+    C++: 128
+    C++ Header: 37
+    C/C++ Header: 101
+    JSON: 13
+    Markdown: 99
+    Objective-C: 9
+    Objective-C++: 2
+    PropertyList: 4
+    Shell: 33
+    Swift: 62
+    Text: 56
+    Unknown: 713
+    XcodeProject: 3
+    YAML: 2
+  swift_asr_engines: []
+  swift_protocols:
+    - ASREngine
+  top_swift_files_by_loc:
+    -       line_count: 1197
+            path: MacTalk/MacTalk/StatusBarController.swift
+    -       line_count: 868
+            path: MacTalk/MacTalkTests/TranscriptionControllerTests.swift
+    -       line_count: 852
+            path: MacTalk/MacTalk/SettingsWindowController.swift
+    -       line_count: 564
+            path: MacTalk/MacTalkTests/HUDWindowControllerTests.swift
+    -       line_count: 552
+            path: MacTalk/MacTalk/TranscriptionController.swift
+    -       line_count: 549
+            path: MacTalk/MacTalkTests/NativeWhisperEngineTests.swift
+    -       line_count: 524
+            path: MacTalk/MacTalkTests/AudioMixerTests.swift
+    -       line_count: 496
+            path: MacTalk/MacTalkTests/ConcurrencyStressTests.swift
+    -       line_count: 473
+            path: MacTalk/MacTalkTests/Phase4IntegrationTests.swift
+    -       line_count: 463
+            path: MacTalk/MacTalkTests/HotkeyManagerTests.swift
+    -       line_count: 436
+            path: MacTalk/MacTalkTests/AppPickerIntegrationTests.swift
+    -       line_count: 421
+            path: MacTalk/MacTalkTests/SettingsWindowControllerTests.swift
+    -       line_count: 389
+            path: MacTalk/MacTalkTests/ScreenAudioCaptureTests.swift
+    -       line_count: 370
+            path: MacTalk/MacTalk/HUDWindowController.swift
+    -       line_count: 336
+            path: MacTalk/MacTalkTests/AudioLevelMonitorTests.swift
+    -       line_count: 333
+            path: MacTalk/MacTalkTests/AudioCaptureIntegrationTests.swift
+    -       line_count: 328
+            path: MacTalk/MacTalk/UI/ShortcutRecorderView.swift
+    -       line_count: 295
+            path: MacTalk/MacTalkTests/ModelManagerTests.swift
+    -       line_count: 286
+            path: MacTalk/MacTalk/Utilities/PerformanceMonitor.swift
+    -       line_count: 282
+            path: MacTalk/MacTalk/UI/AudioLevelMeterView.swift
+    -       line_count: 279
+            path: MacTalk/MacTalk/UI/AppPickerWindowController.swift
+    -       line_count: 261
+            path: MacTalk/MacTalkTests/RingBufferTests.swift
+    -       line_count: 258
+            path: MacTalk/MacTalk/Whisper/ParakeetModelDownloader.swift
+    -       line_count: 251
+            path: MacTalk/MacTalkTests/TestHelpers.swift
+    -       line_count: 238
+            path: MacTalk/MacTalkTests/PermissionsTests.swift
+  truncated_file_count: 18

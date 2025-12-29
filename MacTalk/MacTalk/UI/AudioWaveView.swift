@@ -8,6 +8,7 @@
 import AppKit
 import QuartzCore
 
+@MainActor
 final class AudioWaveView: NSView {
     // MARK: - Configuration
 

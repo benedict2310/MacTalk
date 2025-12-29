@@ -6,38 +6,39 @@
 //
 
 import XCTest
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 @testable import MacTalk
 
+@MainActor
 final class AppPickerIntegrationTests: XCTestCase {
 
     var windowController: AppPickerWindowController!
 
-    override func setUp() {
-        super.setUp()
-        windowController = AppPickerWindowController()
+    override func setUp() async throws {
+        try await super.setUp()
+        windowController = AppPickerWindowController(sources: [])
     }
 
-    override func tearDown() {
-        windowController.close()
+    override func tearDown() async throws {
+        windowController?.close()
         windowController = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helper Methods
 
-    /// Helper to get a test WhisperEngine, skipping the test if no model is available
-    private func getTestEngine() throws -> WhisperEngine {
+    /// Helper to get a test NativeWhisperEngine, skipping the test if no model is available
+    private func getTestEngine() throws -> NativeWhisperEngine {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
 
         // Check if model file exists
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run WhisperEngine tests.")
+            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run NativeWhisperEngine tests.")
         }
 
         // Try to create engine
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
-            throw XCTSkip("Failed to create WhisperEngine with model at \(modelURL.path). Model may be invalid.")
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
+            throw XCTSkip("Failed to create NativeWhisperEngine with model at \(modelURL.path). Model may be invalid.")
         }
 
         return engine
@@ -225,7 +226,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         weak var weakController: AppPickerWindowController?
 
         autoreleasepool {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             weakController = controller
             XCTAssertNotNil(weakController)
         }
@@ -237,7 +238,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         weak var weakController: AppPickerWindowController?
 
         autoreleasepool {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             weakController = controller
 
             controller.onSelection = { [weak controller] source in
@@ -254,7 +255,7 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     func testWindowCreationPerformance() {
         measure {
-            let controller = AppPickerWindowController()
+            let controller = AppPickerWindowController(sources: [])
             controller.close()
         }
     }
@@ -340,7 +341,7 @@ final class AppPickerIntegrationTests: XCTestCase {
         for _ in 0..<iterations {
             group.enter()
             DispatchQueue.main.async {
-                let controller = AppPickerWindowController()
+                let controller = AppPickerWindowController(sources: [])
                 controllers.append(controller)
                 group.leave()
             }
@@ -416,21 +417,20 @@ final class AppPickerIntegrationTests: XCTestCase {
 
     // MARK: - Thread Safety Tests
 
-    func testConcurrentCallbackAssignment() {
+    /// Test rapid callback assignment on MainActor.
+    /// Swift 6 requires MainActor isolation for UI components,
+    /// so all callback assignments happen on MainActor.
+    func testRapidCallbackAssignment() async {
         let iterations = 100
-        let group = DispatchGroup()
 
+        // Rapid sequential assignment on MainActor
         for i in 0..<iterations {
-            group.enter()
-            DispatchQueue.global().async {
-                self.windowController.onSelection = { source in
-                    _ = source // Callback \(i)
-                }
-                group.leave()
+            windowController.onSelection = { source in
+                _ = source // Callback \(i)
             }
         }
 
-        let result = group.wait(timeout: .now() + 5)
-        XCTAssertEqual(result, .success, "Concurrent callback assignments should complete")
+        // Final callback should be assigned
+        XCTAssertNotNil(windowController.onSelection, "Callback should be assigned after rapid assignments")
     }
 }

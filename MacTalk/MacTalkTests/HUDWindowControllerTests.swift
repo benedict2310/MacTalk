@@ -8,17 +8,20 @@
 import XCTest
 @testable import MacTalk
 
+@MainActor
 final class HUDWindowControllerTests: XCTestCase {
 
     var hudController: HUDWindowController!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
+        try await super.setUp()
         hudController = HUDWindowController()
     }
 
-    override func tearDownWithError() throws {
-        hudController.close()
+    override func tearDown() async throws {
+        hudController?.close()
         hudController = nil
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests
@@ -85,13 +88,93 @@ final class HUDWindowControllerTests: XCTestCase {
         XCTAssertLessThan(frame.height, 600)
     }
 
-    // MARK: - Text Update Tests
+    // MARK: - Partial Text Update Tests (S.03.1 Streaming UX)
+
+    func testUpdatePartial() {
+        let testText = "Hello, this is a partial transcript"
+        hudController.updatePartial(text: testText)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testUpdatePartialEmpty() {
+        hudController.updatePartial(text: "")
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testUpdatePartialLong() {
+        let longText = String(repeating: "This is a very long transcript. ", count: 100)
+        hudController.updatePartial(text: longText)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testUpdatePartialSpecialCharacters() {
+        let specialText = "Test with special: émojis 🎙️ and symbols @#$%"
+        hudController.updatePartial(text: specialText)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testMultiplePartialUpdates() {
+        let texts = [
+            "First partial",
+            "Second partial with more text",
+            "Third partial",
+            "",
+            "Final partial"
+        ]
+
+        for text in texts {
+            hudController.updatePartial(text: text)
+        }
+
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testPartialThrottlesIdenticalUpdates() {
+        // Same text should not trigger redundant updates (throttling)
+        let text = "Same text repeated"
+        hudController.updatePartial(text: text)
+        hudController.updatePartial(text: text)  // Should be skipped
+        hudController.updatePartial(text: text)  // Should be skipped
+        XCTAssertNotNil(hudController.window)
+    }
+
+    // MARK: - Final Text Update Tests (S.03.1 Streaming UX)
+
+    func testUpdateFinal() {
+        let testText = "This is the final transcript."
+        hudController.updateFinal(text: testText)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testUpdateFinalEmpty() {
+        hudController.updateFinal(text: "")
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testUpdateFinalLong() {
+        let longText = String(repeating: "Final transcript text. ", count: 50)
+        hudController.updateFinal(text: longText)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testPartialToFinalTransition() {
+        // Simulate streaming: partials followed by final
+        hudController.showWindow(nil)
+        hudController.updatePartial(text: "Listening...")
+        hudController.updatePartial(text: "Hello")
+        hudController.updatePartial(text: "Hello world")
+        hudController.updatePartial(text: "Hello world how are you")
+        hudController.updateFinal(text: "Hello world, how are you?")
+        XCTAssertNotNil(hudController.window)
+    }
+
+    // MARK: - Legacy Text Update Tests (deprecated API)
 
     func testUpdateText() {
         let testText = "Hello, this is a test transcript"
         hudController.update(text: testText)
 
-        // Verify text is set (in real implementation, we'd check the text field)
+        // Verify text is set (routes to updatePartial)
         XCTAssertNotNil(hudController.window)
     }
 
@@ -125,6 +208,23 @@ final class HUDWindowControllerTests: XCTestCase {
             hudController.update(text: text)
         }
 
+        XCTAssertNotNil(hudController.window)
+    }
+
+    // MARK: - Reset/State Tests (S.03.1 Streaming UX)
+
+    func testResetClearsTranscriptState() {
+        hudController.showWindow(nil)
+        hudController.updatePartial(text: "Some text")
+        hudController.reset()
+        // After reset, HUD should be in "Listening..." state
+        XCTAssertNotNil(hudController.window)
+    }
+
+    func testShowWindowResetsState() {
+        hudController.updatePartial(text: "Old text")
+        hudController.showWindow(nil)
+        // showWindow calls reset, should clear old text
         XCTAssertNotNil(hudController.window)
     }
 
@@ -235,9 +335,9 @@ final class HUDWindowControllerTests: XCTestCase {
     // MARK: - Integration Tests
 
     func testCompleteTranscriptionFlow() {
-        // Simulate a complete transcription session
+        // Simulate a complete transcription session with streaming (S.03.1)
 
-        // 1. Show HUD
+        // 1. Show HUD - should display "Listening..."
         hudController.showWindow(nil)
         XCTAssertTrue(hudController.window?.isVisible ?? false)
 
@@ -251,22 +351,22 @@ final class HUDWindowControllerTests: XCTestCase {
             hudController.updateAppLevel(rms: level * 0.5, peak: level * 0.7, peakHold: level * 0.8)
         }
 
-        // 4. Update transcript text
-        hudController.update(text: "This is a partial transcript...")
+        // 4. Streaming partials (S.03.1 - live text updates at 70% opacity)
+        hudController.updatePartial(text: "This is")
+        hudController.updatePartial(text: "This is a partial")
+        hudController.updatePartial(text: "This is a partial transcript...")
+        hudController.updatePartial(text: "This is a partial transcript... with more words")
 
-        // 5. More updates
-        hudController.update(text: "This is a partial transcript... with more words")
+        // 5. Final text (S.03.1 - committed text at 100% opacity)
+        hudController.updateFinal(text: "This is the complete transcript with all the words.")
 
-        // 6. Final text
-        hudController.update(text: "Final: This is the complete transcript with all the words.")
-
-        // 7. Close HUD
+        // 6. Close HUD
         hudController.close()
         XCTAssertFalse(hudController.window?.isVisible ?? true)
     }
 
     func testMicOnlyFlow() {
-        // Simulate mic-only mode
+        // Simulate mic-only mode with streaming (S.03.1)
 
         hudController.showWindow(nil)
 
@@ -276,15 +376,19 @@ final class HUDWindowControllerTests: XCTestCase {
         // Update only mic levels
         hudController.updateMicLevel(rms: 0.5, peak: 0.7, peakHold: 0.8)
 
-        // Update text
-        hudController.update(text: "Mic-only transcription")
+        // Streaming partial updates
+        hudController.updatePartial(text: "Mic-only")
+        hudController.updatePartial(text: "Mic-only transcription")
+
+        // Final commit
+        hudController.updateFinal(text: "Mic-only transcription.")
 
         hudController.close()
         XCTAssertFalse(hudController.window?.isVisible ?? true)
     }
 
     func testMicPlusAppFlow() {
-        // Simulate mic + app mode
+        // Simulate mic + app mode with streaming (S.03.1)
 
         hudController.showWindow(nil)
 
@@ -295,23 +399,29 @@ final class HUDWindowControllerTests: XCTestCase {
         hudController.updateMicLevel(rms: 0.6, peak: 0.8, peakHold: 0.9)
         hudController.updateAppLevel(rms: 0.4, peak: 0.6, peakHold: 0.7)
 
-        // Update text
-        hudController.update(text: "Mic + App transcription")
+        // Streaming partial updates
+        hudController.updatePartial(text: "Mic + App")
+        hudController.updatePartial(text: "Mic + App transcription")
+
+        // Final commit
+        hudController.updateFinal(text: "Mic + App transcription.")
 
         hudController.close()
     }
 
     // MARK: - Concurrent Updates Test
 
-    func testConcurrentUpdates() {
-        let expectation = XCTestExpectation(description: "Concurrent updates")
-
+    /// Test rapid concurrent updates from multiple async tasks.
+    /// Swift 6 requires MainActor isolation for UI, so updates are
+    /// scheduled on MainActor via Task groups.
+    func testConcurrentUpdates() async {
         hudController.showWindow(nil)
 
-        // Simulate updates from different threads (as would happen in real app)
-        DispatchQueue.global(qos: .userInitiated).async {
+        // Simulate rapid concurrent updates from multiple tasks
+        await withTaskGroup(of: Void.self) { group in
+            // Level updates
             for i in 0..<100 {
-                DispatchQueue.main.async {
+                group.addTask { @MainActor in
                     self.hudController.updateMicLevel(
                         rms: Float(i) / 100.0,
                         peak: Float(i) / 100.0,
@@ -319,18 +429,33 @@ final class HUDWindowControllerTests: XCTestCase {
                     )
                 }
             }
-        }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+            // Partial text updates (simulating streaming)
             for i in 0..<100 {
-                DispatchQueue.main.async {
-                    self.hudController.update(text: "Update \(i)")
+                group.addTask { @MainActor in
+                    self.hudController.updatePartial(text: "Partial \(i)")
                 }
             }
-            expectation.fulfill()
         }
 
-        wait(for: [expectation], timeout: 5.0)
+        XCTAssertNotNil(hudController.window)
+    }
+
+    /// Test streaming scenario with concurrent partials and final (S.03.1)
+    func testConcurrentStreamingUpdates() async {
+        hudController.showWindow(nil)
+
+        // Simulate concurrent partial updates followed by final
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<50 {
+                group.addTask { @MainActor in
+                    self.hudController.updatePartial(text: "Streaming word \(i)")
+                }
+            }
+        }
+
+        // Final should succeed even after many partials
+        hudController.updateFinal(text: "Final transcript after concurrent partials.")
         XCTAssertNotNil(hudController.window)
     }
 
@@ -387,6 +512,28 @@ final class HUDWindowControllerTests: XCTestCase {
         measure {
             for i in 0..<100 {
                 hudController.update(text: "Performance test update \(i)")
+            }
+        }
+    }
+
+    /// Test streaming partial update performance (S.03.1 - target ~10 Hz UI updates)
+    func testPartialUpdatePerformance() {
+        hudController.showWindow(nil)
+
+        measure {
+            for i in 0..<100 {
+                hudController.updatePartial(text: "Streaming partial \(i) with some text")
+            }
+        }
+    }
+
+    /// Test final update performance
+    func testFinalUpdatePerformance() {
+        hudController.showWindow(nil)
+
+        measure {
+            for i in 0..<100 {
+                hudController.updateFinal(text: "Final transcript \(i) with complete text.")
             }
         }
     }

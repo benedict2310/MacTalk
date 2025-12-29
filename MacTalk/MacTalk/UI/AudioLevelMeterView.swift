@@ -7,6 +7,7 @@
 
 import AppKit
 
+@MainActor
 final class AudioLevelMeterView: NSView {
     // MARK: - Configuration
 
@@ -59,20 +60,14 @@ final class AudioLevelMeterView: NSView {
         self.rmsLevel = rms
         self.peakLevel = peak
         self.peakHoldLevel = peakHold
-
-        DispatchQueue.main.async {
-            self.needsDisplay = true
-        }
+        self.needsDisplay = true
     }
 
     func reset() {
         self.rmsLevel = 0.0
         self.peakLevel = 0.0
         self.peakHoldLevel = 0.0
-
-        DispatchQueue.main.async {
-            self.needsDisplay = true
-        }
+        self.needsDisplay = true
     }
 
     // MARK: - Drawing
@@ -202,6 +197,7 @@ final class AudioLevelMeterView: NSView {
 
 // MARK: - Dual Channel Level Meter
 
+@MainActor
 final class DualChannelLevelMeterView: NSView {
     private let micMeter: AudioLevelMeterView
     private let appMeter: AudioLevelMeterView

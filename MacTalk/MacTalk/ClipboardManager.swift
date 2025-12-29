@@ -8,6 +8,10 @@
 import AppKit
 import ApplicationServices
 
+/// Clipboard manager for handling clipboard operations and auto-paste
+/// @MainActor ensures all NSPasteboard operations happen on the main thread
+/// and provides thread-safe access to clipboard history state.
+@MainActor
 enum ClipboardManager {
     // MARK: - Clipboard Operations
 

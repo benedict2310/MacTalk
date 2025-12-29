@@ -4,9 +4,10 @@
 # Builds and optionally launches the MacTalk app
 #
 # Usage:
-#   ./build.sh          # Build only
-#   ./build.sh run      # Build and launch
-#   ./build.sh clean    # Clean build
+#   ./build.sh              # Build only
+#   ./build.sh run          # Build and launch
+#   ./build.sh clean        # Clean build
+#   ./build.sh reset-perms  # Reset TCC permissions (after rebuild)
 #
 
 set -e
@@ -33,6 +34,14 @@ case "${1:-build}" in
     echo -e "${YELLOW}🧹 Cleaning build artifacts...${NC}"
     rm -rf ~/Library/Developer/Xcode/DerivedData/MacTalk-*
     echo -e "${GREEN}✅ Clean complete${NC}"
+    exit 0
+    ;;
+
+  reset-perms)
+    echo -e "${BLUE}🔐 Resetting TCC Accessibility permission for MacTalk...${NC}"
+    echo -e "${YELLOW}Note: This is needed after rebuilding because TCC tracks permissions by CDHash.${NC}"
+    tccutil reset Accessibility com.mactalk.app
+    echo -e "${GREEN}✅ Permission reset. Re-grant Accessibility permission on next auto-paste.${NC}"
     exit 0
     ;;
 
@@ -76,7 +85,13 @@ case "${1:-build}" in
     ;;
 
   *)
-    echo "Usage: $0 {build|run|clean}"
+    echo "Usage: $0 {build|run|clean|reset-perms}"
+    echo ""
+    echo "Commands:"
+    echo "  build        Build the app (default)"
+    echo "  run          Build and launch the app"
+    echo "  clean        Remove build artifacts"
+    echo "  reset-perms  Reset TCC Accessibility permission (use after rebuild if auto-paste stops working)"
     exit 1
     ;;
 esac

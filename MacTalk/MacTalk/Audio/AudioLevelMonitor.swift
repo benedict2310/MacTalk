@@ -7,8 +7,19 @@
 
 import Foundation
 import Accelerate
+import os
 
-final class AudioLevelMonitor {
+/// Thread-safe audio level monitor.
+///
+/// ## Thread Safety
+/// This class uses `OSAllocatedUnfairLock` for synchronization, which supports
+/// priority inheritance to prevent priority inversion when called from audio threads.
+///
+/// ## Sendable Conformance
+/// Marked `@unchecked Sendable` because:
+/// - All mutable state is protected by `OSAllocatedUnfairLock`
+/// - Configuration values are immutable after initialization
+final class AudioLevelMonitor: @unchecked Sendable {
     // MARK: - Configuration
 
     private let smoothingFactor: Float = 0.3  // Lower = more smoothing
@@ -18,15 +29,22 @@ final class AudioLevelMonitor {
 
     // MARK: - State
 
-    private var currentRMS: Float = 0.0
-    private var currentPeak: Float = 0.0
-    private var peakHoldValue: Float = 0.0
-    private var peakHoldTime: Date = .distantPast
-    private let lock = NSLock()
+    private struct State {
+        var currentRMS: Float = 0.0
+        var currentPeak: Float = 0.0
+        var peakHoldValue: Float = 0.0
+        var peakHoldTime: Date = .distantPast
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     // MARK: - Public Interface
 
-    struct LevelData: Equatable {
+    /// Audio level data for UI display.
+    ///
+    /// ## Sendable Conformance
+    /// This struct is `Sendable` because all members are immutable value types (`Float`).
+    struct LevelData: Equatable, Sendable {
         let rms: Float           // Root Mean Square (0.0 - 1.0)
         let peak: Float          // Current peak (0.0 - 1.0)
         let peakHold: Float      // Peak hold value (0.0 - 1.0)
@@ -37,48 +55,46 @@ final class AudioLevelMonitor {
 
     /// Update levels with new audio buffer
     func update(buffer: [Float]) -> LevelData {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard !buffer.isEmpty else {
             return LevelData.silent
         }
 
-        // Calculate RMS (Root Mean Square)
+        // Calculate RMS (Root Mean Square) - pure function, no state needed
         let rms = calculateRMS(samples: buffer)
 
-        // Calculate peak
+        // Calculate peak - pure function, no state needed
         let peak = calculatePeak(samples: buffer)
 
-        // Apply smoothing to RMS
-        currentRMS = (smoothingFactor * rms) + ((1.0 - smoothingFactor) * currentRMS)
+        return state.withLock { state in
+            // Apply smoothing to RMS
+            state.currentRMS = (smoothingFactor * rms) + ((1.0 - smoothingFactor) * state.currentRMS)
 
-        // Update peak (no smoothing)
-        currentPeak = peak
+            // Update peak (no smoothing)
+            state.currentPeak = peak
 
-        // Update peak hold
-        updatePeakHold(peak: peak)
+            // Update peak hold
+            updatePeakHold(state: &state, peak: peak)
 
-        // Convert to decibels
-        let decibels = amplitudeToDecibels(currentRMS)
+            // Convert to decibels
+            let decibels = amplitudeToDecibels(state.currentRMS)
 
-        return LevelData(
-            rms: currentRMS,
-            peak: currentPeak,
-            peakHold: peakHoldValue,
-            decibels: decibels
-        )
+            return LevelData(
+                rms: state.currentRMS,
+                peak: state.currentPeak,
+                peakHold: state.peakHoldValue,
+                decibels: decibels
+            )
+        }
     }
 
     /// Reset all levels to zero
     func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        currentRMS = 0.0
-        currentPeak = 0.0
-        peakHoldValue = 0.0
-        peakHoldTime = .distantPast
+        state.withLock { state in
+            state.currentRMS = 0.0
+            state.currentPeak = 0.0
+            state.peakHoldValue = 0.0
+            state.peakHoldTime = .distantPast
+        }
     }
 
     // MARK: - Calculations
@@ -104,24 +120,24 @@ final class AudioLevelMonitor {
         return min(max(peak, 0.0), 1.0)
     }
 
-    private func updatePeakHold(peak: Float) {
+    private func updatePeakHold(state: inout State, peak: Float) {
         let now = Date()
 
         // If new peak is higher, update immediately
-        if peak > peakHoldValue {
-            peakHoldValue = peak
-            peakHoldTime = now
+        if peak > state.peakHoldValue {
+            state.peakHoldValue = peak
+            state.peakHoldTime = now
             return
         }
 
         // If peak hold duration expired, decay towards current peak
-        if now.timeIntervalSince(peakHoldTime) > peakHoldDuration {
+        if now.timeIntervalSince(state.peakHoldTime) > peakHoldDuration {
             // Decay peak hold smoothly
-            peakHoldValue = max(peak, peakHoldValue * 0.95)
+            state.peakHoldValue = max(peak, state.peakHoldValue * 0.95)
 
             // If decayed close to current peak, reset hold time
-            if abs(peakHoldValue - peak) < 0.01 {
-                peakHoldTime = now
+            if abs(state.peakHoldValue - peak) < 0.01 {
+                state.peakHoldTime = now
             }
         }
     }
@@ -151,11 +167,17 @@ final class AudioLevelMonitor {
 
 // MARK: - Multi-Channel Monitor
 
-final class MultiChannelLevelMonitor {
+/// Thread-safe multi-channel level monitor.
+///
+/// ## Sendable Conformance
+/// Marked `@unchecked Sendable` because:
+/// - Contains only `Sendable` members (AudioLevelMonitor instances)
+/// - No mutable state of its own
+final class MultiChannelLevelMonitor: @unchecked Sendable {
     private let micMonitor = AudioLevelMonitor()
     private let appMonitor = AudioLevelMonitor()
 
-    enum Channel {
+    enum Channel: Sendable {
         case microphone
         case application
     }
