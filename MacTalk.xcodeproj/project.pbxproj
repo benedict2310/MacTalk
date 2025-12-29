@@ -56,6 +56,7 @@
 		B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */; };
 		BAD2320D9521ED8C2B05863B /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AFDF15D9275C7B2662A6B51F /* FluidAudio */; };
 		BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */; };
+		BF7779BE4CF099D3CC1F8874 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */; };
 		C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */; };
 		C289FCFA43BC6160F45CC5EF /* AudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F45EAFB3246883475BF41D0 /* AudioCapture.swift */; };
 		CD8CFF3413450B0B52DDC9EB /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3370D324AA3BB2E3D65289F3 /* CoreML.framework */; };
@@ -109,6 +110,7 @@
 		6E02C702E7A93C3C3EB66EC4 /* AppSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsTests.swift; sourceTree = "<group>"; };
 		6E458427B2F013B3D86FF976 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
+		739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetEngineTests.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
 		83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowIntegrationTests.swift; sourceTree = "<group>"; };
@@ -255,6 +257,7 @@
 			isa = PBXGroup;
 			children = (
 				F032A713515F1C44CE66DF56 /* AppDelegate.swift */,
+				739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */,
 				E76FC409C68F7574C43B90B4 /* ClipboardManager.swift */,
 				739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */,
 				59E9EED0C012BA63AE29807D /* HotkeyManager.swift */,
@@ -342,6 +345,7 @@
 			buildConfigurationList = 3A5CEFB70502E96113ABFE65 /* Build configuration list for PBXNativeTarget "MacTalk" */;
 			buildPhases = (
 				9C035754F244D13DF5DA149A /* Sources */,
+				8B70524A4FAF5B04E167F3CC /* Resources */,
 				4D4F0275467B05E518737FCE /* Frameworks */,
 				2EE36195649FEA5AE40C0B76 /* Copy Whisper Libraries */,
 				60F7E2B0320C16F9A5513D38 /* Re-sign Libraries and App Bundle */,
@@ -395,6 +399,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		8B70524A4FAF5B04E167F3CC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF7779BE4CF099D3CC1F8874 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		2EE36195649FEA5AE40C0B76 /* Copy Whisper Libraries */ = {

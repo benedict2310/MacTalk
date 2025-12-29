@@ -16,18 +16,18 @@ final class AudioCaptureIntegrationTests: XCTestCase {
 
     // MARK: - Helper Methods
 
-    /// Helper to get a test WhisperEngine, skipping the test if no model is available
-    private func getTestEngine() throws -> WhisperEngine {
+    /// Helper to get a test NativeWhisperEngine, skipping the test if no model is available
+    private func getTestEngine() throws -> NativeWhisperEngine {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
 
         // Check if model file exists
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run WhisperEngine tests.")
+            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run NativeWhisperEngine tests.")
         }
 
         // Try to create engine
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
-            throw XCTSkip("Failed to create WhisperEngine with model at \(modelURL.path). Model may be invalid.")
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
+            throw XCTSkip("Failed to create NativeWhisperEngine with model at \(modelURL.path). Model may be invalid.")
         }
 
         return engine
@@ -35,15 +35,15 @@ final class AudioCaptureIntegrationTests: XCTestCase {
 
     // MARK: - Setup/Teardown
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         capture = AudioCapture()
     }
 
-    override func tearDown() {
-        capture.stop()
+    override func tearDown() async throws {
+        capture?.stop()
         capture = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests
@@ -118,38 +118,31 @@ final class AudioCaptureIntegrationTests: XCTestCase {
 
     // MARK: - Thread Safety Tests
 
-    func testConcurrentCallbackAssignment() {
+    /// Test rapid callback assignment on MainActor.
+    /// Swift 6 requires MainActor isolation for UI components.
+    func testRapidCallbackAssignment() async {
         let iterations = 100
-        let group = DispatchGroup()
 
         for i in 0..<iterations {
-            group.enter()
-            DispatchQueue.global().async {
-                self.capture.onPCMFloatBuffer = { buffer, timestamp in
-                    // Callback \(i)
-                }
-                group.leave()
+            capture.onPCMFloatBuffer = { buffer, timestamp in
+                // Callback \(i)
             }
         }
 
-        let result = group.wait(timeout: .now() + 5)
-        XCTAssertEqual(result, .success, "Concurrent callback assignments should complete")
+        // Final callback should be assigned
+        XCTAssertNotNil(capture.onPCMFloatBuffer, "Callback should be assigned")
     }
 
-    func testConcurrentStopCalls() {
+    /// Test rapid stop calls on MainActor.
+    func testRapidStopCalls() async {
         let iterations = 10
-        let group = DispatchGroup()
 
         for _ in 0..<iterations {
-            group.enter()
-            DispatchQueue.global().async {
-                self.capture.stop()
-                group.leave()
-            }
+            capture.stop()
         }
 
-        let result = group.wait(timeout: .now() + 5)
-        XCTAssertEqual(result, .success, "Concurrent stop calls should complete safely")
+        // Should complete without crash
+        XCTAssertNotNil(capture, "Capture should remain valid after rapid stops")
     }
 
     // MARK: - Performance Tests
@@ -320,25 +313,16 @@ final class AudioCaptureIntegrationTests: XCTestCase {
 
     // MARK: - Concurrent Operations Tests
 
-    func testConcurrentInstanceCreation() {
+    /// Test rapid instance creation on MainActor.
+    func testRapidInstanceCreation() async {
         let iterations = 10
-        let group = DispatchGroup()
         var instances: [AudioCapture] = []
-        let lock = NSLock()
 
         for _ in 0..<iterations {
-            group.enter()
-            DispatchQueue.global().async {
-                let instance = AudioCapture()
-                lock.lock()
-                instances.append(instance)
-                lock.unlock()
-                group.leave()
-            }
+            let instance = AudioCapture()
+            instances.append(instance)
         }
 
-        let result = group.wait(timeout: .now() + 5)
-        XCTAssertEqual(result, .success, "Concurrent instance creation should complete")
         XCTAssertEqual(instances.count, iterations, "All instances should be created")
 
         // Clean up

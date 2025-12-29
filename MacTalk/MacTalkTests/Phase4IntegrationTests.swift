@@ -15,18 +15,18 @@ final class Phase4IntegrationTests: XCTestCase {
 
     // MARK: - Test Helpers
 
-    /// Helper to get a test WhisperEngine, skipping the test if no model is available
-    private func getTestEngine() throws -> WhisperEngine {
+    /// Helper to get a test NativeWhisperEngine, skipping the test if no model is available
+    private func getTestEngine() throws -> NativeWhisperEngine {
         let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
 
         // Check if model file exists
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run WhisperEngine tests.")
+            throw XCTSkip("Test model not found at \(modelURL.path). Download a model to run NativeWhisperEngine tests.")
         }
 
         // Try to create engine
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
-            throw XCTSkip("Failed to create WhisperEngine with model at \(modelURL.path). Model may be invalid.")
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
+            throw XCTSkip("Failed to create NativeWhisperEngine with model at \(modelURL.path). Model may be invalid.")
         }
 
         return engine
@@ -329,7 +329,7 @@ final class Phase4IntegrationTests: XCTestCase {
 
         autoreleasepool {
             let modelURL = URL(fileURLWithPath: "/tmp/test-model.gguf")
-            guard let engine = WhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create WhisperEngine"); return }
+            guard let engine = NativeWhisperEngine(modelURL: modelURL) else { XCTFail("Failed to create NativeWhisperEngine"); return }
             let controller = TranscriptionController(engine: engine)
 
             controller.onPartial = { [weak controller] text in

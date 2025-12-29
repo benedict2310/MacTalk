@@ -28,12 +28,27 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
     private let defaultModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     // Advanced tab controls
+    private let providerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let parakeetModelLabel = NSTextField(labelWithString: "Parakeet TDT 0.6B (Core ML)")
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let engineStatusIndicator = NSProgressIndicator()
+    private let engineStatusValueLabel = NSTextField(labelWithString: "")
+    private let downloadProgressIndicator = NSProgressIndicator()
+    private let downloadProgressLabel = NSTextField(labelWithString: "Download:")
+    private let parakeetDownloadButton = NSButton(title: "Download Parakeet Model", target: nil, action: nil)
+
+    // Permissions tab controls (stored for live updates)
+    private var micStatusLabel: NSTextField?
+    private var screenStatusLabel: NSTextField?
+    private var accessibilityStatusLabel: NSTextField?
 
     // Shortcuts tab controls
     private let startMicOnlyRecorder = ShortcutRecorderView()
     private let startMicPlusAppRecorder = ShortcutRecorderView()
+
+    private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
+    private var currentProvider: ASRProvider = AppSettings.shared.provider
 
     // MARK: - Initialization
 
@@ -51,10 +66,31 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
         setupUI()
         loadSettings()
+        startObservingEngineState()
+
+        // Refresh permission status when window becomes key
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.refreshPermissionStatus()
+            }
+        )
+
+        // Initial refresh
+        refreshPermissionStatus()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     // MARK: - UI Setup
@@ -238,14 +274,26 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 340))
 
+        // Provider selection
+        let providerLabel = NSTextField(labelWithString: "Provider:")
+        providerLabel.frame = NSRect(x: 20, y: 290, width: 120, height: 25)
+        providerLabel.isEditable = false
+        providerLabel.isBordered = false
+        providerLabel.backgroundColor = .clear
+
+        providerPopup.frame = NSRect(x: 150, y: 290, width: 200, height: 25)
+        providerPopup.addItems(withTitles: ASRProvider.allCases.map { $0.displayName })
+        providerPopup.target = self
+        providerPopup.action = #selector(providerSelectionChanged)
+
         // Model selection
         let modelLabel = NSTextField(labelWithString: "Model:")
-        modelLabel.frame = NSRect(x: 20, y: 280, width: 120, height: 25)
+        modelLabel.frame = NSRect(x: 20, y: 255, width: 120, height: 25)
         modelLabel.isEditable = false
         modelLabel.isBordered = false
         modelLabel.backgroundColor = .clear
 
-        modelPopup.frame = NSRect(x: 150, y: 280, width: 300, height: 25)
+        modelPopup.frame = NSRect(x: 150, y: 255, width: 300, height: 25)
         modelPopup.addItems(withTitles: [
             "tiny (75 MB, fastest)",
             "base (140 MB, very fast)",
@@ -257,14 +305,18 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         modelPopup.target = self
         modelPopup.action = #selector(advancedSettingChanged)
 
+        parakeetModelLabel.frame = NSRect(x: 150, y: 255, width: 300, height: 25)
+        parakeetModelLabel.textColor = .secondaryLabelColor
+        parakeetModelLabel.isHidden = true
+
         // Language selection
         let languageLabel = NSTextField(labelWithString: "Language:")
-        languageLabel.frame = NSRect(x: 20, y: 245, width: 120, height: 25)
+        languageLabel.frame = NSRect(x: 20, y: 220, width: 120, height: 25)
         languageLabel.isEditable = false
         languageLabel.isBordered = false
         languageLabel.backgroundColor = .clear
 
-        languagePopup.frame = NSRect(x: 150, y: 245, width: 200, height: 25)
+        languagePopup.frame = NSRect(x: 150, y: 220, width: 200, height: 25)
         languagePopup.addItems(withTitles: [
             "Auto-detect",
             "English",
@@ -281,15 +333,57 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         languagePopup.target = self
         languagePopup.action = #selector(advancedSettingChanged)
 
-        let infoLabel = NSTextField(labelWithString: "Whisper model and language settings")
-        infoLabel.frame = NSRect(x: 20, y: 205, width: 440, height: 20)
+        // Engine status row
+        let statusLabel = NSTextField(labelWithString: "Status:")
+        statusLabel.frame = NSRect(x: 20, y: 185, width: 120, height: 20)
+        statusLabel.isEditable = false
+        statusLabel.isBordered = false
+        statusLabel.backgroundColor = .clear
+
+        engineStatusIndicator.frame = NSRect(x: 150, y: 188, width: 14, height: 14)
+        engineStatusIndicator.style = .spinning
+        engineStatusIndicator.controlSize = .small
+        engineStatusIndicator.isIndeterminate = true
+        engineStatusIndicator.isDisplayedWhenStopped = false
+
+        engineStatusValueLabel.frame = NSRect(x: 172, y: 183, width: 278, height: 20)
+        engineStatusValueLabel.textColor = .secondaryLabelColor
+
+        // Download progress
+        downloadProgressLabel.frame = NSRect(x: 20, y: 150, width: 120, height: 20)
+        downloadProgressLabel.textColor = .secondaryLabelColor
+
+        downloadProgressIndicator.frame = NSRect(x: 150, y: 150, width: 300, height: 16)
+        downloadProgressIndicator.isIndeterminate = false
+        downloadProgressIndicator.minValue = 0
+        downloadProgressIndicator.maxValue = 1
+        downloadProgressIndicator.doubleValue = 0
+        downloadProgressIndicator.isHidden = true
+
+        parakeetDownloadButton.frame = NSRect(x: 150, y: 120, width: 220, height: 30)
+        parakeetDownloadButton.bezelStyle = .rounded
+        parakeetDownloadButton.target = self
+        parakeetDownloadButton.action = #selector(downloadParakeetModel)
+        parakeetDownloadButton.isHidden = true
+
+        let infoLabel = NSTextField(labelWithString: "Model and language settings")
+        infoLabel.frame = NSRect(x: 20, y: 85, width: 440, height: 20)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
+        view.addSubview(providerLabel)
+        view.addSubview(providerPopup)
         view.addSubview(modelLabel)
         view.addSubview(modelPopup)
+        view.addSubview(parakeetModelLabel)
         view.addSubview(languageLabel)
         view.addSubview(languagePopup)
+        view.addSubview(statusLabel)
+        view.addSubview(engineStatusIndicator)
+        view.addSubview(engineStatusValueLabel)
+        view.addSubview(downloadProgressLabel)
+        view.addSubview(downloadProgressIndicator)
+        view.addSubview(parakeetDownloadButton)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -310,58 +404,69 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         titleLabel.isBordered = false
         titleLabel.backgroundColor = .clear
 
-        let micLabel = NSTextField(labelWithString: "🎤 Microphone Access:")
-        micLabel.frame = NSRect(x: 20, y: 250, width: 200, height: 25)
+        let micLabel = NSTextField(labelWithString: "Microphone Access:")
+        micLabel.frame = NSRect(x: 20, y: 250, width: 180, height: 25)
         micLabel.isEditable = false
         micLabel.isBordered = false
         micLabel.backgroundColor = .clear
 
-        let micStatusLabel = NSTextField(labelWithString: "Check Status")
-        micStatusLabel.frame = NSRect(x: 230, y: 250, width: 120, height: 25)
-        micStatusLabel.isEditable = false
-        micStatusLabel.isBordered = false
-        micStatusLabel.backgroundColor = .clear
-        micStatusLabel.textColor = .secondaryLabelColor
+        let micStatus = NSTextField(labelWithString: "Checking...")
+        micStatus.frame = NSRect(x: 210, y: 250, width: 150, height: 25)
+        micStatus.isEditable = false
+        micStatus.isBordered = false
+        micStatus.backgroundColor = .clear
+        micStatus.textColor = .secondaryLabelColor
+        self.micStatusLabel = micStatus
 
-        let screenLabel = NSTextField(labelWithString: "📺 Screen Recording:")
-        screenLabel.frame = NSRect(x: 20, y: 220, width: 200, height: 25)
+        let screenLabel = NSTextField(labelWithString: "Screen Recording:")
+        screenLabel.frame = NSRect(x: 20, y: 220, width: 180, height: 25)
         screenLabel.isEditable = false
         screenLabel.isBordered = false
         screenLabel.backgroundColor = .clear
 
-        let screenStatusLabel = NSTextField(labelWithString: "Check Status")
-        screenStatusLabel.frame = NSRect(x: 230, y: 220, width: 120, height: 25)
-        screenStatusLabel.isEditable = false
-        screenStatusLabel.isBordered = false
-        screenStatusLabel.backgroundColor = .clear
-        screenStatusLabel.textColor = .secondaryLabelColor
+        let screenStatus = NSTextField(labelWithString: "Checking...")
+        screenStatus.frame = NSRect(x: 210, y: 220, width: 150, height: 25)
+        screenStatus.isEditable = false
+        screenStatus.isBordered = false
+        screenStatus.backgroundColor = .clear
+        screenStatus.textColor = .secondaryLabelColor
+        self.screenStatusLabel = screenStatus
 
-        let accessibilityLabel = NSTextField(labelWithString: "♿ Accessibility:")
-        accessibilityLabel.frame = NSRect(x: 20, y: 190, width: 200, height: 25)
+        let accessibilityLabel = NSTextField(labelWithString: "Accessibility:")
+        accessibilityLabel.frame = NSRect(x: 20, y: 190, width: 180, height: 25)
         accessibilityLabel.isEditable = false
         accessibilityLabel.isBordered = false
         accessibilityLabel.backgroundColor = .clear
 
-        let accessibilityStatusLabel = NSTextField(labelWithString: "Check Status")
-        accessibilityStatusLabel.frame = NSRect(x: 230, y: 190, width: 120, height: 25)
-        accessibilityStatusLabel.isEditable = false
-        accessibilityStatusLabel.isBordered = false
-        accessibilityStatusLabel.backgroundColor = .clear
-        accessibilityStatusLabel.textColor = .secondaryLabelColor
+        let accessibilityStatus = NSTextField(labelWithString: "Checking...")
+        accessibilityStatus.frame = NSRect(x: 210, y: 190, width: 150, height: 25)
+        accessibilityStatus.isEditable = false
+        accessibilityStatus.isBordered = false
+        accessibilityStatus.backgroundColor = .clear
+        accessibilityStatus.textColor = .secondaryLabelColor
+        self.accessibilityStatusLabel = accessibilityStatus
 
-        // Open System Settings button
-        let openSettingsButton = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettings))
-        openSettingsButton.frame = NSRect(x: 20, y: 140, width: 200, height: 30)
-        openSettingsButton.bezelStyle = .rounded
+        // Buttons row
+        let refreshButton = NSButton(title: "Refresh", target: self, action: #selector(refreshPermissionsTapped))
+        refreshButton.frame = NSRect(x: 20, y: 140, width: 90, height: 30)
+        refreshButton.bezelStyle = .rounded
+
+        let openAccessibilityButton = NSButton(title: "Open Accessibility Settings", target: self, action: #selector(openAccessibilitySettings))
+        openAccessibilityButton.frame = NSRect(x: 120, y: 140, width: 190, height: 30)
+        openAccessibilityButton.bezelStyle = .rounded
+
+        let diagnosticsButton = NSButton(title: "Diagnostics...", target: self, action: #selector(showDiagnostics))
+        diagnosticsButton.frame = NSRect(x: 320, y: 140, width: 130, height: 30)
+        diagnosticsButton.bezelStyle = .rounded
 
         let infoLabel = NSTextField(wrappingLabelWithString: """
         MacTalk requires certain permissions to function properly:
 
         • Microphone: To capture your voice
-        • Screen Recording: To capture app audio (Mode B only)
+        • Screen Recording: To capture app audio (Mic + App mode only)
         • Accessibility: To auto-paste transcripts (optional)
 
-        If permissions are denied, you can grant them in System Settings.
+        Permission changes take effect immediately - no restart needed.
         """)
         infoLabel.frame = NSRect(x: 20, y: 20, width: 440, height: 100)
         infoLabel.textColor = .secondaryLabelColor
@@ -369,12 +474,14 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
         view.addSubview(titleLabel)
         view.addSubview(micLabel)
-        view.addSubview(micStatusLabel)
+        view.addSubview(micStatus)
         view.addSubview(screenLabel)
-        view.addSubview(screenStatusLabel)
+        view.addSubview(screenStatus)
         view.addSubview(accessibilityLabel)
-        view.addSubview(accessibilityStatusLabel)
-        view.addSubview(openSettingsButton)
+        view.addSubview(accessibilityStatus)
+        view.addSubview(refreshButton)
+        view.addSubview(openAccessibilityButton)
+        view.addSubview(diagnosticsButton)
         view.addSubview(infoLabel)
 
         tab.view = view
@@ -400,7 +507,13 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         // Audio
         defaultModePopup.selectItem(at: defaults.integer(forKey: "defaultMode"))
 
-        // Advanced
+        // Advanced - provider
+        currentProvider = AppSettings.shared.provider
+        if let providerIndex = ASRProvider.allCases.firstIndex(of: currentProvider) {
+            providerPopup.selectItem(at: providerIndex)
+        }
+
+        // Advanced - Whisper model and language
         let modelIndex = defaults.integer(forKey: "modelIndex")
         if modelIndex > 0 {
             modelPopup.selectItem(at: modelIndex)
@@ -414,6 +527,8 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         } else {
             languagePopup.selectItem(at: 1)  // Default to English
         }
+
+        updateProviderUI()
     }
 
     private func saveSettings() {
@@ -494,9 +609,155 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         saveSettings()
     }
 
+    @objc private func providerSelectionChanged() {
+        guard let selectedTitle = providerPopup.titleOfSelectedItem,
+              let selectedProvider = ASRProvider.allCases.first(where: { $0.displayName == selectedTitle }) else {
+            return
+        }
+
+        if selectedProvider == currentProvider {
+            if selectedProvider == .parakeet, !ParakeetModelDownloader().modelsAvailable() {
+                showParakeetDownloadConfirmation { [weak self] approved in
+                    guard let self = self else { return }
+                    if approved {
+                        Task {
+                            do {
+                                try await ParakeetBootstrap.shared.downloadModels()
+                            } catch {
+                                self.updateEngineStatus(.failed(error.localizedDescription))
+                            }
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        if selectedProvider == .parakeet {
+            let downloader = ParakeetModelDownloader()
+            if !downloader.modelsAvailable() {
+                showParakeetDownloadConfirmation { [weak self] approved in
+                    guard let self = self else { return }
+                    if approved {
+                        self.currentProvider = .parakeet
+                        AppSettings.shared.provider = .parakeet
+                        self.updateProviderUI()
+                        Task {
+                            do {
+                                try await ParakeetBootstrap.shared.downloadModels()
+                            } catch {
+                                self.updateEngineStatus(.failed(error.localizedDescription))
+                            }
+                        }
+                    } else {
+                        self.restoreProviderSelection()
+                    }
+                }
+                return
+            }
+        }
+
+        currentProvider = selectedProvider
+        AppSettings.shared.provider = selectedProvider
+        updateProviderUI()
+    }
+
+    @objc private func downloadParakeetModel() {
+        showParakeetDownloadConfirmation { [weak self] approved in
+            guard let self = self else { return }
+            if approved {
+                Task {
+                    do {
+                        try await ParakeetBootstrap.shared.downloadModels()
+                    } catch {
+                        self.updateEngineStatus(.failed(error.localizedDescription))
+                    }
+                }
+            }
+        }
+    }
+
     @objc private func openSystemSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Permission Status
+
+    /// Refresh all permission status labels
+    private func refreshPermissionStatus() {
+        // Microphone status
+        let micStatus = Permissions.microphoneAuthorizationStatus()
+        switch micStatus {
+        case .authorized:
+            micStatusLabel?.stringValue = "Granted"
+            micStatusLabel?.textColor = .systemGreen
+        case .denied:
+            micStatusLabel?.stringValue = "Denied"
+            micStatusLabel?.textColor = .systemRed
+        case .restricted:
+            micStatusLabel?.stringValue = "Restricted"
+            micStatusLabel?.textColor = .systemOrange
+        case .notDetermined:
+            micStatusLabel?.stringValue = "Not Asked"
+            micStatusLabel?.textColor = .secondaryLabelColor
+        @unknown default:
+            micStatusLabel?.stringValue = "Unknown"
+            micStatusLabel?.textColor = .secondaryLabelColor
+        }
+
+        // Screen recording status
+        let hasScreenPermission = Permissions.checkScreenRecordingPermission()
+        screenStatusLabel?.stringValue = hasScreenPermission ? "Granted" : "Not Granted"
+        screenStatusLabel?.textColor = hasScreenPermission ? .systemGreen : .systemOrange
+
+        // Accessibility status (updates immediately without restart)
+        let hasAccessibility = Permissions.isAccessibilityTrusted()
+        accessibilityStatusLabel?.stringValue = hasAccessibility ? "Granted" : "Not Granted"
+        accessibilityStatusLabel?.textColor = hasAccessibility ? .systemGreen : .systemOrange
+    }
+
+    @objc private func refreshPermissionsTapped() {
+        refreshPermissionStatus()
+    }
+
+    @objc private func openAccessibilitySettings() {
+        // Use the modern deep-link URL for macOS 13+
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility") {
+            if !NSWorkspace.shared.open(url) {
+                // Fallback to legacy URL
+                if let legacyURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(legacyURL)
+                }
+            }
+        }
+    }
+
+    @objc private func showDiagnostics() {
+        let diagnostics = Permissions.getAccessibilityDiagnostics()
+        let report = diagnostics.formattedReport
+
+        let alert = NSAlert()
+        alert.messageText = "Permission Diagnostics"
+        alert.informativeText = report
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "OK")
+
+        if let window = window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report, forType: .string)
+                }
+            }
+        } else {
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(report, forType: .string)
+            }
         }
     }
 
@@ -516,6 +777,166 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         )
         startMicPlusAppRecorder.shortcut = defaultMicPlusApp
         saveShortcut(defaultMicPlusApp, forKey: "startMicPlusAppShortcut")
+    }
+
+    // MARK: - Parakeet Status
+
+    private func startObservingEngineState() {
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .parakeetEngineStateDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let state = notification.object as? ParakeetBootstrap.EngineState else { return }
+                self?.updateEngineStatus(state)
+            }
+        )
+
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .parakeetDownloadStateDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let state = notification.object as? ParakeetModelDownloader.State else { return }
+                self?.updateDownloadStatus(state)
+            }
+        )
+
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .providerDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let provider = notification.object as? ASRProvider else { return }
+                self?.currentProvider = provider
+                self?.restoreProviderSelection()
+                self?.updateProviderUI()
+            }
+        )
+
+        updateEngineStatus(ParakeetBootstrap.shared.currentState())
+    }
+
+    private func updateProviderUI() {
+        let isParakeet = currentProvider == .parakeet
+        modelPopup.isHidden = isParakeet
+        parakeetModelLabel.isHidden = !isParakeet
+        downloadProgressIndicator.isHidden = true
+        downloadProgressLabel.isHidden = true
+        parakeetDownloadButton.isHidden = !isParakeet || ParakeetModelDownloader().modelsAvailable()
+        updateEngineStatus(ParakeetBootstrap.shared.currentState())
+    }
+
+    private func updateEngineStatus(_ state: ParakeetBootstrap.EngineState) {
+        guard currentProvider == .parakeet else {
+            engineStatusIndicator.stopAnimation(nil)
+            engineStatusValueLabel.stringValue = "Ready"
+            engineStatusValueLabel.textColor = .secondaryLabelColor
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+            return
+        }
+
+        switch state {
+        case .idle:
+            engineStatusIndicator.stopAnimation(nil)
+            if ParakeetModelDownloader().modelsAvailable() {
+                engineStatusValueLabel.stringValue = "Model downloaded"
+                parakeetDownloadButton.isHidden = true
+            } else {
+                engineStatusValueLabel.stringValue = "Model not downloaded"
+                parakeetDownloadButton.isHidden = false
+            }
+            engineStatusValueLabel.textColor = .secondaryLabelColor
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+        case .downloading:
+            engineStatusIndicator.startAnimation(nil)
+            engineStatusValueLabel.stringValue = "Downloading model…"
+            engineStatusValueLabel.textColor = .controlTextColor
+            parakeetDownloadButton.isHidden = true
+            downloadProgressIndicator.isHidden = false
+            downloadProgressLabel.isHidden = false
+        case .loading:
+            engineStatusIndicator.startAnimation(nil)
+            engineStatusValueLabel.stringValue = "Loading engine…"
+            engineStatusValueLabel.textColor = .controlTextColor
+            parakeetDownloadButton.isHidden = true
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+        case .ready:
+            engineStatusIndicator.stopAnimation(nil)
+            engineStatusValueLabel.stringValue = "Ready"
+            engineStatusValueLabel.textColor = .secondaryLabelColor
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+            parakeetDownloadButton.isHidden = true
+        case .failed(let message):
+            engineStatusIndicator.stopAnimation(nil)
+            engineStatusValueLabel.stringValue = "Error: \(message)"
+            engineStatusValueLabel.textColor = .systemRed
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+            parakeetDownloadButton.isHidden = ParakeetModelDownloader().modelsAvailable()
+        }
+    }
+
+    private func updateDownloadStatus(_ state: ParakeetModelDownloader.State) {
+        guard currentProvider == .parakeet else { return }
+
+        switch state {
+        case .running(let progress, let index, let count, _):
+            downloadProgressIndicator.isHidden = false
+            downloadProgressLabel.isHidden = false
+            downloadProgressIndicator.doubleValue = progress
+            engineStatusIndicator.startAnimation(nil)
+            engineStatusValueLabel.stringValue = "Downloading… \(index)/\(count)"
+            engineStatusValueLabel.textColor = .controlTextColor
+            parakeetDownloadButton.isHidden = true
+        case .verifying:
+            downloadProgressIndicator.isHidden = false
+            downloadProgressLabel.isHidden = false
+            engineStatusIndicator.startAnimation(nil)
+            engineStatusValueLabel.stringValue = "Verifying download…"
+            engineStatusValueLabel.textColor = .controlTextColor
+            parakeetDownloadButton.isHidden = true
+        case .done:
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+            updateEngineStatus(ParakeetBootstrap.shared.currentState())
+        case .failed(let error):
+            downloadProgressIndicator.isHidden = true
+            downloadProgressLabel.isHidden = true
+            updateEngineStatus(.failed(error.localizedDescription))
+        default:
+            break
+        }
+    }
+
+    private func restoreProviderSelection() {
+        if let index = ASRProvider.allCases.firstIndex(of: currentProvider) {
+            providerPopup.selectItem(at: index)
+        }
+    }
+
+    private func showParakeetDownloadConfirmation(completion: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Download Parakeet Model?"
+        alert.informativeText = "This will download approximately 600MB of model files."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window = window {
+            alert.beginSheetModal(for: window) { response in
+                completion(response == .alertFirstButtonReturn)
+            }
+        } else {
+            completion(alert.runModal() == .alertFirstButtonReturn)
+        }
     }
 
     // MARK: - Shortcut Helpers
@@ -538,11 +959,4 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
     }
-}
-
-// MARK: - Notification Names
-
-extension Notification.Name {
-    static let shortcutsDidChange = Notification.Name("shortcutsDidChange")
-    static let settingsDidChange = Notification.Name("settingsDidChange")
 }

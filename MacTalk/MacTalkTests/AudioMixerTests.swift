@@ -285,15 +285,29 @@ final class AudioMixerTests: XCTestCase {
             interleaved: false
         )!
 
+        // Local buffer creation to avoid capturing self in @Sendable closure
+        func makeBuffer(format: AVAudioFormat, frameCount: AVAudioFrameCount) -> AVAudioPCMBuffer {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+            buffer.frameLength = frameCount
+            if let channelData = buffer.floatChannelData {
+                for channel in 0..<Int(format.channelCount) {
+                    for frame in 0..<Int(frameCount) {
+                        channelData[channel][frame] = Float.random(in: -1.0...1.0)
+                    }
+                }
+            }
+            return buffer
+        }
+
         await withTaskGroup(of: Void.self) { group in
             // 100 concurrent conversions from each format
             for _ in 0..<100 {
                 group.addTask {
-                    let buffer48k = self.createTestBuffer(format: format48k, frameCount: 1024)
+                    let buffer48k = makeBuffer(format: format48k, frameCount: 1024)
                     _ = mixer.convert(buffer: buffer48k)
                 }
                 group.addTask {
-                    let buffer44k = self.createTestBuffer(format: format44k, frameCount: 1024)
+                    let buffer44k = makeBuffer(format: format44k, frameCount: 1024)
                     _ = mixer.convert(buffer: buffer44k)
                 }
             }
@@ -314,11 +328,25 @@ final class AudioMixerTests: XCTestCase {
             interleaved: false
         )!
 
+        // Local buffer creation to avoid capturing self in @Sendable closure
+        func makeBuffer(format: AVAudioFormat, frameCount: AVAudioFrameCount) -> AVAudioPCMBuffer {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+            buffer.frameLength = frameCount
+            if let channelData = buffer.floatChannelData {
+                for channel in 0..<Int(format.channelCount) {
+                    for frame in 0..<Int(frameCount) {
+                        channelData[channel][frame] = Float.random(in: -1.0...1.0)
+                    }
+                }
+            }
+            return buffer
+        }
+
         await withTaskGroup(of: Void.self) { group in
             // 200 concurrent conversions all using same format
             for _ in 0..<200 {
                 group.addTask {
-                    let buffer = self.createTestBuffer(format: format, frameCount: 512)
+                    let buffer = makeBuffer(format: format, frameCount: 512)
                     let result = mixer.convert(buffer: buffer)
                     // Verify conversion succeeded
                     XCTAssertNotNil(result)
@@ -350,11 +378,25 @@ final class AudioMixerTests: XCTestCase {
         // Use actor to collect results safely
         let resultsCollector = ResultsCollector()
 
+        // Local buffer creation function to avoid capturing self in @Sendable closure
+        func makeBuffer(format: AVAudioFormat, frameCount: AVAudioFrameCount) -> AVAudioPCMBuffer {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+            buffer.frameLength = frameCount
+            if let channelData = buffer.floatChannelData {
+                for channel in 0..<Int(format.channelCount) {
+                    for frame in 0..<Int(frameCount) {
+                        channelData[channel][frame] = Float.random(in: -1.0...1.0)
+                    }
+                }
+            }
+            return buffer
+        }
+
         await withTaskGroup(of: Void.self) { group in
             // Simulate mic callbacks (high frequency, small buffers)
             group.addTask {
                 for _ in 0..<50 {
-                    let buffer = self.createTestBuffer(format: micFormat, frameCount: 256)
+                    let buffer = makeBuffer(format: micFormat, frameCount: 256)
                     let success = mixer.convert(buffer: buffer) != nil
                     await resultsCollector.addMicResult(success)
                 }
@@ -363,7 +405,7 @@ final class AudioMixerTests: XCTestCase {
             // Simulate app audio callbacks (lower frequency, larger buffers)
             group.addTask {
                 for _ in 0..<30 {
-                    let buffer = self.createTestBuffer(format: appFormat, frameCount: 1024)
+                    let buffer = makeBuffer(format: appFormat, frameCount: 1024)
                     let success = mixer.convert(buffer: buffer) != nil
                     await resultsCollector.addAppResult(success)
                 }

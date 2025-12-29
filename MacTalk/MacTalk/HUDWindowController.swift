@@ -14,6 +14,14 @@ final class HUDWindowController: NSWindowController {
     private let backgroundView = NSVisualEffectView()
     private let glassEdgeLayer = CAGradientLayer()
     private let stopButton = NSButton()
+    private let transcriptLabel = NSTextField(labelWithString: "")
+
+    /// Tracks whether we've received any partial text this session
+    private var hasReceivedPartial = false
+    /// The last displayed text (for throttling identical updates)
+    private var lastDisplayedText: String = ""
+    /// Timer to clear final text after display
+    private var clearTimer: Timer?
 
     var onStop: (() -> Void)?
 
@@ -115,12 +123,36 @@ final class HUDWindowController: NSWindowController {
 
         contentView.addSubview(stopButton)
 
+        // Live transcript label (positioned above stop button)
+        transcriptLabel.translatesAutoresizingMaskIntoConstraints = false
+        transcriptLabel.alignment = .center
+        transcriptLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        transcriptLabel.textColor = .white
+        transcriptLabel.backgroundColor = .clear
+        transcriptLabel.isBezeled = false
+        transcriptLabel.isEditable = false
+        transcriptLabel.isSelectable = false
+        transcriptLabel.lineBreakMode = .byTruncatingTail
+        transcriptLabel.maximumNumberOfLines = 2
+        transcriptLabel.cell?.truncatesLastVisibleLine = true
+        transcriptLabel.alphaValue = 0.7  // Default partial opacity
+        transcriptLabel.setAccessibilityLabel("Live Transcription")
+        transcriptLabel.setAccessibilityRole(.staticText)
+        contentView.addSubview(transcriptLabel)
+
         // Constraints - center stop button at bottom
         NSLayoutConstraint.activate([
             stopButton.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             stopButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
             stopButton.widthAnchor.constraint(equalToConstant: 32),
-            stopButton.heightAnchor.constraint(equalToConstant: 32)
+            stopButton.heightAnchor.constraint(equalToConstant: 32),
+
+            // Transcript label - centered horizontally, above stop button
+            transcriptLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            transcriptLabel.bottomAnchor.constraint(equalTo: stopButton.topAnchor, constant: -8),
+            transcriptLabel.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
+            transcriptLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            transcriptLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 168)  // Max width within bubble
         ])
     }
 
@@ -136,11 +168,67 @@ final class HUDWindowController: NSWindowController {
         window.setFrameOrigin(NSPoint(x: xPosition, y: yPosition))
     }
 
+    // MARK: - Live Transcript Updates
+
+    /// Updates HUD with partial (in-progress) transcription text.
+    /// Shows at 70% opacity to indicate text may change.
+    func updatePartial(text: String) {
+        // Skip if text hasn't changed (throttle identical updates)
+        guard text != lastDisplayedText else { return }
+        lastDisplayedText = text
+
+        // Cancel any pending clear timer
+        clearTimer?.invalidate()
+        clearTimer = nil
+
+        hasReceivedPartial = true
+
+        // Truncate to last ~50 characters for display
+        let displayText = truncateForDisplay(text)
+
+        transcriptLabel.stringValue = displayText
+        transcriptLabel.alphaValue = 0.7  // Partial opacity
+    }
+
+    /// Updates HUD with final (committed) transcription text.
+    /// Shows at 100% opacity, then clears after a short delay.
+    func updateFinal(text: String) {
+        // Cancel any pending clear timer
+        clearTimer?.invalidate()
+        clearTimer = nil
+
+        lastDisplayedText = text
+
+        // Truncate to last ~50 characters for display
+        let displayText = truncateForDisplay(text)
+
+        transcriptLabel.stringValue = displayText
+        transcriptLabel.alphaValue = 1.0  // Full opacity for final
+
+        // Clear after 2 seconds
+        clearTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.transcriptLabel.stringValue = ""
+                self?.lastDisplayedText = ""
+            }
+        }
+    }
+
+    /// Truncates text to show the most recent portion for display.
+    private func truncateForDisplay(_ text: String) -> String {
+        let maxLength = 60
+        if text.count <= maxLength {
+            return text
+        }
+        // Show last portion with ellipsis prefix
+        let startIndex = text.index(text.endIndex, offsetBy: -maxLength)
+        return "…" + String(text[startIndex...])
+    }
+
+    @available(*, deprecated, message: "Use updatePartial(text:) or updateFinal(text:) instead")
     func update(text: String) {
-        // In bubble UI, we don't show text during recording
-        // Text could be shown in a tooltip or separate UI element if needed
-        // For now, we just ensure the window is visible
-        window?.animator().alphaValue = 1.0
+        // Legacy method - route to updatePartial for compatibility
+        updatePartial(text: text)
     }
 
     func updateMicLevel(rms: Float, peak: Float, peakHold: Float) {
@@ -173,12 +261,27 @@ final class HUDWindowController: NSWindowController {
         reset()
     }
 
-    /// Reset HUD to initial state (clear waves)
+    /// Reset HUD to initial state (clear waves and transcript)
     func reset() {
         resetLevels()
+        resetTranscript()
+    }
+
+    /// Reset transcript state to initial "Listening..." state
+    private func resetTranscript() {
+        clearTimer?.invalidate()
+        clearTimer = nil
+        hasReceivedPartial = false
+        lastDisplayedText = ""
+        transcriptLabel.stringValue = "Listening…"
+        transcriptLabel.alphaValue = 0.5  // Dim for placeholder state
     }
 
     override func close() {
+        // Clean up timer
+        clearTimer?.invalidate()
+        clearTimer = nil
+
         guard let window = window, window.isVisible else {
             super.close()
             return

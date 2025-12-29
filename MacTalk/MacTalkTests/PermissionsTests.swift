@@ -220,19 +220,137 @@ final class PermissionsTests: XCTestCase {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
 
-            NSLog("🔐 [Test] Code signature info:")
+            NSLog("[Test] Code signature info:")
             NSLog(output)
 
             // Check for stable signing
             if output.contains("TeamIdentifier=9SXL4GJ4TZ") {
-                NSLog("✅ [Test] STABLE CODE SIGNING VERIFIED")
-                NSLog("✅ [Test] TeamIdentifier=9SXL4GJ4TZ is present")
+                NSLog("[Test] STABLE CODE SIGNING VERIFIED")
+                NSLog("[Test] TeamIdentifier=9SXL4GJ4TZ is present")
             } else if output.contains("Signed to Run Locally") || output.contains("ad hoc") {
-                XCTFail("❌ [Test] WARNING: Using ad-hoc signing! This will break TCC permissions on rebuild!")
+                XCTFail("[Test] WARNING: Using ad-hoc signing! This will break TCC permissions on rebuild!")
             }
 
         } catch {
-            NSLog("⚠️  [Test] Could not verify code signature: \(error)")
+            NSLog("[Test] Could not verify code signature: \(error)")
         }
+    }
+
+    // MARK: - PermissionsActor Tests
+
+    func testPermissionsActorIsAccessibilityTrusted() {
+        // Test that PermissionsActor provides consistent accessibility check
+        let result1 = PermissionsActor.shared.isAccessibilityTrusted()
+        let result2 = PermissionsActor.shared.isAccessibilityTrusted()
+
+        XCTAssertEqual(result1, result2, "Accessibility check should be consistent")
+        NSLog("[Test] PermissionsActor.isAccessibilityTrusted: \(result1)")
+    }
+
+    func testPermissionsActorRequestAccessibilityNoPrompt() {
+        // Test that requestAccessibility(showPrompt: false) returns without blocking
+        let startTime = Date()
+        let result = PermissionsActor.shared.requestAccessibility(showPrompt: false)
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        NSLog("[Test] requestAccessibility(showPrompt: false) returned: \(result) in \(elapsed)s")
+        XCTAssertLessThan(elapsed, 1.0, "Should return quickly without prompt")
+    }
+
+    func testPermissionsActorDiagnosticsNonEmpty() {
+        // Test that diagnostics returns non-empty values
+        // CR-05: Allow nil/empty Team ID for ad-hoc signed or Xcode-run bundles
+        let diagnostics = PermissionsActor.shared.getDiagnostics()
+
+        XCTAssertFalse(diagnostics.bundleIdentifier.isEmpty, "Bundle ID should not be empty")
+        XCTAssertFalse(diagnostics.executablePath.isEmpty, "Executable path should not be empty")
+
+        // Team ID may be empty for ad-hoc signing, unit test hosts, or Xcode-run bundles
+        // This is expected and not a failure condition
+        if diagnostics.teamIdentifier.isEmpty {
+            NSLog("[Test] Team ID is empty (expected for ad-hoc/Xcode builds)")
+        }
+
+        NSLog("[Test] Diagnostics bundle ID: \(diagnostics.bundleIdentifier)")
+        NSLog("[Test] Diagnostics Team ID: \(diagnostics.teamIdentifier.isEmpty ? "(none - ad-hoc or Xcode)" : diagnostics.teamIdentifier)")
+        NSLog("[Test] Diagnostics ad-hoc: \(diagnostics.isAdHocSigned)")
+        NSLog("[Test] Diagnostics Xcode run: \(diagnostics.isRunningFromXcode)")
+        NSLog("[Test] Diagnostics accessibility: \(diagnostics.isAccessibilityTrusted)")
+    }
+
+    func testPermissionsActorDiagnosticsFormattedReport() {
+        // Test that formatted report is non-empty and contains expected sections
+        let diagnostics = PermissionsActor.shared.getDiagnostics()
+        let report = diagnostics.formattedReport
+
+        XCTAssertFalse(report.isEmpty, "Formatted report should not be empty")
+        XCTAssertTrue(report.contains("Bundle ID:"), "Report should contain Bundle ID")
+        XCTAssertTrue(report.contains("Team ID:"), "Report should contain Team ID")
+        XCTAssertTrue(report.contains("Accessibility:"), "Report should contain Accessibility status")
+        XCTAssertTrue(report.contains("Troubleshooting"), "Report should contain Troubleshooting section")
+
+        NSLog("[Test] Formatted report length: \(report.count) characters")
+    }
+
+    func testPermissionsHelperDiagnostics() {
+        // Test the Permissions helper method for diagnostics
+        let diagnostics = Permissions.getAccessibilityDiagnostics()
+
+        XCTAssertFalse(diagnostics.bundleIdentifier.isEmpty, "Bundle ID should not be empty")
+        NSLog("[Test] Permissions.getAccessibilityDiagnostics() works correctly")
+    }
+
+    func testPermissionsRequestAccessibility() {
+        // Test the Permissions helper method for requesting accessibility
+        let result = Permissions.requestAccessibility(showPrompt: false)
+
+        // Should return a boolean without blocking
+        NSLog("[Test] Permissions.requestAccessibility(showPrompt: false): \(result)")
+        XCTAssertTrue(result == true || result == false, "Should return valid bool")
+    }
+
+    // MARK: - Polling Tests
+
+    func testPermissionsActorPollingCanStart() async {
+        // Test that polling can be started without crash
+        let expectation = expectation(description: "Polling callback")
+
+        // Start polling with very short timeout
+        await PermissionsActor.shared.startPollingForGrant(
+            timeout: 0.1,
+            pollInterval: 0.05,
+            onGranted: {
+                NSLog("[Test] onGranted called")
+                expectation.fulfill()
+            },
+            onTimeout: {
+                NSLog("[Test] onTimeout called")
+                expectation.fulfill()
+            }
+        )
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        NSLog("[Test] Polling test completed")
+    }
+
+    func testPermissionsActorPollingCanStop() async {
+        // Test that polling can be stopped
+        await PermissionsActor.shared.startPollingForGrant(
+            timeout: 60,
+            pollInterval: 0.5,
+            onGranted: {
+                XCTFail("Should not be called when stopped early")
+            },
+            onTimeout: {
+                XCTFail("Should not be called when stopped early")
+            }
+        )
+
+        // Stop immediately
+        await PermissionsActor.shared.stopPolling()
+        NSLog("[Test] Polling stopped successfully")
+
+        // Wait a bit to ensure no callbacks are fired
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
     }
 }

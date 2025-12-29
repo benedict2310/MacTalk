@@ -50,29 +50,38 @@ enum Permissions {
         #endif
     }
 
+    /// Get the current microphone authorization status
+    static func microphoneAuthorizationStatus() -> AVAuthorizationStatus {
+        #if os(macOS)
+        return AVCaptureDevice.authorizationStatus(for: .audio)
+        #else
+        return .denied
+        #endif
+    }
+
     // MARK: - Screen Recording Permission
 
     /// Check if screen recording permission is granted
     /// Uses CGPreflightScreenCaptureAccess() for reliable, synchronous check
     /// This will NOT hang like SCShareableContent can
     static func checkScreenRecordingPermission() -> Bool {
-        NSLog("🔍 [Permissions] Checking screen recording permission with CGPreflightScreenCaptureAccess...")
+        NSLog("[Permissions] Checking screen recording permission with CGPreflightScreenCaptureAccess...")
         let hasPermission = CGPreflightScreenCaptureAccess()
-        NSLog(hasPermission ? "✅ [Permissions] Screen recording permission GRANTED" : "❌ [Permissions] Screen recording permission NOT granted")
+        NSLog(hasPermission ? "[Permissions] Screen recording permission GRANTED" : "[Permissions] Screen recording permission NOT granted")
         return hasPermission
     }
 
     /// Request screen recording permission from the user
     /// This will trigger the system permission dialog if not already granted
     static func requestScreenRecordingPermission() {
-        NSLog("🚨 [Permissions] Requesting screen recording permission...")
+        NSLog("[Permissions] Requesting screen recording permission...")
         CGRequestScreenCaptureAccess()
     }
 
     /// Show informational alert about screen recording permission
     @MainActor
     static func ensureScreenRecordingGuide() {
-        NSLog("📋 [Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
+        NSLog("[Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
         alert.informativeText = """
@@ -92,33 +101,45 @@ enum Permissions {
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            NSLog("👤 [Permissions] User chose to open System Settings")
+            NSLog("[Permissions] User chose to open System Settings")
             openScreenRecordingSettings()
         } else {
-            NSLog("👤 [Permissions] User cancelled permission request")
+            NSLog("[Permissions] User cancelled permission request")
         }
     }
 
     // MARK: - Accessibility Permission
 
+    /// Trigger the system accessibility prompt
+    /// Note: Uses PermissionsActor for proper memory management
     @MainActor
     static func ensureAccessibilityPrompt() {
-        let options = [
-            kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true
-        ] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
     }
 
+    /// Check if accessibility permission is trusted
+    /// Routes through PermissionsActor for thread-safe access
     static func isAccessibilityTrusted() -> Bool {
-        let trusted = AXIsProcessTrusted()
-        NSLog("🔐 [Permissions] Accessibility permission check: \(trusted ? "TRUSTED ✅" : "NOT TRUSTED ❌")")
+        let trusted = PermissionsActor.shared.isAccessibilityTrusted()
+        NSLog("[Permissions] Accessibility permission check: \(trusted ? "TRUSTED" : "NOT TRUSTED")")
         return trusted
+    }
+
+    /// Request accessibility permission with optional prompt
+    /// - Parameter showPrompt: If true, shows the system permission dialog
+    /// - Returns: true if already trusted
+    static func requestAccessibility(showPrompt: Bool = true) -> Bool {
+        return PermissionsActor.shared.requestAccessibility(showPrompt: showPrompt)
+    }
+
+    /// Get accessibility diagnostics for troubleshooting
+    static func getAccessibilityDiagnostics() -> PermissionDiagnostics {
+        return PermissionsActor.shared.getDiagnostics()
     }
 
     @MainActor
     static func requestAccessibilityPermission() {
-        NSLog("🚨 [Permissions] Requesting accessibility permission from user...")
-        NSLog("🚨 [Permissions] Showing permission dialog...")
+        NSLog("[Permissions] Requesting accessibility permission from user...")
 
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
@@ -129,7 +150,8 @@ enum Permissions {
         1. Open System Settings
         2. Go to Privacy & Security > Accessibility
         3. Enable MacTalk
-        4. IMPORTANT: Restart MacTalk after granting permission
+
+        Permission will take effect immediately - no restart needed.
 
         Would you like to open System Settings now?
         """
@@ -139,10 +161,12 @@ enum Permissions {
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            NSLog("👤 [Permissions] User chose to open System Settings")
+            NSLog("[Permissions] User chose to open System Settings")
+            // Trigger the system prompt first
+            _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
             openAccessibilitySettings()
         } else {
-            NSLog("👤 [Permissions] User cancelled permission request")
+            NSLog("[Permissions] User cancelled permission request")
         }
     }
 

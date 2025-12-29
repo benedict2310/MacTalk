@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" alt="MacTalk Icon" width="128" height="128">
+</p>
+
 # MacTalk
 
 > A native macOS app for local voice transcription powered by Whisper and Parakeet

@@ -1,14 +1,14 @@
 //
-//  WhisperEngineTests.swift
+//  NativeWhisperEngineTests.swift
 //  MacTalkTests
 //
-//  Tests for WhisperEngine - Swift wrapper around whisper.cpp
+//  Tests for NativeWhisperEngine - Swift wrapper around whisper.cpp
 //
 
 import XCTest
 @testable import MacTalk
 
-final class WhisperEngineTests: XCTestCase {
+final class NativeWhisperEngineTests: XCTestCase {
 
     // MARK: - Test Lifecycle
 
@@ -28,7 +28,7 @@ final class WhisperEngineTests: XCTestCase {
         let nonExistentURL = URL(fileURLWithPath: "/tmp/nonexistent-model.bin")
 
         // When: Attempting to initialize
-        let engine = WhisperEngine(modelURL: nonExistentURL)
+        let engine = NativeWhisperEngine(modelURL: nonExistentURL)
 
         // Then: Initialization should fail
         XCTAssertNil(engine, "Engine should be nil for non-existent model")
@@ -39,7 +39,7 @@ final class WhisperEngineTests: XCTestCase {
         let invalidURL = URL(fileURLWithPath: "")
 
         // When: Attempting to initialize
-        let engine = WhisperEngine(modelURL: invalidURL)
+        let engine = NativeWhisperEngine(modelURL: invalidURL)
 
         // Then: Initialization should fail
         XCTAssertNil(engine, "Engine should be nil for invalid path")
@@ -50,7 +50,7 @@ final class WhisperEngineTests: XCTestCase {
         let dirURL = URL(fileURLWithPath: "/tmp")
 
         // When: Attempting to initialize
-        let engine = WhisperEngine(modelURL: dirURL)
+        let engine = NativeWhisperEngine(modelURL: dirURL)
 
         // Then: Initialization should fail (wt_whisper_init will fail)
         // Note: FileManager sees directory exists, but C API will fail
@@ -70,7 +70,7 @@ final class WhisperEngineTests: XCTestCase {
         }
 
         // When: Attempting to initialize (will fail at C API level)
-        let engine = WhisperEngine(modelURL: mockModelURL)
+        let engine = NativeWhisperEngine(modelURL: mockModelURL)
 
         // Then: Initialization should fail (invalid model format)
         XCTAssertNil(engine, "Engine should be nil for invalid model format")
@@ -92,7 +92,7 @@ final class WhisperEngineTests: XCTestCase {
         }
 
         // Engine will be nil due to invalid model
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             // Expected: initialization fails with invalid model
             XCTAssertTrue(true, "Initialization correctly failed")
             return
@@ -118,7 +118,7 @@ final class WhisperEngineTests: XCTestCase {
 
         // Engine initialization will fail (invalid model), which is expected
         // The important thing is testing the API contract
-        let engine = WhisperEngine(modelURL: mockModelURL)
+        let engine = NativeWhisperEngine(modelURL: mockModelURL)
 
         // Even if engine is nil, we've validated the initialization contract
         // In production, a valid model would be used
@@ -138,7 +138,7 @@ final class WhisperEngineTests: XCTestCase {
         }
 
         // When: Initializing engine (will fail with invalid model)
-        let engine = WhisperEngine(modelURL: mockModelURL)
+        let engine = NativeWhisperEngine(modelURL: mockModelURL)
 
         // Then: Validate initialization behavior
         XCTAssertNil(engine, "Engine should be nil for invalid model")
@@ -160,7 +160,7 @@ final class WhisperEngineTests: XCTestCase {
         }
 
         // When: Initializing engine (will fail with invalid model)
-        let engine = WhisperEngine(modelURL: mockModelURL)
+        let engine = NativeWhisperEngine(modelURL: mockModelURL)
 
         // Then: Validate initialization behavior
         XCTAssertNil(engine, "Engine should be nil for invalid model")
@@ -183,7 +183,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             // Expected for invalid model
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
@@ -215,13 +215,13 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
 
         // When: Sequential transcriptions
-        var results: [WhisperEngine.Result?] = []
+        var results: [NativeWhisperEngine.Result?] = []
 
         for i in 0..<3 {
             let samples = [Float](repeating: Float(i), count: 16000)
@@ -247,7 +247,7 @@ final class WhisperEngineTests: XCTestCase {
             }
 
             // When: Engine goes out of scope
-            let engine = WhisperEngine(modelURL: mockModelURL)
+            let engine = NativeWhisperEngine(modelURL: mockModelURL)
 
             // Then: Should deinitialize without crashes
             XCTAssertNotNil(engine == nil || engine != nil, "Engine state validated")
@@ -261,12 +261,12 @@ final class WhisperEngineTests: XCTestCase {
         // Given: Multiple engine instances
         let tempDir = FileManager.default.temporaryDirectory
 
-        var engines: [WhisperEngine?] = []
+        var engines: [NativeWhisperEngine?] = []
 
         for i in 0..<3 {
             let mockModelURL = tempDir.appendingPathComponent("multi-\(i)-\(UUID().uuidString).bin")
             FileManager.default.createFile(atPath: mockModelURL.path, contents: Data())
-            let engine = WhisperEngine(modelURL: mockModelURL)
+            let engine = NativeWhisperEngine(modelURL: mockModelURL)
             engines.append(engine)
         }
 
@@ -285,7 +285,7 @@ final class WhisperEngineTests: XCTestCase {
 
     func testResultStructure() {
         // Given: A Result instance
-        let result = WhisperEngine.Result(
+        let result = NativeWhisperEngine.Result(
             text: "Hello, world!",
             processingTime: 1.5
         )
@@ -297,7 +297,7 @@ final class WhisperEngineTests: XCTestCase {
 
     func testResultWithEmptyText() {
         // Given: A Result with empty text
-        let result = WhisperEngine.Result(
+        let result = NativeWhisperEngine.Result(
             text: "",
             processingTime: 0.0
         )
@@ -310,7 +310,7 @@ final class WhisperEngineTests: XCTestCase {
     func testResultWithLongText() {
         // Given: A Result with very long text
         let longText = String(repeating: "a", count: 10000)
-        let result = WhisperEngine.Result(
+        let result = NativeWhisperEngine.Result(
             text: longText,
             processingTime: 5.0
         )
@@ -332,7 +332,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -356,7 +356,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -379,7 +379,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -404,7 +404,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -427,7 +427,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -453,7 +453,7 @@ final class WhisperEngineTests: XCTestCase {
         }
 
         measure {
-            _ = WhisperEngine(modelURL: mockModelURL)
+            _ = NativeWhisperEngine(modelURL: mockModelURL)
         }
     }
 
@@ -467,7 +467,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             return
         }
 
@@ -488,7 +488,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -511,7 +511,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -534,7 +534,7 @@ final class WhisperEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: mockModelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: mockModelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: mockModelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }

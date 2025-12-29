@@ -14,8 +14,8 @@ final class SettingsWindowControllerTests: XCTestCase {
     var settingsController: SettingsWindowController!
     let testDefaults = UserDefaults(suiteName: "com.mactalk.tests")!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         // Clear test defaults before each test
         testDefaults.removePersistentDomain(forName: "com.mactalk.tests")
 
@@ -23,10 +23,10 @@ final class SettingsWindowControllerTests: XCTestCase {
         settingsController = SettingsWindowController()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         settingsController = nil
         testDefaults.removePersistentDomain(forName: "com.mactalk.tests")
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Initialization Tests

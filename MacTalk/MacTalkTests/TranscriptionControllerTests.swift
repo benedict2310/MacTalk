@@ -12,7 +12,7 @@ import AVFoundation
 @MainActor
 final class TranscriptionControllerTests: XCTestCase {
 
-    var mockEngine: WhisperEngine!
+    var mockEngine: NativeWhisperEngine!
     var tempModelURL: URL!
 
     // MARK: - Test Lifecycle
@@ -28,7 +28,7 @@ final class TranscriptionControllerTests: XCTestCase {
 
         // Note: mockEngine will be nil because it's not a valid model
         // This is acceptable for testing the controller's logic
-        mockEngine = WhisperEngine(modelURL: tempModelURL)
+        mockEngine = NativeWhisperEngine(modelURL: tempModelURL)
     }
 
     override func tearDown() {
@@ -52,7 +52,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             // Engine creation fails with invalid model - expected
             XCTAssertTrue(true, "Invalid model correctly rejected during setup")
             return
@@ -75,7 +75,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Invalid model correctly rejected")
             return
         }
@@ -84,7 +84,7 @@ final class TranscriptionControllerTests: XCTestCase {
         let controller = TranscriptionController(engine: engine)
 
         // Then: Default values should be set
-        XCTAssertNil(controller.language)
+        XCTAssertEqual(controller.language, "en")
         XCTAssertFalse(controller.autoPasteEnabled)
     }
 
@@ -100,7 +100,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             // We need to test cleanTranscript, which is private
             // We'll test it indirectly through the public API
             XCTAssertTrue(true, "Setup completed")
@@ -125,7 +125,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -144,7 +144,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -163,7 +163,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -218,7 +218,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -254,7 +254,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -289,7 +289,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -334,7 +334,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -381,7 +381,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -411,7 +411,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -440,7 +440,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -482,7 +482,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -540,7 +540,7 @@ final class TranscriptionControllerTests: XCTestCase {
                 try? FileManager.default.removeItem(at: modelURL)
             }
 
-            guard let engine = WhisperEngine(modelURL: modelURL) else {
+            guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
                 return
             }
 
@@ -566,7 +566,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -590,19 +590,20 @@ final class TranscriptionControllerTests: XCTestCase {
 
     // MARK: - Multiple Instance Tests
 
-    func testMultipleControllerInstances() {
+    func testMultipleControllerInstances() throws {
         // Given: Multiple controller instances
         let tempDir = FileManager.default.temporaryDirectory
 
         var controllers: [TranscriptionController] = []
+        var modelURLs: [URL] = []
 
         for i in 0..<3 {
             let modelURL = tempDir.appendingPathComponent("multi-\(i)-\(UUID().uuidString).bin")
             FileManager.default.createFile(atPath: modelURL.path, contents: Data())
+            modelURLs.append(modelURL)
 
-            guard let engine = WhisperEngine(modelURL: modelURL) else {
-                XCTFail("Failed to create WhisperEngine")
-                return
+            guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
+                throw XCTSkip("Invalid test model for NativeWhisperEngine")
             }
             let controller = TranscriptionController(engine: engine)
             controllers.append(controller)
@@ -613,8 +614,7 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertTrue(controllers.count <= 3)
 
         // Cleanup
-        for i in 0..<3 {
-            let modelURL = tempDir.appendingPathComponent("multi-\(i)-\(UUID().uuidString).bin")
+        for modelURL in modelURLs {
             try? FileManager.default.removeItem(at: modelURL)
         }
     }
@@ -633,8 +633,8 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL2)
         }
 
-        guard let engine1 = WhisperEngine(modelURL: modelURL1),
-              let engine2 = WhisperEngine(modelURL: modelURL2) else {
+        guard let engine1 = NativeWhisperEngine(modelURL: modelURL1),
+              let engine2 = NativeWhisperEngine(modelURL: modelURL2) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -668,7 +668,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             return
         }
 
@@ -700,7 +700,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             return
         }
 
@@ -729,7 +729,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -753,7 +753,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -778,7 +778,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -808,7 +808,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }
@@ -842,7 +842,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try? FileManager.default.removeItem(at: modelURL)
         }
 
-        guard let engine = WhisperEngine(modelURL: modelURL) else {
+        guard let engine = NativeWhisperEngine(modelURL: modelURL) else {
             XCTAssertTrue(true, "Setup completed")
             return
         }

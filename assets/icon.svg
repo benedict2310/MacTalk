@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- subtle glow for retina displays -->
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g fill="none"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     filter="url(#softGlow)">
+
+    <!-- chromatic aberration: cyan -->
+    <g stroke="#00E5FF" stroke-width="32" opacity="0.45" transform="translate(6,0)">
+      <path d="M150 520
+               C 230 520, 250 460, 295 365
+               C 345 260, 420 260, 460 520
+               C 505 780, 585 780, 630 520"/>
+      <path d="M680 520 V430"/>
+      <path d="M735 520 V360"/>
+      <path d="M790 520 V430"/>
+      <path d="M845 520 V485"/>
+      <path d="M900 520 V505"/>
+    </g>
+
+    <!-- chromatic aberration: magenta -->
+    <g stroke="#FF2BD6" stroke-width="32" opacity="0.35" transform="translate(-6,0)">
+      <path d="M150 520
+               C 230 520, 250 460, 295 365
+               C 345 260, 420 260, 460 520
+               C 505 780, 585 780, 630 520"/>
+      <path d="M680 520 V430"/>
+      <path d="M735 520 V360"/>
+      <path d="M790 520 V430"/>
+      <path d="M845 520 V485"/>
+      <path d="M900 520 V505"/>
+    </g>
+
+    <!-- main stroke -->
+    <g stroke="#FFFFFF" stroke-width="32">
+      <path d="M150 520
+               C 230 520, 250 460, 295 365
+               C 345 260, 420 260, 460 520
+               C 505 780, 585 780, 630 520"/>
+      <path d="M680 520 V430"/>
+      <path d="M735 520 V360"/>
+      <path d="M790 520 V430"/>
+      <path d="M845 520 V485"/>
+      <path d="M900 520 V505"/>
+    </g>
+
+  </g>
+</svg>

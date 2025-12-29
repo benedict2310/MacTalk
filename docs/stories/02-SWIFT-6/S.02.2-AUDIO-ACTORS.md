@@ -1467,7 +1467,7 @@ grep "WARNING: ThreadSanitizer" tsan_output.txt
    - Minimizes API changes (no async/await proliferation)
    - Provides priority inheritance for audio threads
    - Maintains existing threading model
-
+app
 2. **OSAllocatedUnfairLock over NSLock**: Provides priority inheritance to prevent priority inversion when audio threads block on inference threads.
 
 3. **State Grouping**: Grouped related mutable state into inner `State` structs for cleaner lock scoping (e.g., `AudioState` in TranscriptionController).

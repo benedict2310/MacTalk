@@ -175,6 +175,9 @@ final class ModelManager {
 
     nonisolated static func deleteModel(name: String) throws {
         let modelURL = modelsDirectory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            return
+        }
         try FileManager.default.removeItem(at: modelURL)
     }
 

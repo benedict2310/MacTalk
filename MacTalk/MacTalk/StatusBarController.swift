@@ -41,16 +41,17 @@ enum ScreenCaptureError: Error, LocalizedError {
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
     private var statusItem: NSStatusItem!
-    private var engine: WhisperEngine?
+    private var engine: (any ASREngine)?
     private var transcriber: TranscriptionController?
     private var hudController: HUDWindowController?
     private var settingsController: SettingsWindowController?
 
+    private var provider: ASRProvider = AppSettings.shared.provider
     private var autoPaste = false
     private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
-    private var currentModelName = "ggml-large-v3-turbo-q5_0.bin"
+    private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
     private var selectedAudioSource: AppPickerWindowController.AudioSource?
     // FIX P0: Retain app picker to keep callbacks alive
     private var appPickerController: AppPickerWindowController?
@@ -59,10 +60,17 @@ final class StatusBarController {
     private var catalog = ModelCatalog.bundled()
     private var selectedModel: ModelSpec?
     private var progressItem: NSMenuItem?
+    private var parakeetMenuItem: NSMenuItem?
+    private var whisperModelItems: [NSMenuItem] = []
+    private var parakeetEngine: ParakeetEngine?
 
     // Hotkeys
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
+
+    // Permission prompt throttling (CR-03)
+    private var lastPermissionPromptTime: Date?
+    private let permissionPromptCooldown: TimeInterval = 30.0 // 30 seconds between prompts
 
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
@@ -77,6 +85,7 @@ final class StatusBarController {
         // Load settings from UserDefaults
         let defaults = UserDefaults.standard
         autoPaste = defaults.bool(forKey: "autoPaste")
+        provider = AppSettings.shared.provider
 
         // Show notifications defaults to true if not set
         if defaults.object(forKey: "showNotifications") != nil {
@@ -108,6 +117,30 @@ final class StatusBarController {
                 queue: .main
             ) { [weak self] _ in
                 self?.settingsDidChange()
+            }
+        )
+
+        // Listen for provider changes
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .providerDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let provider = notification.object as? ASRProvider else { return }
+                self?.providerDidChange(provider)
+            }
+        )
+
+        // Listen for Parakeet download updates
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .parakeetDownloadStateDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let state = notification.object as? ParakeetModelDownloader.State else { return }
+                self?.handleParakeetDownloadState(state)
             }
         )
 
@@ -144,16 +177,23 @@ final class StatusBarController {
         }
         NSLog("🔧 [MacTalk] Status item button obtained: %@", button)
 
-        // Set menu bar icon with SF Symbol for macOS 26 Tahoe transparency
-        if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+        // Set menu bar icon with custom waveform icon
+        if let image = NSImage(named: "MenuBarIcon") {
             image.isTemplate = true  // Critical for visibility with Tahoe's transparent menu bar
             button.image = image
             button.imagePosition = .imageOnly
-            NSLog("✅ [MacTalk] Set mic.fill icon (template: %d)", image.isTemplate)
+            NSLog("✅ [MacTalk] Set custom MenuBarIcon (template: %d)", image.isTemplate)
         } else {
-            // Fallback to emoji for older macOS
-            button.title = "🎙️"
-            NSLog("✅ [MacTalk] Set emoji icon as fallback")
+            // Fallback to SF Symbol if custom icon not found
+            if let fallback = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+                fallback.isTemplate = true
+                button.image = fallback
+                button.imagePosition = .imageOnly
+                NSLog("⚠️ [MacTalk] Using mic.fill fallback icon")
+            } else {
+                button.title = "🎙️"
+                NSLog("✅ [MacTalk] Set emoji icon as fallback")
+            }
         }
 
         button.toolTip = "MacTalk - Voice Transcription"
@@ -180,13 +220,23 @@ final class StatusBarController {
     private func createModelSubmenu() -> NSMenuItem {
         let modelMenu = NSMenu()
 
+        let parakeetItem = NSMenuItem(title: "Parakeet (Core ML)", action: #selector(selectParakeet), keyEquivalent: "")
+        parakeetItem.target = self
+        parakeetItem.state = provider == .parakeet ? .on : .off
+        modelMenu.addItem(parakeetItem)
+        modelMenu.addItem(NSMenuItem.separator())
+        parakeetMenuItem = parakeetItem
+
+        whisperModelItems.removeAll()
+
         // Use ModelCatalog for model selection with display names
         for spec in catalog {
             let item = NSMenuItem(title: spec.displayName, action: #selector(selectModelSpec(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = spec
-            item.state = spec.filename == currentModelName ? .on : .off
+            item.state = (provider == .whisper && spec.filename == currentWhisperModelName) ? .on : .off
             modelMenu.addItem(item)
+            whisperModelItems.append(item)
         }
 
         let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
@@ -267,7 +317,7 @@ final class StatusBarController {
 
         // Load default model (async to avoid blocking menu bar icon)
         Task { @MainActor [weak self] in
-            self?.prepareModel()
+            await self?.prepareEngineForCurrentProvider()
         }
     }
 
@@ -321,38 +371,63 @@ final class StatusBarController {
 
     @objc private func selectModel(_ sender: NSMenuItem) {
         guard let modelName = sender.representedObject as? String else { return }
-        currentModelName = modelName
+        currentWhisperModelName = modelName
 
-        // Update checkmarks
-        if let menu = sender.menu {
-            for item in menu.items {
-                item.state = .off
-            }
-        }
-        sender.state = .on
+        requestProviderSwitch(to: .whisper, promptForDownload: false)
+        updateProviderMenuState()
 
         // Reload model
-        prepareModel()
+        prepareWhisperModel()
     }
 
     @objc private func selectModelSpec(_ sender: NSMenuItem) {
         guard let spec = sender.representedObject as? ModelSpec else { return }
         selectedModel = spec
-        currentModelName = spec.filename
+        currentWhisperModelName = spec.filename
 
-        // Update checkmarks
-        if let menu = sender.menu {
-            for item in menu.items {
-                item.state = .off
-            }
-        }
-        sender.state = .on
+        requestProviderSwitch(to: .whisper, promptForDownload: false)
+        updateProviderMenuState()
 
         // Disable start items while downloading
         setStartItemsEnabled(false)
 
         // Prepare model with auto-download
-        prepareModelWithAutoDownload(spec: spec)
+        prepareWhisperModelWithAutoDownload(spec: spec)
+    }
+
+    @objc private func selectParakeet() {
+        requestProviderSwitch(to: .parakeet, promptForDownload: true)
+    }
+
+    private func requestProviderSwitch(to newProvider: ASRProvider, promptForDownload: Bool) {
+        guard provider != newProvider else { return }
+
+        if newProvider == .parakeet, promptForDownload {
+            let downloader = ParakeetModelDownloader()
+            if !downloader.modelsAvailable() {
+                showParakeetDownloadConfirmation { [weak self] approved in
+                    guard let self = self else { return }
+                    if approved {
+                        AppSettings.shared.provider = .parakeet
+                        Task { [weak self] in
+                            guard let self else { return }
+                            do {
+                                try await ParakeetBootstrap.shared.downloadModels()
+                            } catch {
+                                await MainActor.run {
+                                    self.showError("Parakeet download failed: \(error.localizedDescription)")
+                                }
+                            }
+                        }
+                    } else {
+                        self.updateProviderMenuState()
+                    }
+                }
+                return
+            }
+        }
+
+        AppSettings.shared.provider = newProvider
     }
 
     private func setStartItemsEnabled(_ enabled: Bool) {
@@ -404,27 +479,31 @@ final class StatusBarController {
         NSApp.terminate(nil)
     }
 
-    private func prepareModel() {
+    private func prepareWhisperModel() {
         // Find model spec from catalog
-        if let spec = ModelCatalog.findByFilename(currentModelName) {
-            prepareModelWithAutoDownload(spec: spec)
+        if let spec = ModelCatalog.findByFilename(currentWhisperModelName) {
+            prepareWhisperModelWithAutoDownload(spec: spec)
         } else {
             // Fallback to legacy behavior for models not in catalog
-            let modelURL = ModelManager.ensureModelDownloaded(name: currentModelName)
+            let modelURL = ModelManager.ensureModelDownloaded(name: currentWhisperModelName)
             guard FileManager.default.fileExists(atPath: modelURL.path) else {
-                showModelMissingAlert(modelName: currentModelName, path: modelURL.path)
+                showModelMissingAlert(modelName: currentWhisperModelName, path: modelURL.path)
                 return
             }
-            engine = WhisperEngine(modelURL: modelURL)
+            if provider == .whisper {
+                engine = NativeWhisperEngine(modelURL: modelURL)
+            }
         }
     }
 
-    private func prepareModelWithAutoDownload(spec: ModelSpec) {
+    private func prepareWhisperModelWithAutoDownload(spec: ModelSpec) {
         // Check if model already exists
         if ModelStore.exists(spec) {
             // Model exists - load it directly
             let url = ModelStore.path(for: spec)
-            engine = WhisperEngine(modelURL: url)
+            if provider == .whisper {
+                engine = NativeWhisperEngine(modelURL: url)
+            }
             setStartItemsEnabled(true)
             return
         }
@@ -469,7 +548,9 @@ final class StatusBarController {
             self?.setStartItemsEnabled(true)
             switch result {
             case .success(let url):
-                self?.engine = WhisperEngine(modelURL: url)
+                if self?.provider == .whisper {
+                    self?.engine = NativeWhisperEngine(modelURL: url)
+                }
             case .failure(let error):
                 self?.progressItem?.title = "Model error: \(error.localizedDescription)"
                 self?.progressItem?.isHidden = false
@@ -479,6 +560,7 @@ final class StatusBarController {
     }
 
     private func handleDownloadState(_ state: ModelDownloader.State) {
+        guard provider == .whisper else { return }
         switch state {
         case .running(let progress):
             progressItem?.title = String(format: "Downloading model… %.0f%%", progress * 100)
@@ -505,35 +587,184 @@ final class StatusBarController {
         }
     }
 
+    private func handleParakeetDownloadState(_ state: ParakeetModelDownloader.State) {
+        switch state {
+        case .running(let progress, let index, let count, _):
+            progressItem?.title = String(
+                format: "Downloading Parakeet… %.0f%% (%d/%d)", progress * 100, index, count
+            )
+            progressItem?.isHidden = false
+            setStartItemsEnabled(false)
+        case .verifying:
+            progressItem?.title = "Verifying Parakeet…"
+            progressItem?.isHidden = false
+        case .failed(let error):
+            progressItem?.title = "Parakeet download failed: \(error.localizedDescription)"
+            progressItem?.isHidden = false
+            setStartItemsEnabled(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                self?.progressItem?.isHidden = true
+            }
+        case .done:
+            progressItem?.title = "Parakeet ready ✓"
+            progressItem?.isHidden = false
+            setStartItemsEnabled(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.progressItem?.isHidden = true
+            }
+            Task { [weak self] in
+                guard let self, self.provider == .parakeet else { return }
+                await self.prepareParakeetEngine()
+            }
+        default:
+            break
+        }
+    }
+
+    private func showParakeetDownloadConfirmation(completion: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Download Parakeet Model?"
+        alert.informativeText = "This will download approximately 600MB of model files."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window = settingsController?.window {
+            alert.beginSheetModal(for: window) { response in
+                completion(response == .alertFirstButtonReturn)
+            }
+        } else {
+            let response = alert.runModal()
+            completion(response == .alertFirstButtonReturn)
+        }
+    }
+
+    private func updateProviderMenuState() {
+        parakeetMenuItem?.state = provider == .parakeet ? .on : .off
+        for item in whisperModelItems {
+            guard let spec = item.representedObject as? ModelSpec else {
+                item.state = .off
+                continue
+            }
+            item.state = (provider == .whisper && spec.filename == currentWhisperModelName) ? .on : .off
+        }
+    }
+
+    @MainActor
+    private func prepareEngineForCurrentProvider() async {
+        switch provider {
+        case .whisper:
+            prepareWhisperModel()
+        case .parakeet:
+            let downloader = ParakeetModelDownloader()
+            guard downloader.modelsAvailable() else { return }
+            await prepareParakeetEngine()
+        }
+    }
+
+    @MainActor
+    private func prepareParakeetEngine() async {
+        setStartItemsEnabled(false)
+        let engine = parakeetEngine ?? ParakeetEngine()
+        do {
+            try await engine.prepare()
+            guard provider == .parakeet else {
+                setStartItemsEnabled(true)
+                return
+            }
+            parakeetEngine = engine
+            self.engine = engine
+            setStartItemsEnabled(true)
+        } catch {
+            setStartItemsEnabled(true)
+            showError("Failed to load Parakeet engine: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func providerDidChange(_ newProvider: ASRProvider) {
+        guard provider != newProvider else { return }
+
+        let wasRecording = isRecording
+        if wasRecording {
+            stopRecording()
+        }
+
+        provider = newProvider
+        engine = nil
+        if newProvider == .whisper {
+            parakeetEngine = nil
+        }
+        updateProviderMenuState()
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.prepareEngineForCurrentProvider()
+            guard wasRecording,
+                  let engine = self.engine,
+                  engine.provider == self.provider else { return }
+            await MainActor.run {
+                self.resumeRecordingAfterProviderSwitch()
+            }
+        }
+    }
+
+    private func resumeRecordingAfterProviderSwitch() {
+        if mode == .micPlusAppAudio && selectedAudioSource == nil {
+            showAppPicker()
+        } else {
+            startRecording()
+        }
+    }
+
     private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
         controller.onPartial = { [weak self] text in
-            // Disabled: Partial transcripts are often inaccurate
-            // HUD will show "Recording..." until final transcript is ready
-            // DispatchQueue.main.async {
-            //     self?.hudController?.update(text: text)
-            // }
+            // Route partial text to HUD for live streaming display
+            self?.hudController?.updatePartial(text: text)
         }
 
         controller.onFinal = { [weak self] text in
-            NSLog("🎯 [StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
-            self?.hudController?.update(text: "Final: \(text)")
+            NSLog("[StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
+            self?.hudController?.updateFinal(text: text)
 
             let autoPasteEnabled = self?.autoPaste ?? false
-            NSLog("🔄 [StatusBar] autoPaste setting: \(autoPasteEnabled)")
+            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled)")
 
-            // Always copy to clipboard
-            NSLog("📋 [StatusBar] Copying text to clipboard...")
+            // Always copy to clipboard first
+            NSLog("[StatusBar] Copying text to clipboard...")
             ClipboardManager.setClipboard(text)
 
-            // Auto-paste if enabled
+            // Auto-insert if enabled (uses AX SetValue first, then Cmd+V fallback)
             if autoPasteEnabled {
-                NSLog("🔄 [StatusBar] Auto-paste is enabled - pasting...")
-                ClipboardManager.pasteIfAllowed()
+                NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
+                let result = AutoInsertManager.insertText(text)
+                NSLog("[StatusBar] Auto-insert result: \(result.description)")
+
+                if case .permissionDenied = result {
+                    // CR-03: Throttle permission prompts to avoid spam
+                    let now = Date()
+                    let shouldPrompt: Bool
+                    if let lastPrompt = self?.lastPermissionPromptTime {
+                        let elapsed = now.timeIntervalSince(lastPrompt)
+                        shouldPrompt = elapsed >= (self?.permissionPromptCooldown ?? 30.0)
+                        if !shouldPrompt {
+                            NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago)")
+                        }
+                    } else {
+                        shouldPrompt = true
+                    }
+
+                    if shouldPrompt {
+                        NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
+                        self?.lastPermissionPromptTime = now
+                        Permissions.requestAccessibilityPermission()
+                    }
+                }
             }
 
             // Show notification
             let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
-            NSLog("📢 [StatusBar] Showing notification: \(message)")
+            NSLog("[StatusBar] Showing notification: \(message)")
             self?.showNotification(title: "Transcription Complete", message: message)
         }
 
@@ -570,6 +801,10 @@ final class StatusBarController {
     }
 
     private func startRecording() {
+        startRecording(allowParakeetPrepare: true)
+    }
+
+    private func startRecording(allowParakeetPrepare: Bool) {
         NSLog("🎬 [StatusBar] startRecording() called")
         NSLog("🎬 [StatusBar] Mode: \(mode)")
         if let source = selectedAudioSource {
@@ -578,9 +813,49 @@ final class StatusBarController {
             NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
         }
 
-        guard let engine = engine else {
-            NSLog("❌ [StatusBar] Engine not loaded!")
-            showError("Model not loaded. Please check that the model file exists.")
+        if let engine, engine.provider != provider {
+            NSLog("⚠️ [StatusBar] Engine/provider mismatch (\(engine.provider) vs \(provider)) - clearing")
+            self.engine = nil
+        }
+
+        if provider == .parakeet, engine == nil, allowParakeetPrepare {
+            let downloader = ParakeetModelDownloader()
+            if !downloader.modelsAvailable() {
+                showParakeetDownloadConfirmation { [weak self] approved in
+                    guard let self = self else { return }
+                    if approved {
+                        Task { [weak self] in
+                            guard let self else { return }
+                            do {
+                                try await ParakeetBootstrap.shared.downloadModels()
+                                await MainActor.run {
+                                    self.startRecording(allowParakeetPrepare: false)
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    self.showError("Parakeet download failed: \(error.localizedDescription)")
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
+
+            Task { [weak self] in
+                guard let self else { return }
+                await self.prepareParakeetEngine()
+                await MainActor.run {
+                    guard self.provider == .parakeet else { return }
+                    self.startRecording(allowParakeetPrepare: false)
+                }
+            }
+            return
+        }
+
+        guard let engine = engine, engine.provider == provider else {
+            NSLog("❌ [StatusBar] Engine not loaded or provider mismatch!")
+            showError("Engine not loaded. Check that the \(provider.displayName) models are available.")
             return
         }
 
@@ -624,17 +899,25 @@ final class StatusBarController {
         guard let button = statusItem.button else { return }
 
         if recording {
-            if let image = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
+            if let image = NSImage(named: "MenuBarIconRecording") {
                 image.isTemplate = true
                 button.image = image
+                button.imagePosition = .imageOnly
+            } else if let fallback = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
+                fallback.isTemplate = true
+                button.image = fallback
                 button.imagePosition = .imageOnly
             } else {
                 button.title = "🔴"
             }
         } else {
-            if let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+            if let image = NSImage(named: "MenuBarIcon") {
                 image.isTemplate = true
                 button.image = image
+                button.imagePosition = .imageOnly
+            } else if let fallback = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
+                fallback.isTemplate = true
+                button.image = fallback
                 button.imagePosition = .imageOnly
             } else {
                 button.title = "🎙️"
