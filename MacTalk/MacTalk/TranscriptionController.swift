@@ -38,6 +38,7 @@ final class TranscriptionController: @unchecked Sendable {
     private let levelMonitor = MultiChannelLevelMonitor()
 
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
+    private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
     private let samplesPerMs = 16  // 16kHz sample rate
     private let maxFinalAudioSamples = 9_600_000  // 10 minutes at 16kHz mono
     private let finalAudioTrimMarginSamples = 160_000  // Trim in 10s chunks to reduce churn
@@ -57,6 +58,7 @@ final class TranscriptionController: @unchecked Sendable {
         var fullTranscript: [String] = []
         var currentMode: Mode = .micOnly
         var currentChunkDuration: Int
+        var isFirstChunk: Bool = true
         var lastUIUpdateTime: TimeInterval = 0
         var lastDiagnosticsLogTime: TimeInterval = 0
         var sessionID: UUID
@@ -119,31 +121,31 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Control
 
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
-        try await engine.prepare()
-        await engine.reset()
-
         // Clear previous state
         audioState.withLock { state in
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
             state.fullTranscript.removeAll()
             state.currentMode = mode
+            state.isFirstChunk = true
             state.lastUIUpdateTime = 0
             state.lastDiagnosticsLogTime = 0
             state.sessionID = UUID()
             state.pendingTasks[state.sessionID] = []
         }
 
-        // Set up microphone capture
+        // Start microphone capture FIRST so we don't lose the beginning
+        // of the user's speech while the engine prepares.
         micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
             self?.processAudioBuffer(buffer)
         }
         try micCapture.start()
+        print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
-        // Set up app audio capture if needed
+        // Set up app audio capture if needed (also starts immediately)
         if case .micPlusAppAudio = mode {
             guard let source = audioSource else {
-                micCapture.stop() // Stop mic if validation fails
+                micCapture.stop()
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
@@ -152,11 +154,15 @@ final class TranscriptionController: @unchecked Sendable {
             do {
                 try await startAppAudioCapture(source: source)
             } catch {
-                // Stop microphone capture if app audio setup fails
                 micCapture.stop()
                 throw error
             }
         }
+
+        // Now prepare the engine — audio is already being captured and
+        // buffered in audioChunk/allAudio while this runs.
+        try await engine.prepare()
+        await engine.reset()
 
         print("Transcription started in mode: \(mode)")
     }
@@ -245,7 +251,9 @@ final class TranscriptionController: @unchecked Sendable {
                 state.allAudio.removeFirst(overflow)
             }
 
-            return (state.audioChunk.count, samplesPerMs * state.currentChunkDuration)
+            // Use shorter duration for the first chunk to reduce latency
+            let effectiveDuration = state.isFirstChunk ? firstChunkDurationMs : state.currentChunkDuration
+            return (state.audioChunk.count, samplesPerMs * effectiveDuration)
         }
 
         // Check if we have enough samples for a chunk
@@ -256,13 +264,15 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func processChunk() {
         let snapshot: (samples: [Float], sessionID: UUID, language: String?)? = audioState.withLock { state in
-            let threshold = samplesPerMs * state.currentChunkDuration
+            let effectiveDuration = state.isFirstChunk ? firstChunkDurationMs : state.currentChunkDuration
+            let threshold = samplesPerMs * effectiveDuration
             guard state.audioChunk.count >= threshold else {
                 return nil
             }
 
             let samples = Array(state.audioChunk.prefix(threshold))
             state.audioChunk.removeFirst(threshold)
+            state.isFirstChunk = false  // Subsequent chunks use normal duration
             return (samples, state.sessionID, state.language)
         }
 
