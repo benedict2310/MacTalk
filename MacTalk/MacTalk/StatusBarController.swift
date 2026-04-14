@@ -64,6 +64,12 @@ final class StatusBarController {
     private var parakeetMenuItem: NSMenuItem?
     private var whisperModelItems: [NSMenuItem] = []
     private var parakeetEngine: ParakeetEngine?
+    private var isParakeetPreparationInFlight = false
+    private var pendingParakeetStartRetry = false
+    private var pendingParakeetStartGeneration: Int?
+    private var isStartInFlight = false
+    private var startTask: Task<Void, Never>?
+    private var startGeneration = 0
 
     // Hotkeys
     private let hotkeyManager = HotkeyManager()
@@ -356,8 +362,15 @@ final class StatusBarController {
     }
 
     @objc private func stopRecording() {
-        guard isRecording else { return }
-        transcriber?.stop()
+        guard isRecording || isStartInFlight else { return }
+        let shouldFlushFinalTranscript = isRecording
+        invalidatePendingStart()
+        if shouldFlushFinalTranscript {
+            transcriber?.stop()
+        } else {
+            transcriber?.cancelStart()
+            recordingTargetApp = nil
+        }
         isRecording = false
         updateMenuBarIcon(recording: false)
         hudController?.close()
@@ -667,20 +680,57 @@ final class StatusBarController {
     }
 
     @MainActor
+    @discardableResult
+    private func beginParakeetPreparation() -> Bool {
+        guard !isParakeetPreparationInFlight else { return false }
+        isParakeetPreparationInFlight = true
+        return true
+    }
+
+    @MainActor
     private func prepareParakeetEngine() async {
+        guard beginParakeetPreparation() else { return }
+        await prepareParakeetEngineAssumingInFlight()
+    }
+
+    @MainActor
+    private func finishParakeetPreparation(triggerRetry: Bool) {
+        let shouldRetry = triggerRetry && pendingParakeetStartRetry
+        let pendingGeneration = pendingParakeetStartGeneration
+        pendingParakeetStartRetry = false
+        pendingParakeetStartGeneration = nil
+        isParakeetPreparationInFlight = false
+
+        guard let pendingGeneration, pendingGeneration == startGeneration else {
+            return
+        }
+
+        isStartInFlight = false
+
+        if shouldRetry {
+            startRecording(allowParakeetPrepare: false)
+        }
+    }
+
+    @MainActor
+    private func prepareParakeetEngineAssumingInFlight() async {
         setStartItemsEnabled(false)
+
         let engine = parakeetEngine ?? ParakeetEngine()
         do {
             try await engine.prepare()
             guard provider == .parakeet else {
                 setStartItemsEnabled(true)
+                finishParakeetPreparation(triggerRetry: false)
                 return
             }
             parakeetEngine = engine
             self.engine = engine
             setStartItemsEnabled(true)
+            finishParakeetPreparation(triggerRetry: true)
         } catch {
             setStartItemsEnabled(true)
+            finishParakeetPreparation(triggerRetry: false)
             showError("Failed to load Parakeet engine: \(error.localizedDescription)")
         }
     }
@@ -689,7 +739,7 @@ final class StatusBarController {
     private func providerDidChange(_ newProvider: ASRProvider) {
         guard provider != newProvider else { return }
 
-        let wasRecording = isRecording
+        let wasRecording = isRecording || isStartInFlight
         if wasRecording {
             stopRecording()
         }
@@ -904,44 +954,73 @@ final class StatusBarController {
             NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
         }
 
-        if let engine, engine.provider != provider {
+        if isRecording || isStartInFlight {
+            NSLog("⚠️ [StatusBar] Ignoring duplicate start request while recording is active or starting")
+            return
+        }
+
+        let preparationDecision = RecordingStartGate.decision(
+            provider: provider,
+            engineProvider: engine?.provider,
+            modelsAvailable: provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false,
+            allowParakeetPrepare: allowParakeetPrepare,
+            isPreparingParakeetEngine: isParakeetPreparationInFlight
+        )
+
+        if preparationDecision.clearMismatchedEngine, let engine {
             NSLog("⚠️ [StatusBar] Engine/provider mismatch (\(engine.provider) vs \(provider)) - clearing")
             self.engine = nil
         }
 
-        if provider == .parakeet, engine == nil, allowParakeetPrepare {
-            let downloader = ParakeetModelDownloader()
-            if !downloader.modelsAvailable() {
-                showParakeetDownloadConfirmation { [weak self] approved in
-                    guard let self = self else { return }
-                    if approved {
-                        Task { [weak self] in
-                            guard let self else { return }
-                            do {
-                                try await ParakeetBootstrap.shared.downloadModels()
-                                await MainActor.run {
-                                    self.startRecording(allowParakeetPrepare: false)
-                                }
-                            } catch {
-                                await MainActor.run {
-                                    self.showError("Parakeet download failed: \(error.localizedDescription)")
-                                }
+        switch preparationDecision.action {
+        case .promptForParakeetDownload:
+            showParakeetDownloadConfirmation { [weak self] approved in
+                guard let self = self else { return }
+                if approved {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        do {
+                            try await ParakeetBootstrap.shared.downloadModels()
+                            await MainActor.run {
+                                self.startRecording(allowParakeetPrepare: false)
+                            }
+                        } catch {
+                            await MainActor.run {
+                                self.showError("Parakeet download failed: \(error.localizedDescription)")
                             }
                         }
                     }
                 }
-                return
-            }
-
-            Task { [weak self] in
-                guard let self else { return }
-                await self.prepareParakeetEngine()
-                await MainActor.run {
-                    guard self.provider == .parakeet else { return }
-                    self.startRecording(allowParakeetPrepare: false)
-                }
             }
             return
+        case .prepareParakeetEngineAndRetry:
+            NSLog("⏳ [StatusBar] Preparing Parakeet engine before starting recording")
+            pendingParakeetStartRetry = true
+            if pendingParakeetStartGeneration == nil {
+                startGeneration += 1
+                pendingParakeetStartGeneration = startGeneration
+            }
+            isStartInFlight = true
+            guard beginParakeetPreparation() else {
+                NSLog("⏳ [StatusBar] Parakeet engine preparation already in flight; waiting for retry")
+                return
+            }
+            Task { [weak self] in
+                guard let self else { return }
+                await self.prepareParakeetEngineAssumingInFlight()
+            }
+            return
+        case .waitForParakeetEnginePreparation:
+            pendingParakeetStartRetry = true
+            if pendingParakeetStartGeneration == nil {
+                startGeneration += 1
+                pendingParakeetStartGeneration = startGeneration
+            }
+            isStartInFlight = true
+            NSLog("⏳ [StatusBar] Parakeet engine preparation already in flight; waiting for retry")
+            return
+        case .none:
+            break
         }
 
         guard let engine = engine, engine.provider == provider else {
@@ -957,8 +1036,11 @@ final class StatusBarController {
 
         setupTranscriptionCallbacks(transcriptionController)
         transcriber = transcriptionController
+        isStartInFlight = true
+        startGeneration += 1
+        let startGeneration = self.startGeneration
 
-        Task { [weak self] in
+        startTask = Task { [weak self] in
             guard let self else { return }
             do {
                 if let source = selectedAudioSource {
@@ -971,15 +1053,32 @@ final class StatusBarController {
                     audioSource: selectedAudioSource
                 )
                 await MainActor.run {
+                    guard startGeneration == self.startGeneration else {
+                        NSLog("⚠️ [StatusBar] Ignoring stale transcription start success for generation \(startGeneration)")
+                        transcriptionController.stop()
+                        return
+                    }
                     NSLog("✅ [StatusBar] Transcription started successfully")
+                    self.startTask = nil
+                    self.isStartInFlight = false
                     self.isRecording = true
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(self.mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
                 }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard startGeneration == self.startGeneration else { return }
+                    self.startTask = nil
+                    self.isStartInFlight = false
+                    NSLog("ℹ️ [StatusBar] Recording start cancelled")
+                }
             } catch {
                 NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 await MainActor.run {
+                    guard startGeneration == self.startGeneration else { return }
+                    self.startTask = nil
+                    self.isStartInFlight = false
                     self.recordingTargetApp = nil
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
@@ -1067,7 +1166,9 @@ final class StatusBarController {
     }
 
     func cleanup() {
+        invalidatePendingStart()
         transcriber?.stop()
+        isRecording = false
         hudController?.close()
     }
 
@@ -1288,8 +1389,17 @@ final class StatusBarController {
         }
     }
 
+    private func invalidatePendingStart() {
+        startGeneration += 1
+        pendingParakeetStartRetry = false
+        pendingParakeetStartGeneration = nil
+        isStartInFlight = false
+        startTask?.cancel()
+        startTask = nil
+    }
+
     private func toggleRecording() {
-        if isRecording {
+        if isRecording || isStartInFlight {
             stopRecording()
         } else {
             // Use current mode
@@ -1303,7 +1413,7 @@ final class StatusBarController {
     }
 
     private func toggleMicOnly() {
-        if isRecording {
+        if isRecording || isStartInFlight {
             stopRecording()
         } else {
             startMicOnly()
@@ -1311,7 +1421,7 @@ final class StatusBarController {
     }
 
     private func toggleMicPlusApp() {
-        if isRecording {
+        if isRecording || isStartInFlight {
             stopRecording()
         } else {
             startMicPlusApp()

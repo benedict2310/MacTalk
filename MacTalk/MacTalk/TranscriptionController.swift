@@ -205,6 +205,27 @@ final class TranscriptionController: @unchecked Sendable {
         print("Transcription stopped")
     }
 
+    func cancelStart() {
+        micCapture.stop()
+        screenCapture.stop()
+
+        let sessionID = audioState.withLock { state in
+            let sessionID = state.sessionID
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            state.fullTranscript.removeAll()
+            state.sessionID = UUID()
+            return sessionID
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.cancelPendingChunkTasks(sessionID: sessionID)
+        }
+
+        print("Transcription start cancelled")
+    }
+
     // MARK: - Audio Processing
 
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {

@@ -15,6 +15,8 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
+source "$PROJECT_DIR/scripts/build_helpers.sh"
+
 CONFIGURATION="Release"
 SCHEME="MacTalk"
 ARCH="arm64"
@@ -59,7 +61,10 @@ case "${1:-build}" in
     if [ $BUILD_STATUS -eq 0 ]; then
       echo -e "${GREEN}✅ Build succeeded${NC}"
 
-      APP_PATH=$(echo ~/Library/Developer/Xcode/DerivedData/MacTalk-*/Build/Products/${CONFIGURATION}/MacTalk.app)
+      if ! APP_PATH="$(resolve_latest_mactalk_app_path "$HOME/Library/Developer/Xcode/DerivedData" "$CONFIGURATION")"; then
+        echo -e "${YELLOW}❌ Could not find a built MacTalk.app in DerivedData${NC}"
+        exit 1
+      fi
       echo -e "${BLUE}📍 App location: ${APP_PATH}${NC}"
 
       if [ "$1" = "run" ]; then
@@ -68,7 +73,7 @@ case "${1:-build}" in
         killall MacTalk 2>/dev/null || true
         sleep 1
         # Launch new instance
-        open "$APP_PATH"
+        launch_mactalk_app "$APP_PATH"
         sleep 2
 
         # Check if running
