@@ -449,7 +449,7 @@ final class HUDWindowController: NSWindowController {
         let size = phase.preferredSize
         let visibleFrame = screen.visibleFrame
         let origin = CGPoint(
-            x: visibleFrame.maxX - size.width - 16,
+            x: visibleFrame.midX - size.width / 2,
             y: visibleFrame.maxY - size.height - 12
         )
         let frame = CGRect(origin: origin, size: size)
@@ -465,11 +465,18 @@ final class HUDWindowController: NSWindowController {
 
     private func animateIn() {
         guard let window else { return }
+        let finalFrame = window.frame
+
+        // Start above the screen (slide down from top)
+        var startFrame = finalFrame
+        startFrame.origin.y = finalFrame.origin.y + 60
+        window.setFrame(startFrame, display: false)
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
+            context.duration = 0.35
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().alphaValue = 1.0
+            window.animator().setFrame(finalFrame, display: true)
         }
     }
 
@@ -479,10 +486,15 @@ final class HUDWindowController: NSWindowController {
             return
         }
 
+        // Slide up and fade out
+        var upFrame = window.frame
+        upFrame.origin.y = upFrame.origin.y + 40
+
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.2
+            context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
+            window.animator().setFrame(upFrame, display: true)
         }, completionHandler: {
             MainActor.assumeIsolated {
                 window.orderOut(nil)
