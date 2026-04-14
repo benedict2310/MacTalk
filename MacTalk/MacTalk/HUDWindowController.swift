@@ -454,6 +454,8 @@ final class HUDWindowController: NSWindowController {
         )
         let frame = CGRect(origin: origin, size: size)
 
+        NSLog("[HUD] updateWindowFrame phase=\(phase) size=\(size) visibleFrame=\(visibleFrame) origin=\(origin) animated=\(animated)")
+
         if animated && window.isVisible {
             window.setFrame(frame, display: true, animate: true)
         } else {
@@ -466,6 +468,7 @@ final class HUDWindowController: NSWindowController {
     private func animateIn() {
         guard let window else { return }
         let finalFrame = window.frame
+        NSLog("[HUD] animateIn finalFrame=\(finalFrame)")
 
         // Start above the screen (slide down from top)
         var startFrame = finalFrame

@@ -819,19 +819,41 @@ final class StatusBarController {
     }
 
     private func captureRecordingTargetApp() {
-        recordingTargetApp = NSWorkspace.shared.frontmostApplication
-        NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+
+        // If MacTalk is frontmost (e.g. user clicked menu bar), find the
+        // previously-active app instead so the focus check doesn't misfire.
+        if frontmost?.processIdentifier == selfPID {
+            // Pick the first visible app that isn't us
+            let candidate = NSWorkspace.shared.runningApplications.first {
+                $0.isActive && $0.processIdentifier != selfPID
+            }
+            recordingTargetApp = candidate ?? frontmost
+            NSLog("[StatusBar] MacTalk is frontmost — captured underlying app: \(describeApplication(recordingTargetApp))")
+        } else {
+            recordingTargetApp = frontmost
+            NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
+        }
     }
 
     private func isRecordingTargetAppStillFrontmost() -> Bool {
         guard let recordingTargetApp else {
-            NSLog("⚠️ [StatusBar] No recording target app captured - skipping auto-paste")
-            return false
+            NSLog("⚠️ [StatusBar] No recording target app captured — allowing auto-paste")
+            return true   // Permissive: paste if we couldn't capture
         }
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            NSLog("⚠️ [StatusBar] No frontmost app available at transcription end - skipping auto-paste")
-            return false
+            NSLog("⚠️ [StatusBar] No frontmost app available — allowing auto-paste")
+            return true
+        }
+
+        // If MacTalk itself is frontmost (HUD clicked, etc.) allow the paste —
+        // the target app is likely right behind us.
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        if frontmostApp.processIdentifier == selfPID {
+            NSLog("[StatusBar] MacTalk is frontmost at paste time — allowing auto-paste")
+            return true
         }
 
         let isSameApp = recordingTargetApp.processIdentifier == frontmostApp.processIdentifier
@@ -839,6 +861,8 @@ final class StatusBarController {
             NSLog(
                 "⚠️ [StatusBar] Frontmost app changed during recording: \(describeApplication(recordingTargetApp)) -> \(describeApplication(frontmostApp))"
             )
+        } else {
+            NSLog("[StatusBar] Frontmost app matches recording target: \(describeApplication(frontmostApp))")
         }
 
         return isSameApp
