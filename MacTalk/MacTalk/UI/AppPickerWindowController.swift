@@ -2,31 +2,17 @@
 //  AppPickerWindowController.swift
 //  MacTalk
 //
-//  App picker dialog for selecting audio capture source
+//  Application audio source picker — Liquid Glass on macOS 26.4+
 //
 
 import AppKit
 import ScreenCaptureKit
+import SwiftUI
+
+// MARK: - Window Controller
 
 @MainActor
 final class AppPickerWindowController: NSWindowController {
-
-    // MARK: - UI Components
-
-    private let tableView = NSTableView()
-    private let scrollView = NSScrollView()
-    private let searchField = NSSearchField()
-    private let selectButton = NSButton()
-    private let cancelButton = NSButton()
-    private let levelMeterView = AudioLevelMeterView()
-
-    // MARK: - Data
-
-    private var allAudioSources: [AudioSource]
-    private var filteredSources: [AudioSource]
-    private var selectedSource: AudioSource?
-
-    var onSelection: ((AudioSource) -> Void)?
 
     // MARK: - Types
 
@@ -39,9 +25,7 @@ final class AppPickerWindowController: NSWindowController {
         let name: String
         let icon: NSImage?
 
-        var isSystemAudio: Bool {
-            return display != nil
-        }
+        var isSystemAudio: Bool { display != nil }
 
         static func fromApp(_ app: SCRunningApplication) -> AudioSource {
             let icon: NSImage?
@@ -50,230 +34,143 @@ final class AppPickerWindowController: NSWindowController {
             } else {
                 icon = NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
             }
-            return AudioSource(
-                app: app,
-                display: nil,
-                name: app.applicationName,
-                icon: icon
-            )
+            return AudioSource(app: app, display: nil, name: app.applicationName, icon: icon)
         }
 
         static func systemAudio(display: SCDisplay) -> AudioSource {
             AudioSource(
-                app: nil,
-                display: display,
-                name: "System Audio",
+                app: nil, display: display, name: "System Audio",
                 icon: NSImage(systemSymbolName: "speaker.wave.3", accessibilityDescription: "System Audio")
             )
         }
     }
 
+    // MARK: - Properties
+
+    private let allSources: [AudioSource]
+    var onSelection: ((AudioSource) -> Void)?
+
     // MARK: - Initialization
 
     init(sources: [AudioSource]) {
-        // Initialize properties first
-        self.allAudioSources = sources
-        self.filteredSources = sources
+        self.allSources = sources
 
-        // Create window
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
-            styleMask: [.titled, .closable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 380),
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Select Audio Source"
+        window.titlebarAppearsTransparent = true
         window.center()
 
-        // Call super initializer
         super.init(window: window)
 
-        NSLog("✅ [AppPicker] Initialized with \(sources.count) audio sources")
-
-        // Setup UI after initialization
-        setupUI()
-        // No async loading needed - data is already available!
+        if #available(macOS 26.4, *) {
+            let state = PickerState(sources: allSources)
+            let host = NSHostingView(
+                rootView: PickerContentView(
+                    state: state,
+                    onSelect: { [weak self] source in
+                        self?.onSelection?(source)
+                        self?.close()
+                    },
+                    onCancel: { [weak self] in
+                        self?.close()
+                    }
+                )
+            )
+            host.frame = window.contentView!.bounds
+            host.autoresizingMask = [.width, .height]
+            window.contentView?.addSubview(host)
+        }
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+// MARK: - SwiftUI (macOS 26.4+)
+
+@MainActor
+private final class PickerState: ObservableObject {
+    @Published var searchText: String = ""
+    @Published var selectionID: String?
+
+    struct Entry: Identifiable {
+        let id: String   // bundleId or "system"
+        let source: AppPickerWindowController.AudioSource
+        var name: String { source.name }
+        var icon: NSImage { source.icon ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)! }
     }
 
-    // MARK: - UI Setup
+    let entries: [Entry]
 
-    private func setupSearchField(in contentView: NSView) {
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Filter apps..."
-        searchField.target = self
-        searchField.action = #selector(searchFieldDidChange)
-        contentView.addSubview(searchField)
+    init(sources: [AppPickerWindowController.AudioSource]) {
+        self.entries = sources.enumerated().map { idx, s in
+            Entry(id: s.app?.bundleIdentifier ?? "system-\(idx)", source: s)
+        }
     }
 
-    private func setupTableView(in contentView: NSView) {
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.target = self
-        tableView.doubleAction = #selector(doubleClickOnRow)
-        tableView.allowsMultipleSelection = false
-
-        // Add columns
-        let iconColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("icon"))
-        iconColumn.title = ""
-        iconColumn.width = 40
-        iconColumn.minWidth = 40
-        iconColumn.maxWidth = 40
-        tableView.addTableColumn(iconColumn)
-
-        let nameColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
-        nameColumn.title = "Application"
-        nameColumn.width = 300
-        tableView.addTableColumn(nameColumn)
-
-        // Scroll view
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = tableView
-        scrollView.hasVerticalScroller = true
-        scrollView.borderType = .bezelBorder
-        contentView.addSubview(scrollView)
-
-        // Level meter preview
-        levelMeterView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(levelMeterView)
+    var filtered: [Entry] {
+        if searchText.isEmpty { return entries }
+        return entries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
-    private func setupButtons(in contentView: NSView) {
-        selectButton.translatesAutoresizingMaskIntoConstraints = false
-        selectButton.title = "Select"
-        selectButton.bezelStyle = .rounded
-        selectButton.keyEquivalent = "\r" // Enter key
-        selectButton.target = self
-        selectButton.action = #selector(selectButtonClicked)
-        selectButton.isEnabled = false
-        contentView.addSubview(selectButton)
-
-        cancelButton.translatesAutoresizingMaskIntoConstraints = false
-        cancelButton.title = "Cancel"
-        cancelButton.bezelStyle = .rounded
-        cancelButton.keyEquivalent = "\u{1b}" // Escape key
-        cancelButton.target = self
-        cancelButton.action = #selector(cancelButtonClicked)
-        contentView.addSubview(cancelButton)
+    var selectedSource: AppPickerWindowController.AudioSource? {
+        guard let id = selectionID else { return nil }
+        return entries.first(where: { $0.id == id })?.source
     }
+}
 
-    private func setupUI() {
-        guard let contentView = window?.contentView else { return }
+@available(macOS 26.4, *)
+private struct PickerContentView: View {
+    @ObservedObject var state: PickerState
+    var onSelect: (AppPickerWindowController.AudioSource) -> Void
+    var onCancel: () -> Void
 
-        setupSearchField(in: contentView)
-        setupTableView(in: contentView)
-        setupButtons(in: contentView)
-
-        // Layout constraints
-        NSLayoutConstraint.activate([
-            // Search field
-            searchField.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
-            searchField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            searchField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
-            // Scroll view
-            scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            scrollView.bottomAnchor.constraint(equalTo: levelMeterView.topAnchor, constant: -12),
-
-            // Level meter
-            levelMeterView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            levelMeterView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            levelMeterView.bottomAnchor.constraint(equalTo: cancelButton.topAnchor, constant: -12),
-            levelMeterView.heightAnchor.constraint(equalToConstant: 60),
-
-            // Buttons
-            cancelButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
-            cancelButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            cancelButton.widthAnchor.constraint(equalToConstant: 100),
-
-            selectButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
-            selectButton.trailingAnchor.constraint(equalTo: cancelButton.leadingAnchor, constant: -12),
-            selectButton.widthAnchor.constraint(equalToConstant: 100)
-        ])
-    }
-
-
-    // MARK: - Actions
-
-    @objc private func searchFieldDidChange() {
-        let searchText = searchField.stringValue.lowercased()
-
-        if searchText.isEmpty {
-            filteredSources = allAudioSources
-        } else {
-            filteredSources = allAudioSources.filter { source in
-                source.name.lowercased().contains(searchText)
+    var body: some View {
+        VStack(spacing: 0) {
+            // Search bar
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Filter apps…", text: $state.searchText)
+                    .textFieldStyle(.plain)
             }
+            .padding(10)
+            .glassEffect()
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+
+            // Source list
+            List(state.filtered, selection: $state.selectionID) { entry in
+                HStack(spacing: 10) {
+                    Image(nsImage: entry.icon)
+                        .resizable()
+                        .frame(width: 28, height: 28)
+                    Text(entry.name)
+                        .lineLimit(1)
+                }
+                .tag(entry.id)
+                .padding(.vertical, 2)
+            }
+            .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+
+            // Action buttons
+            HStack {
+                Spacer()
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Select") {
+                    if let src = state.selectedSource { onSelect(src) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(state.selectedSource == nil)
+                .buttonStyle(.glass)
+            }
+            .padding(12)
         }
-
-        tableView.reloadData()
-    }
-
-    @objc private func selectButtonClicked() {
-        guard let source = selectedSource else { return }
-        onSelection?(source)
-        close()
-    }
-
-    @objc private func cancelButtonClicked() {
-        close()
-    }
-
-    @objc private func doubleClickOnRow() {
-        let row = tableView.clickedRow
-        guard row >= 0, row < filteredSources.count else { return }
-
-        selectedSource = filteredSources[row]
-        selectButtonClicked()
-    }
-}
-
-// MARK: - NSTableViewDataSource
-
-extension AppPickerWindowController: NSTableViewDataSource {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        return filteredSources.count
-    }
-}
-
-// MARK: - NSTableViewDelegate
-
-extension AppPickerWindowController: NSTableViewDelegate {
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < filteredSources.count else { return nil }
-        let source = filteredSources[row]
-
-        if tableColumn?.identifier == NSUserInterfaceItemIdentifier("icon") {
-            let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
-            imageView.image = source.icon
-            imageView.imageScaling = .scaleProportionallyUpOrDown
-            return imageView
-        } else if tableColumn?.identifier == NSUserInterfaceItemIdentifier("name") {
-            let textField = NSTextField(labelWithString: source.name)
-            return textField
-        }
-
-        return nil
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let selectedRow = tableView.selectedRow
-
-        if selectedRow >= 0, selectedRow < filteredSources.count {
-            selectedSource = filteredSources[selectedRow]
-            selectButton.isEnabled = true
-
-            // Note: Audio preview for selected source could be added in future
-            // This would require starting a temporary capture to show levels
-        } else {
-            selectedSource = nil
-            selectButton.isEnabled = false
-        }
+        .frame(minWidth: 420, minHeight: 340)
     }
 }

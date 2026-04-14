@@ -2,13 +2,13 @@ name: MacTalk
 options:
   bundleIdPrefix: com.mactalk
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.4"
   developmentLanguage: en
 
 settings:
   SWIFT_VERSION: "6.0"
   SWIFT_STRICT_CONCURRENCY: complete
-  MACOSX_DEPLOYMENT_TARGET: "14.0"
+  MACOSX_DEPLOYMENT_TARGET: "26.4"
 
 packages:
   FluidAudio:
