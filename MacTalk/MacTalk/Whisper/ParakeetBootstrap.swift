@@ -136,7 +136,7 @@ final class ParakeetBootstrap: @unchecked Sendable {
         let models = try await AsrModels.load(from: modelsPath, configuration: config, version: .v3)
 
         let manager = AsrManager()
-        try await manager.initialize(models: models)
+        try await manager.loadModels(models)
 
         return manager
     }
