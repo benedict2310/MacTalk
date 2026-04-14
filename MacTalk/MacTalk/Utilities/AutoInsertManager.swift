@@ -76,8 +76,12 @@ enum AutoInsertManager {
         NSLog("[AutoInsertManager] AX SetValue failed, falling back to Cmd+V")
 
         // Fallback to Cmd+V using existing ClipboardManager
+        // Use async dispatch with small delay to avoid blocking main thread
+        // and to ensure clipboard write is visible to the system
         ClipboardManager.setClipboard(text)
-        sendCommandV()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            Self.sendCommandV()
+        }
         return .cmdVFallback
     }
 

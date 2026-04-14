@@ -22,7 +22,7 @@ enum ClipboardManager {
         pasteboard.clearContents()
         let success = pasteboard.setString(text, forType: .string)
         if success {
-            NSLog("✅ [ClipboardManager] Clipboard set successfully")
+            NSLog("✅ [ClipboardManager] Clipboard set successfully (changeCount=\(pasteboard.changeCount))")
         } else {
             NSLog("❌ [ClipboardManager] Failed to set clipboard")
         }

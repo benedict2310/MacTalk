@@ -2,90 +2,288 @@
 //  HUDWindowController.swift
 //  MacTalk
 //
-//  Floating HUD overlay — compact Liquid Glass pill with audio-reactive visualization
+//  Floating Liquid Glass HUD overlay with compact, expanded, and copied phases.
 //
 
 import AppKit
 import SwiftUI
+import QuartzCore
+import Combine
 
-// MARK: - SwiftUI HUD View
+// MARK: - Layout
 
-/// Observable state object shared between the window controller and the SwiftUI view.
+enum HUDLayoutPhase: Sendable {
+    case compact
+    case expanded
+    case copied
+
+    var preferredSize: CGSize {
+        switch self {
+        case .compact:
+            return CGSize(width: 140, height: 36)
+        case .expanded:
+            return CGSize(width: 320, height: 44)
+        case .copied:
+            return CGSize(width: 130, height: 36)
+        }
+    }
+}
+
+// MARK: - Window
+
+private final class HUDWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+// MARK: - Shared State
+
 @MainActor
 final class HUDState: ObservableObject {
+    @Published private(set) var layoutPhase: HUDLayoutPhase = .compact
     @Published var transcriptText: String = "Listening…"
-    @Published var transcriptOpacity: Double = 0.5
-    @Published var audioLevel: Float = 0.0
-    @Published var smoothedLevel: Float = 0.0
+    @Published var transcriptOpacity: Double = 0.55
+    @Published var isFinalTranscript = false
+    @Published var barLevels: [CGFloat] = [0.18, 0.28, 0.22, 0.26, 0.18]
+    @Published var startDate: Date = Date()
 
-    private let smoothingFactor: Float = 0.12
+    var onLayoutPhaseChange: (@MainActor @Sendable (HUDLayoutPhase) -> Void)?
 
-    func feedLevel(_ level: Float) {
-        smoothedLevel = smoothedLevel * (1.0 - smoothingFactor) + level * smoothingFactor
-        audioLevel = smoothedLevel
-    }
+    private let springAnimation = Animation.spring(duration: 0.28, bounce: 0.14)
+    private let smoothingFactor: Float = 0.18
+    private let idleBarLevels: [CGFloat] = [0.18, 0.28, 0.22, 0.26, 0.18]
+    private let barWeights: [CGFloat] = [0.58, 0.82, 1.0, 0.78, 0.6]
 
-    func reset() {
-        smoothedLevel = 0.0
-        audioLevel = 0.0
+    private var micLevel: Float = 0
+    private var appLevel: Float = 0
+    private var isHovering = false
+    private var hasTranscript = false
+    private var showingCopied = false
+
+    func beginSession() {
+        startDate = Date()
         transcriptText = "Listening…"
-        transcriptOpacity = 0.5
+        transcriptOpacity = 0.55
+        isFinalTranscript = false
+        hasTranscript = false
+        showingCopied = false
+        isHovering = false
+        micLevel = 0
+        appLevel = 0
+        resetLevels()
+        updateLayoutPhase(animated: false)
     }
-}
 
-/// A compact audio-level bar rendered with Core Animation for buttery updates.
-struct AudioLevelBar: View {
-    var level: Float
+    func resetAll() {
+        beginSession()
+    }
 
-    var body: some View {
-        GeometryReader { geo in
-            Capsule()
-                .fill(.white.opacity(0.35))
-                .frame(width: geo.size.width, height: geo.size.height)
-                .overlay(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(0.85))
-                        .frame(width: max(2, geo.size.width * CGFloat(level)))
-                        .animation(.linear(duration: 0.06), value: level)
-                }
+    func setHovering(_ hovering: Bool) {
+        guard !showingCopied else { return }
+        isHovering = hovering
+        updateLayoutPhase(animated: true)
+    }
+
+    func showPartialText(_ text: String) {
+        showingCopied = false
+        hasTranscript = !text.isEmpty
+        transcriptText = Self.previewText(for: text.isEmpty ? "Listening…" : text)
+        transcriptOpacity = 0.7
+        isFinalTranscript = false
+        updateLayoutPhase(animated: true)
+    }
+
+    func showFinalText(_ text: String) {
+        showingCopied = false
+        hasTranscript = !text.isEmpty
+        transcriptText = Self.previewText(for: text.isEmpty ? "Listening…" : text)
+        transcriptOpacity = 1.0
+        isFinalTranscript = true
+        updateLayoutPhase(animated: true)
+    }
+
+    func showCopiedState() {
+        showingCopied = true
+        updateLayoutPhase(animated: true)
+    }
+
+    func updateMic(rms: Float, peak: Float, peakHold: Float) {
+        let input = max(rms, peak * 0.8, peakHold * 0.65)
+        micLevel = smoothed(level: micLevel, toward: max(0, input))
+        refreshBars()
+    }
+
+    func updateApp(rms: Float, peak: Float, peakHold: Float) {
+        let input = max(rms, peak * 0.8, peakHold * 0.65)
+        appLevel = smoothed(level: appLevel, toward: max(0, input))
+        refreshBars()
+    }
+
+    func resetLevels() {
+        micLevel = 0
+        appLevel = 0
+        barLevels = idleBarLevels
+    }
+
+    private func smoothed(level current: Float, toward target: Float) -> Float {
+        current * (1 - smoothingFactor) + target * smoothingFactor
+    }
+
+    private func refreshBars() {
+        let combinedLevel = max(micLevel, appLevel)
+
+        guard combinedLevel > 0.02 else {
+            barLevels = idleBarLevels
+            return
+        }
+
+        let clamped = CGFloat(min(max(combinedLevel, 0), 1))
+        barLevels = barWeights.map { weight in
+            let jitter = CGFloat.random(in: -0.07 ... 0.07)
+            let normalized = min(max(clamped * weight + jitter, 0.08), 1.0)
+            return normalized
         }
     }
-}
 
-/// The Liquid Glass HUD — a floating pill that sits in the top-right corner.
-@available(macOS 26.4, *)
-struct HUDContentView: View {
-    @ObservedObject var state: HUDState
-    var onStop: () -> Void
+    private func updateLayoutPhase(animated: Bool) {
+        let nextPhase: HUDLayoutPhase = showingCopied ? .copied : ((hasTranscript || isHovering) ? .expanded : .compact)
+        guard nextPhase != layoutPhase else { return }
 
-    var body: some View {
-        HStack(spacing: 12) {
-            // Audio level indicator
-            AudioLevelBar(level: state.audioLevel)
-                .frame(width: 48, height: 6)
-
-            // Transcript
-            Text(state.transcriptText)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.head)
-                .opacity(state.transcriptOpacity)
-                .frame(maxWidth: 200, alignment: .leading)
-
-            // Stop button
-            Button {
-                onStop()
-            } label: {
-                Image(systemName: "stop.circle.fill")
-                    .font(.system(size: 18))
+        if animated {
+            withAnimation(springAnimation) {
+                layoutPhase = nextPhase
             }
-            .buttonStyle(.glass)
-            .accessibilityLabel("Stop Recording")
+        } else {
+            layoutPhase = nextPhase
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+
+        onLayoutPhaseChange?(nextPhase)
+    }
+
+    private static func previewText(for text: String) -> String {
+        let collapsed = text
+            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .joined(separator: " ")
+
+        guard collapsed.count > 220 else { return collapsed }
+        return "…" + String(collapsed.suffix(220))
+    }
+}
+
+// MARK: - SwiftUI Views
+
+@available(macOS 26.4, *)
+private struct HUDLevelBarsView: View {
+    let levels: [CGFloat]
+
+    private var isActive: Bool {
+        levels.contains { $0 > 0.3 }
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(.white.opacity(isActive ? 0.7 : 0.3))
+                    .frame(width: 3, height: 3 + (min(max(level, 0), 1) * 11))
+                    .animation(.linear(duration: 0.06), value: level)
+            }
+        }
+        .frame(height: 14, alignment: .bottom)
+        .accessibilityHidden(true)
+    }
+}
+
+@available(macOS 26.4, *)
+private struct HUDContentView: View {
+    @ObservedObject var state: HUDState
+    let onStop: @MainActor @Sendable () -> Void
+
+    @State private var currentDate = Date()
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let phase = state.layoutPhase
+
+        Group {
+            switch phase {
+            case .compact, .expanded:
+                liveContent(for: phase)
+            case .copied:
+                copiedContent
+            }
+        }
+        .frame(width: phase.preferredSize.width, height: phase.preferredSize.height, alignment: .leading)
         .glassEffect()
+        .clipShape(Capsule())
+        .contentShape(Capsule())
+        .animation(.spring(duration: 0.28, bounce: 0.14), value: phase)
+        .onHover { hovering in
+            state.setHovering(hovering)
+        }
+        .onReceive(timer) { date in
+            currentDate = date
+        }
+    }
+
+    @ViewBuilder
+    private func liveContent(for phase: HUDLayoutPhase) -> some View {
+        HStack(spacing: phase == .expanded ? 10 : 8) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.red)
+                .frame(width: 12)
+
+            HUDLevelBarsView(levels: state.barLevels)
+
+            Text(Self.elapsedString(from: state.startDate, now: currentDate))
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 30, alignment: .trailing)
+
+            if phase == .expanded {
+                Text(state.transcriptText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .opacity(state.transcriptOpacity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Stop Recording")
+            }
+        }
+        .padding(.horizontal, phase == .expanded ? 14 : 12)
+        .padding(.vertical, phase == .expanded ? 9 : 8)
+    }
+
+    private var copiedContent: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.green)
+
+            Text("Copied")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private static func elapsedString(from startDate: Date, now: Date) -> String {
+        let elapsed = max(0, Int(now.timeIntervalSince(startDate)))
+        let minutes = elapsed / 60
+        let seconds = elapsed % 60
+        let secondsText = seconds < 10 ? "0\(seconds)" : "\(seconds)"
+        return "\(minutes):\(secondsText)"
     }
 }
 
@@ -93,21 +291,15 @@ struct HUDContentView: View {
 
 @MainActor
 final class HUDWindowController: NSWindowController {
-    private let hudState = HUDState()
-
-    /// Tracks whether we've received any partial text this session
-    private var hasReceivedPartial = false
-    /// The last displayed text (for throttling identical updates)
-    private var lastDisplayedText: String = ""
-    /// Timer to clear final text after display
-    private var clearTimer: Timer?
-
     var onStop: (() -> Void)?
 
+    private let hudState = HUDState()
+    private var postFinalTask: Task<Void, Never>?
+
     convenience init() {
-        // Compact pill-shaped borderless window
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 48),
+        let initialSize = HUDLayoutPhase.compact.preferredSize
+        let window = HUDWindow(
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -116,10 +308,101 @@ final class HUDWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
+        window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+        window.ignoresMouseEvents = false
+        window.isMovableByWindowBackground = false
+        window.animationBehavior = .none
 
         self.init(window: window)
+        setupContentView()
+        setupAccessibility()
+        setupPhaseCallback()
+        updateWindowFrame(for: .compact, animated: false)
+    }
+
+    override func showWindow(_ sender: Any?) {
+        cancelPostFinalTask()
+        hudState.beginSession()
+        updateWindowFrame(for: .compact, animated: false)
+
+        guard let window else {
+            super.showWindow(sender)
+            return
+        }
+
+        window.alphaValue = 0
+        super.showWindow(sender)
+        animateIn()
+    }
+
+    override func close() {
+        cancelPostFinalTask()
+
+        guard let window, window.isVisible else {
+            performImmediateClose()
+            return
+        }
+
+        animateOut { [weak self] in
+            self?.performImmediateClose()
+        }
+    }
+
+    func updatePartial(text: String) {
+        cancelPostFinalTask()
+        hudState.showPartialText(text)
+    }
+
+    func updateFinal(text: String) {
+        cancelPostFinalTask()
+        hudState.showFinalText(text)
+
+        postFinalTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            hudState.showCopiedState()
+
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            close()
+        }
+    }
+
+    func updateMicLevel(rms: Float, peak: Float, peakHold: Float) {
+        hudState.updateMic(rms: rms, peak: peak, peakHold: peakHold)
+    }
+
+    func updateAppLevel(rms: Float, peak: Float, peakHold: Float) {
+        hudState.updateApp(rms: rms, peak: peak, peakHold: peakHold)
+    }
+
+    func setAppMeterVisible(_ visible: Bool) {
+        // Compatibility no-op.
+    }
+
+    func resetLevels() {
+        hudState.resetLevels()
+    }
+
+    func reset() {
+        cancelPostFinalTask()
+        hudState.resetAll()
+        updateWindowFrame(for: .compact, animated: false)
+    }
+
+    // MARK: - Setup
+
+    private func setupContentView() {
+        guard let window else { return }
+
+        let containerView = NSView(frame: NSRect(origin: .zero, size: HUDLayoutPhase.compact.preferredSize))
+        containerView.wantsLayer = true
+        containerView.layer?.backgroundColor = NSColor.clear.cgColor
+        window.contentView = containerView
 
         if #available(macOS 26.4, *) {
             let hostView = NSHostingView(
@@ -127,124 +410,78 @@ final class HUDWindowController: NSWindowController {
                     self?.onStop?()
                 }
             )
-            hostView.frame = window.contentView!.bounds
+            hostView.frame = containerView.bounds
             hostView.autoresizingMask = [.width, .height]
-            window.contentView?.addSubview(hostView)
-        }
-
-        setupAccessibility()
-        positionWindow()
-    }
-
-    private func positionWindow() {
-        guard let window = window, let screen = NSScreen.main else { return }
-        let screenFrame = screen.visibleFrame
-        let windowFrame = window.frame
-        let x = screenFrame.maxX - windowFrame.width - 16
-        let y = screenFrame.maxY - windowFrame.height - 12
-        window.setFrameOrigin(NSPoint(x: x, y: y))
-    }
-
-    // MARK: - Live Transcript Updates
-
-    func updatePartial(text: String) {
-        guard text != lastDisplayedText else { return }
-        lastDisplayedText = text
-        clearTimer?.invalidate()
-        clearTimer = nil
-        hasReceivedPartial = true
-
-        hudState.transcriptText = truncateForDisplay(text)
-        hudState.transcriptOpacity = 0.7
-    }
-
-    func updateFinal(text: String) {
-        clearTimer?.invalidate()
-        clearTimer = nil
-        lastDisplayedText = text
-
-        hudState.transcriptText = truncateForDisplay(text)
-        hudState.transcriptOpacity = 1.0
-
-        clearTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.hudState.transcriptText = ""
-                self?.lastDisplayedText = ""
-            }
+            hostView.wantsLayer = true
+            hostView.layer?.backgroundColor = NSColor.clear.cgColor
+            containerView.addSubview(hostView)
         }
     }
 
-    private func truncateForDisplay(_ text: String) -> String {
-        let maxLength = 50
-        guard text.count > maxLength else { return text }
-        let start = text.index(text.endIndex, offsetBy: -maxLength)
-        return "…" + String(text[start...])
+    private func setupAccessibility() {
+        guard let window else { return }
+        window.setAccessibilityLabel("MacTalk Recording HUD")
+        window.setAccessibilityRole(.window)
+        window.setAccessibilityHelp("Anchored recording HUD with live transcript preview and stop control")
     }
 
-    @available(*, deprecated, message: "Use updatePartial(text:) or updateFinal(text:) instead")
-    func update(text: String) { updatePartial(text: text) }
-
-    func updateMicLevel(rms: Float, peak: Float, peakHold: Float) {
-        hudState.feedLevel(rms)
+    private func setupPhaseCallback() {
+        hudState.onLayoutPhaseChange = { [weak self] phase in
+            self?.updateWindowFrame(for: phase, animated: true)
+        }
     }
 
-    func updateAppLevel(rms: Float, peak: Float, peakHold: Float) {
-        // Future: blend app level
+    // MARK: - Window Placement
+
+    private func activeScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
     }
 
-    func setAppMeterVisible(_ visible: Bool) { /* no-op */ }
+    private func updateWindowFrame(for phase: HUDLayoutPhase, animated: Bool) {
+        guard let window else { return }
 
-    func resetLevels() { hudState.audioLevel = 0 }
+        let screen = window.isVisible ? (window.screen ?? activeScreen()) : activeScreen()
+        guard let screen else { return }
 
-    // MARK: - Lifecycle
+        let size = phase.preferredSize
+        let visibleFrame = screen.visibleFrame
+        let origin = CGPoint(
+            x: visibleFrame.maxX - size.width - 16,
+            y: visibleFrame.maxY - size.height - 12
+        )
+        let frame = CGRect(origin: origin, size: size)
 
-    override func showWindow(_ sender: Any?) {
-        super.showWindow(sender)
-        animateIn()
-        reset()
-    }
-
-    func reset() {
-        hudState.reset()
-        resetTranscript()
-    }
-
-    private func resetTranscript() {
-        clearTimer?.invalidate()
-        clearTimer = nil
-        hasReceivedPartial = false
-        lastDisplayedText = ""
-        hudState.transcriptText = "Listening…"
-        hudState.transcriptOpacity = 0.5
-    }
-
-    override func close() {
-        clearTimer?.invalidate()
-        clearTimer = nil
-        guard let window = window, window.isVisible else { super.close(); return }
-        animateOut { super.close() }
+        if animated && window.isVisible {
+            window.setFrame(frame, display: true, animate: true)
+        } else {
+            window.setFrame(frame, display: true)
+        }
     }
 
     // MARK: - Animations
 
     private func animateIn() {
-        guard let window = window else { return }
-        window.alphaValue = 0
-        window.makeKeyAndOrderFront(nil)
+        guard let window else { return }
 
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().alphaValue = 1.0
         }
     }
 
     private func animateOut(completion: @MainActor @Sendable @escaping () -> Void) {
-        guard let window = window else { completion(); return }
+        guard let window else {
+            completion()
+            return
+        }
 
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
         }, completionHandler: {
             MainActor.assumeIsolated {
@@ -254,12 +491,14 @@ final class HUDWindowController: NSWindowController {
         })
     }
 
-    // MARK: - Accessibility
+    // MARK: - Helpers
 
-    private func setupAccessibility() {
-        guard let window = window else { return }
-        window.setAccessibilityLabel("MacTalk Recording HUD")
-        window.setAccessibilityRole(.window)
-        window.setAccessibilityHelp("Compact recording indicator with live transcription")
+    private func cancelPostFinalTask() {
+        postFinalTask?.cancel()
+        postFinalTask = nil
+    }
+
+    private func performImmediateClose() {
+        super.close()
     }
 }

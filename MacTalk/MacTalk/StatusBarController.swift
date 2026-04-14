@@ -53,6 +53,7 @@ final class StatusBarController {
     private var isRecording = false
     private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
     private var selectedAudioSource: AppPickerWindowController.AudioSource?
+    private var recordingTargetApp: NSRunningApplication?
     // FIX P0: Retain app picker to keep callbacks alive
     private var appPickerController: AppPickerWindowController?
 
@@ -70,7 +71,8 @@ final class StatusBarController {
 
     // Permission prompt throttling (CR-03)
     private var lastPermissionPromptTime: Date?
-    private let permissionPromptCooldown: TimeInterval = 30.0 // 30 seconds between prompts
+    private var permissionPromptBackoffStep = 0
+    private let permissionPromptBackoffSchedule: [TimeInterval] = [30.0, 60.0, 120.0, 300.0]
 
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
@@ -329,12 +331,14 @@ final class StatusBarController {
     }
 
     @objc private func startMicOnly() {
+        captureRecordingTargetApp()
         mode = .micOnly
         startRecording()
     }
 
     @objc private func startMicPlusApp() {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
+        captureRecordingTargetApp()
         mode = .micPlusAppAudio
 
         // Check screen recording permission
@@ -734,36 +738,50 @@ final class StatusBarController {
             NSLog("[StatusBar] Copying text to clipboard...")
             ClipboardManager.setClipboard(text)
 
+            var message = "Text copied to clipboard"
+
             // Auto-insert if enabled (uses AX SetValue first, then Cmd+V fallback)
-            if autoPasteEnabled {
-                NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
-                let result = AutoInsertManager.insertText(text)
-                NSLog("[StatusBar] Auto-insert result: \(result.description)")
+            if autoPasteEnabled, let self {
+                if self.isRecordingTargetAppStillFrontmost() {
+                    NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
+                    let result = AutoInsertManager.insertText(text)
+                    NSLog("[StatusBar] Auto-insert result: \(result.description)")
 
-                if case .permissionDenied = result {
-                    // CR-03: Throttle permission prompts to avoid spam
-                    let now = Date()
-                    let shouldPrompt: Bool
-                    if let lastPrompt = self?.lastPermissionPromptTime {
-                        let elapsed = now.timeIntervalSince(lastPrompt)
-                        shouldPrompt = elapsed >= (self?.permissionPromptCooldown ?? 30.0)
-                        if !shouldPrompt {
-                            NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago)")
+                    switch result {
+                    case .axSetValueSuccess, .cmdVFallback:
+                        message = "Text pasted"
+                        self.resetPermissionPromptBackoff()
+                    case .permissionDenied:
+                        let now = Date()
+                        let cooldown = self.currentPermissionPromptCooldown()
+                        let shouldPrompt: Bool
+
+                        if let lastPrompt = self.lastPermissionPromptTime {
+                            let elapsed = now.timeIntervalSince(lastPrompt)
+                            shouldPrompt = elapsed >= cooldown
+                            if !shouldPrompt {
+                                NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago, cooldown \(Int(cooldown))s)")
+                            }
+                        } else {
+                            shouldPrompt = true
                         }
-                    } else {
-                        shouldPrompt = true
-                    }
 
-                    if shouldPrompt {
-                        NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
-                        self?.lastPermissionPromptTime = now
-                        Permissions.requestAccessibilityPermission()
+                        if shouldPrompt {
+                            NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
+                            self.recordPermissionPromptShown(at: now)
+                            Permissions.requestAccessibilityPermission()
+                        }
+                    case .failed(let reason):
+                        NSLog("[StatusBar] Auto-insert failed: \(reason)")
+                        self.resetPermissionPromptBackoff()
                     }
+                } else {
+                    NSLog("⚠️ [StatusBar] Frontmost app changed during recording - skipping auto-paste and leaving text on clipboard")
                 }
             }
 
-            // Show notification
-            let message = autoPasteEnabled ? "Text pasted" : "Text copied to clipboard"
+            self?.recordingTargetApp = nil
+
             NSLog("[StatusBar] Showing notification: \(message)")
             self?.showNotification(title: "Transcription Complete", message: message)
         }
@@ -800,12 +818,61 @@ final class StatusBarController {
         }
     }
 
+    private func captureRecordingTargetApp() {
+        recordingTargetApp = NSWorkspace.shared.frontmostApplication
+        NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
+    }
+
+    private func isRecordingTargetAppStillFrontmost() -> Bool {
+        guard let recordingTargetApp else {
+            NSLog("⚠️ [StatusBar] No recording target app captured - skipping auto-paste")
+            return false
+        }
+
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            NSLog("⚠️ [StatusBar] No frontmost app available at transcription end - skipping auto-paste")
+            return false
+        }
+
+        let isSameApp = recordingTargetApp.processIdentifier == frontmostApp.processIdentifier
+        if !isSameApp {
+            NSLog(
+                "⚠️ [StatusBar] Frontmost app changed during recording: \(describeApplication(recordingTargetApp)) -> \(describeApplication(frontmostApp))"
+            )
+        }
+
+        return isSameApp
+    }
+
+    private func describeApplication(_ app: NSRunningApplication?) -> String {
+        guard let app else { return "unknown" }
+        return "\(app.localizedName ?? app.bundleIdentifier ?? "unknown") [pid=\(app.processIdentifier)]"
+    }
+
+    private func currentPermissionPromptCooldown() -> TimeInterval {
+        let index = max(permissionPromptBackoffStep - 1, 0)
+        return permissionPromptBackoffSchedule[min(index, permissionPromptBackoffSchedule.count - 1)]
+    }
+
+    private func recordPermissionPromptShown(at date: Date) {
+        lastPermissionPromptTime = date
+        permissionPromptBackoffStep = min(permissionPromptBackoffStep + 1, permissionPromptBackoffSchedule.count)
+    }
+
+    private func resetPermissionPromptBackoff() {
+        lastPermissionPromptTime = nil
+        permissionPromptBackoffStep = 0
+    }
+
     private func startRecording() {
         startRecording(allowParakeetPrepare: true)
     }
 
     private func startRecording(allowParakeetPrepare: Bool) {
         NSLog("🎬 [StatusBar] startRecording() called")
+        if recordingTargetApp == nil {
+            captureRecordingTargetApp()
+        }
         NSLog("🎬 [StatusBar] Mode: \(mode)")
         if let source = selectedAudioSource {
             NSLog("🎬 [StatusBar] Audio source: \(source.name)")
@@ -889,6 +956,7 @@ final class StatusBarController {
             } catch {
                 NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 await MainActor.run {
+                    self.recordingTargetApp = nil
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
             }
