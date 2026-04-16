@@ -72,6 +72,7 @@ actor PermissionsActor {
     static let shared = PermissionsActor()
 
     private var pollTask: Task<Void, Never>?
+    private var didRequestAccessibilityPromptThisSession = false
 
     private init() {}
 
@@ -100,6 +101,20 @@ actor PermissionsActor {
         return AXIsProcessTrustedWithOptions(options)
     }
 
+    // MARK: - Session State
+
+    func hasRequestedAccessibilityPromptThisSession() -> Bool {
+        didRequestAccessibilityPromptThisSession
+    }
+
+    func markAccessibilityPromptRequestedThisSession() {
+        didRequestAccessibilityPromptThisSession = true
+    }
+
+    private func clearPollTask() {
+        pollTask = nil
+    }
+
     // MARK: - Polling
 
     /// Start polling for accessibility permission grant
@@ -117,9 +132,7 @@ actor PermissionsActor {
         // Cancel any existing poll task
         pollTask?.cancel()
 
-        pollTask = Task { [weak self] in
-            guard let self = self else { return }
-
+        pollTask = Task { [self] in
             let startTime = Date()
             let timeoutDate = startTime.addingTimeInterval(timeout)
 
@@ -130,6 +143,7 @@ actor PermissionsActor {
                     await MainActor.run {
                         onGranted()
                     }
+                    await self.clearPollTask()
                     return
                 }
 
@@ -139,6 +153,7 @@ actor PermissionsActor {
                     await MainActor.run {
                         onTimeout()
                     }
+                    await self.clearPollTask()
                     return
                 }
 
@@ -147,6 +162,7 @@ actor PermissionsActor {
                     try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
                 } catch {
                     // Task was cancelled
+                    await self.clearPollTask()
                     return
                 }
             }

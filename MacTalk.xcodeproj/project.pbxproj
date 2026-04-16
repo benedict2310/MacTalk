@@ -67,6 +67,7 @@
 		DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4F33E65DF8138019C37275 /* RingBufferTests.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3BD2E91B633537326157C2EC /* AVFoundation.framework */; };
+		E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */; };
 		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
 		F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */; };
@@ -98,6 +99,7 @@
 		1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIntegrationTests.swift; sourceTree = "<group>"; };
 		1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Phase4IntegrationTests.swift; sourceTree = "<group>"; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowGate.swift; sourceTree = "<group>"; };
 		3370D324AA3BB2E3D65289F3 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
 		35F50A54ADED08971D0A193F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		392B5C1EE24551C4C7BA55FB /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = SDKROOT; };
@@ -221,6 +223,7 @@
 				CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */,
 				ED043C82B3643877AFAA01CE /* NotificationNames.swift */,
 				E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */,
+				2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */,
 				E56E468FDC7C54B3C1374991 /* PermissionsActor.swift */,
 				F6FBC8D71B4265F28DCEE52A /* RecordingStartGate.swift */,
 			);
@@ -496,6 +499,7 @@
 				93BD41773F100E2B0F8FA5C6 /* ParakeetEngine.swift in Sources */,
 				40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */,
 				31AF70C191CCF991E619649E /* PerformanceMonitor.swift in Sources */,
+				E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */,
 				324D5DEB6A98DBF07FCE11C9 /* Permissions.swift in Sources */,
 				87EAB18B5F16184A8E01746B /* PermissionsActor.swift in Sources */,
 				189620BE107155031013E9B2 /* RecordingStartGate.swift in Sources */,

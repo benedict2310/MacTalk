@@ -83,6 +83,7 @@ final class StatusBarController {
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
     private var micPlusAppMenuItem: NSMenuItem?
+    private var autoPasteMenuItem: NSMenuItem?
     // Use nonisolated(unsafe) because deinit cannot access @MainActor-isolated properties
     private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
 
@@ -279,6 +280,7 @@ final class StatusBarController {
         )
         autoPasteItem.state = autoPaste ? .on : .off
         autoPasteItem.target = self
+        autoPasteMenuItem = autoPasteItem
         menu.addItem(autoPasteItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -337,27 +339,32 @@ final class StatusBarController {
     }
 
     @objc private func startMicOnly() {
-        captureRecordingTargetApp()
         mode = .micOnly
-        startRecording()
+        withMicrophonePermission { [weak self] in
+            guard let self else { return }
+            self.captureRecordingTargetApp()
+            self.startRecording()
+        }
     }
 
     @objc private func startMicPlusApp() {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
-        captureRecordingTargetApp()
         mode = .micPlusAppAudio
 
-        // Check screen recording permission
-        NSLog("🔍 [StatusBar] Checking screen recording permission...")
-        if Permissions.checkScreenRecordingPermission() {
-            NSLog("✅ [StatusBar] Permission granted, showing app picker")
-            showAppPicker()
-        } else {
-            NSLog("❌ [StatusBar] Screen recording permission not granted - requesting...")
-            // Request permission
-            Permissions.requestScreenRecordingPermission()
-            // Show guide to help user enable permission
-            Permissions.ensureScreenRecordingGuide()
+        withMicrophonePermission { [weak self] in
+            guard let self else { return }
+            self.captureRecordingTargetApp()
+
+            // Check screen recording permission
+            NSLog("🔍 [StatusBar] Checking screen recording permission...")
+            if Permissions.checkScreenRecordingPermission() {
+                NSLog("✅ [StatusBar] Permission granted, showing app picker")
+                self.showAppPicker()
+            } else {
+                NSLog("❌ [StatusBar] Screen recording permission not granted")
+                // Show guide to help user enable permission
+                Permissions.ensureScreenRecordingGuide()
+            }
         }
     }
 
@@ -377,12 +384,27 @@ final class StatusBarController {
     }
 
     @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
-        autoPaste.toggle()
-        sender.state = autoPaste ? .on : .off
+        if autoPaste {
+            autoPaste = false
+            sender.state = .off
+            UserDefaults.standard.set(false, forKey: "autoPaste")
+            NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+        } else if Permissions.isAccessibilityTrusted() {
+            autoPaste = true
+            sender.state = .on
+            UserDefaults.standard.set(true, forKey: "autoPaste")
+            NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+        } else {
+            autoPaste = false
+            sender.state = .off
+            Permissions.requestAccessibilityPermission { [weak self, weak sender] in
+                self?.autoPaste = true
+                sender?.state = .on
+                UserDefaults.standard.set(true, forKey: "autoPaste")
+                NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+            }
+        }
 
-        // Save to UserDefaults
-        let defaults = UserDefaults.standard
-        defaults.set(autoPaste, forKey: "autoPaste")
         NSLog("🔧 [MacTalk] Auto-paste setting changed to: \(autoPaste)")
     }
 
@@ -456,19 +478,38 @@ final class StatusBarController {
         }
     }
 
-    @objc private func checkPermissions() {
-        Permissions.ensureMic { micGranted in
-            let alert = NSAlert()
-            alert.messageText = "Permissions Status"
-            alert.informativeText = """
-            Microphone: \(micGranted ? "✅ Granted" : "❌ Denied")
-            Screen Recording: Check System Settings
-            Accessibility: \(Permissions.isAccessibilityTrusted() ? "✅ Granted" : "❌ Denied")
-            """
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+    private func withMicrophonePermission(_ onGranted: @escaping @MainActor () -> Void) {
+        switch PermissionFlowGate.microphoneAction(for: Permissions.microphonePermissionState()) {
+        case .proceed:
+            onGranted()
+        case .requestPermission:
+            Permissions.ensureMic { granted in
+                if granted {
+                    onGranted()
+                } else {
+                    Permissions.showMicrophonePermissionGuidance()
+                }
+            }
+        case .openSettings:
+            Permissions.showMicrophonePermissionGuidance()
         }
+    }
+
+    @objc private func checkPermissions() {
+        let micStatus = Permissions.isMicrophoneAuthorized() ? "✅ Granted" : "❌ Denied"
+        let screenStatus = Permissions.checkScreenRecordingPermission() ? "✅ Granted" : "❌ Denied"
+        let accessibilityStatus = Permissions.isAccessibilityTrusted() ? "✅ Granted" : "❌ Denied"
+
+        let alert = NSAlert()
+        alert.messageText = "Permissions Status"
+        alert.informativeText = """
+        Microphone: \(micStatus)
+        Screen Recording: \(screenStatus)
+        Accessibility: \(accessibilityStatus)
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func showSettings() {
@@ -1387,6 +1428,8 @@ final class StatusBarController {
             NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
             showNotifications = newShowNotifications
         }
+
+        autoPasteMenuItem?.state = autoPaste ? .on : .off
     }
 
     private func invalidatePendingStart() {

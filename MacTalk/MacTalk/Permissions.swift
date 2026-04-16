@@ -5,6 +5,7 @@
 //  System permissions management
 //
 
+import AppKit
 import AVFoundation
 import ScreenCaptureKit
 @preconcurrency import ApplicationServices
@@ -14,40 +15,29 @@ enum Permissions {
     // MARK: - Microphone Permission
 
     static func ensureMic(completion: @escaping @MainActor @Sendable (Bool) -> Void) {
-        #if os(macOS)
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
+        switch microphonePermissionState() {
+        case .granted:
             Task { @MainActor in
+                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
                 completion(true)
             }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 Task { @MainActor in
+                    NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
                     completion(granted)
                 }
             }
-        case .denied, .restricted:
+        case .denied, .restricted, .unknown:
             Task { @MainActor in
-                completion(false)
-            }
-        @unknown default:
-            Task { @MainActor in
+                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
                 completion(false)
             }
         }
-        #else
-        Task { @MainActor in
-            completion(false)
-        }
-        #endif
     }
 
     static func isMicrophoneAuthorized() -> Bool {
-        #if os(macOS)
-        return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        #else
-        return false
-        #endif
+        microphonePermissionState() == .granted
     }
 
     /// Get the current microphone authorization status
@@ -57,6 +47,35 @@ enum Permissions {
         #else
         return .denied
         #endif
+    }
+
+    static func microphonePermissionState() -> MicrophonePermissionState {
+        switch microphoneAuthorizationStatus() {
+        case .authorized:
+            return .granted
+        case .notDetermined:
+            return .notDetermined
+        case .denied:
+            return .denied
+        case .restricted:
+            return .restricted
+        @unknown default:
+            return .unknown
+        }
+    }
+
+    @MainActor
+    static func showMicrophonePermissionGuidance() {
+        let alert = NSAlert()
+        alert.messageText = "Microphone Permission Required"
+        alert.informativeText = "MacTalk needs microphone access before it can start recording. You can enable it in System Settings > Privacy & Security > Microphone."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Microphone Settings")
+        alert.addButton(withTitle: "Not Now")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            openMicrophoneSettings()
+        }
     }
 
     // MARK: - Screen Recording Permission
@@ -110,13 +129,6 @@ enum Permissions {
 
     // MARK: - Accessibility Permission
 
-    /// Trigger the system accessibility prompt
-    /// Note: Uses PermissionsActor for proper memory management
-    @MainActor
-    static func ensureAccessibilityPrompt() {
-        _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
-    }
-
     /// Check if accessibility permission is trusted
     /// Routes through PermissionsActor for thread-safe access
     static func isAccessibilityTrusted() -> Bool {
@@ -138,57 +150,83 @@ enum Permissions {
     }
 
     @MainActor
-    static func requestAccessibilityPermission() {
+    static func requestAccessibilityPermission(
+        onGranted: (@MainActor @Sendable () -> Void)? = nil
+    ) {
         NSLog("[Permissions] Requesting accessibility permission from user...")
 
-        let alert = NSAlert()
-        alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = """
-        To enable auto-paste functionality, MacTalk needs Accessibility permission.
-
-        Steps:
-        1. Open System Settings
-        2. Go to Privacy & Security > Accessibility
-        3. Enable MacTalk
-
-        Permission will take effect immediately - no restart needed.
-
-        Would you like to open System Settings now?
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Cancel")
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            NSLog("[Permissions] User chose to open System Settings")
-            // Trigger the system prompt first
-            _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
-            openAccessibilitySettings()
-        } else {
-            NSLog("[Permissions] User cancelled permission request")
+        if isAccessibilityTrusted() {
+            NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
+            onGranted?()
+            return
         }
+
+        Task { @MainActor in
+            let isTrusted = PermissionsActor.shared.isAccessibilityTrusted()
+            let hasRequestedThisSession = await PermissionsActor.shared.hasRequestedAccessibilityPromptThisSession()
+            let action = PermissionFlowGate.accessibilityAction(
+                isTrusted: isTrusted,
+                hasRequestedThisSession: hasRequestedThisSession
+            )
+
+            switch action {
+            case .none:
+                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
+                onGranted?()
+            case .showSystemPrompt:
+                await PermissionsActor.shared.markAccessibilityPromptRequestedThisSession()
+                _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
+                await startAccessibilityPolling(onGranted: onGranted)
+            case .openSettings:
+                let alert = NSAlert()
+                alert.messageText = "Accessibility Permission Required"
+                alert.informativeText = "Enable MacTalk in System Settings > Privacy & Security > Accessibility to allow auto-paste."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Open Accessibility Settings")
+                alert.addButton(withTitle: "Not Now")
+
+                if alert.runModal() == .alertFirstButtonReturn {
+                    openAccessibilitySettings()
+                    await startAccessibilityPolling(onGranted: onGranted)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func startAccessibilityPolling(
+        onGranted: (@MainActor @Sendable () -> Void)?
+    ) async {
+        await PermissionsActor.shared.startPollingForGrant(
+            onGranted: {
+                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
+                onGranted?()
+            },
+            onTimeout: {
+                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
+            }
+        )
     }
 
     // MARK: - System Settings
 
     @MainActor
     static func openMicrophoneSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
         }
     }
 
     @MainActor
     static func openScreenRecordingSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
     }
 
     @MainActor
     static func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -205,11 +243,11 @@ enum Permissions {
     }
 
     static func getPermissionStatus(completion: @escaping @MainActor (PermissionStatus) -> Void) {
-        ensureMic { micGranted in
-            let status = PermissionStatus(
-                microphone: micGranted,
-                accessibility: isAccessibilityTrusted()
-            )
+        let status = PermissionStatus(
+            microphone: isMicrophoneAuthorized(),
+            accessibility: isAccessibilityTrusted()
+        )
+        Task { @MainActor in
             completion(status)
         }
     }

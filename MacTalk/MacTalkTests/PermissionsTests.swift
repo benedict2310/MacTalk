@@ -100,21 +100,21 @@ final class PermissionsTests: XCTestCase {
 
     func testMicrophoneSettingsURL() {
         // Verify microphone settings URL is valid
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone")
         XCTAssertNotNil(url)
         NSLog("🔗 [Test] Microphone settings URL: \(url?.absoluteString ?? "nil")")
     }
 
     func testScreenRecordingSettingsURL() {
         // Verify screen recording settings URL is valid
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture")
         XCTAssertNotNil(url)
         NSLog("🔗 [Test] Screen recording settings URL: \(url?.absoluteString ?? "nil")")
     }
 
     func testAccessibilitySettingsURL() {
         // Verify accessibility settings URL is valid
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility")
         XCTAssertNotNil(url)
         NSLog("🔗 [Test] Accessibility settings URL: \(url?.absoluteString ?? "nil")")
     }
@@ -333,7 +333,13 @@ final class PermissionsTests: XCTestCase {
         NSLog("[Test] Polling test completed")
     }
 
-    func testPermissionsActorPollingCanStop() async {
+    func testPermissionsActorPollingCanStop() async throws {
+        // If accessibility is already trusted, polling may fire onGranted immediately.
+        try XCTSkipIf(
+            PermissionsActor.shared.isAccessibilityTrusted(),
+            "Polling stop test requires accessibility to be untrusted."
+        )
+
         // Test that polling can be stopped
         await PermissionsActor.shared.startPollingForGrant(
             timeout: 60,

@@ -59,15 +59,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSLog("🚀 [MacTalk] StatusBarController.show() completed")
         DLOG("=== applicationDidFinishLaunching END ===")
-
-        // Request microphone permission on first launch
-        Permissions.ensureMic { [weak self] granted in
-            if !granted {
-                Task { @MainActor in
-                    self?.showPermissionAlert(type: "Microphone")
-                }
-            }
-        }
     }
 
     private func isRunningTests() -> Bool {
@@ -87,18 +78,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func showPermissionAlert(type: String) {
-        let alert = NSAlert()
-        alert.messageText = "\(type) Permission Required"
-        alert.informativeText = "MacTalk needs \(type) access to function. Please grant permission in System Settings > Privacy & Security > \(type)."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Quit")
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
-        } else {
-            NSApp.terminate(nil)
-        }
-    }
 }

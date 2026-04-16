@@ -13,7 +13,7 @@ import Carbon
 
 @available(macOS 26.4, *)
 struct SettingsContentView: View {
-    @StateObject private var vm = SettingsViewModel()
+    @ObservedObject var vm: SettingsViewModel
 
     var body: some View {
         TabView {
@@ -84,6 +84,7 @@ final class SettingsViewModel: ObservableObject {
 
         refreshPermissions()
         observeEngine()
+        observePermissions()
     }
 
     deinit {
@@ -102,6 +103,31 @@ final class SettingsViewModel: ObservableObject {
         d.set(modelIndex, forKey: "modelIndex")
         d.set(languageIndex, forKey: "languageIndex")
         NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+    }
+
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        guard enabled else {
+            autoPaste = false
+            save()
+            refreshPermissions()
+            return
+        }
+
+        guard Permissions.isAccessibilityTrusted() else {
+            autoPaste = false
+            save()
+            Permissions.requestAccessibilityPermission { [weak self] in
+                self?.autoPaste = true
+                self?.save()
+                self?.refreshPermissions()
+            }
+            refreshPermissions()
+            return
+        }
+
+        autoPaste = true
+        save()
+        refreshPermissions()
     }
 
     func applyDockPolicy() {
@@ -160,6 +186,14 @@ final class SettingsViewModel: ObservableObject {
         engineState = ParakeetBootstrap.shared.currentState()
     }
 
+    private func observePermissions() {
+        tokens.append(NotificationCenter.default.addObserver(
+            forName: .permissionsDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshPermissions()
+        })
+    }
+
     // MARK: - Shortcuts
 
     static func loadShortcut(forKey key: String) -> KeyboardShortcut? {
@@ -200,7 +234,7 @@ private struct OutputTab: View {
     var body: some View {
         Form {
             Toggle("Auto-paste Transcript on Stop", isOn: $vm.autoPaste)
-                .onChange(of: vm.autoPaste) { vm.save() }
+                .onChange(of: vm.autoPaste) { vm.setAutoPasteEnabled(vm.autoPaste) }
             Text("Transcript is always copied to clipboard. Enable auto-paste to automatically paste it.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -372,10 +406,11 @@ private struct PermissionsTab: View {
 
             Section {
                 Button("Refresh") { vm.refreshPermissions() }
+                Button("Open Microphone Settings") {
+                    Permissions.openMicrophoneSettings()
+                }
                 Button("Open Accessibility Settings") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility") {
-                        NSWorkspace.shared.open(url)
-                    }
+                    Permissions.openAccessibilitySettings()
                 }
             }
 
@@ -409,6 +444,7 @@ private struct PermissionsTab: View {
 @MainActor
 final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
+    private let viewModel = SettingsViewModel()
     private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
 
     init() {
@@ -425,11 +461,19 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
         super.init(window: window)
 
         if #available(macOS 26.4, *) {
-            let host = NSHostingView(rootView: SettingsContentView())
+            let host = NSHostingView(rootView: SettingsContentView(vm: viewModel))
             host.frame = window.contentView!.bounds
             host.autoresizingMask = [.width, .height]
             window.contentView?.addSubview(host)
         }
+
+        notificationTokens.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.viewModel.refreshPermissions()
+        })
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
