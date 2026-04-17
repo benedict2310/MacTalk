@@ -84,6 +84,23 @@ final class AppPickerWindowController: NSWindowController {
             host.frame = window.contentView!.bounds
             host.autoresizingMask = [.width, .height]
             window.contentView?.addSubview(host)
+        } else {
+            let state = PickerState(sources: allSources)
+            let host = NSHostingView(
+                rootView: LegacyPickerContentView(
+                    state: state,
+                    onSelect: { [weak self] source in
+                        self?.onSelection?(source)
+                        self?.close()
+                    },
+                    onCancel: { [weak self] in
+                        self?.close()
+                    }
+                )
+            )
+            host.frame = window.contentView!.bounds
+            host.autoresizingMask = [.width, .height]
+            window.contentView?.addSubview(host)
         }
     }
 
@@ -170,6 +187,51 @@ private struct PickerContentView: View {
                 .buttonStyle(.glass)
             }
             .padding(12)
+        }
+        .frame(minWidth: 420, minHeight: 340)
+    }
+}
+
+private struct LegacyPickerContentView: View {
+    @ObservedObject var state: PickerState
+    var onSelect: (AppPickerWindowController.AudioSource) -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Filter apps…", text: $state.searchText)
+                    .textFieldStyle(.roundedBorder)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+
+            List(state.filtered, selection: $state.selectionID) { entry in
+                HStack(spacing: 10) {
+                    Image(nsImage: entry.icon)
+                        .resizable()
+                        .frame(width: 28, height: 28)
+                    Text(entry.name)
+                        .lineLimit(1)
+                }
+                .tag(entry.id)
+                .padding(.vertical, 2)
+            }
+            .padding(.horizontal, 12)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Select") {
+                    if let src = state.selectedSource { onSelect(src) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(state.selectedSource == nil)
+            }
+            .padding([.horizontal, .bottom], 12)
         }
         .frame(minWidth: 420, minHeight: 340)
     }

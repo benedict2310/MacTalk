@@ -287,6 +287,103 @@ private struct HUDContentView: View {
     }
 }
 
+private struct LegacyHUDLevelBarsView: View {
+    let levels: [CGFloat]
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(Color.white.opacity(0.8))
+                    .frame(width: 3, height: 3 + (min(max(level, 0), 1) * 10))
+            }
+        }
+        .frame(height: 14, alignment: .bottom)
+    }
+}
+
+private struct LegacyHUDContentView: View {
+    @ObservedObject var state: HUDState
+    let onStop: @MainActor @Sendable () -> Void
+
+    @State private var currentDate = Date()
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let phase = state.layoutPhase
+
+        Group {
+            switch phase {
+            case .compact, .expanded:
+                liveContent(for: phase)
+            case .copied:
+                copiedContent
+            }
+        }
+        .frame(width: phase.preferredSize.width, height: phase.preferredSize.height, alignment: .leading)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1))
+        .clipShape(Capsule())
+        .contentShape(Capsule())
+        .onHover { hovering in
+            state.setHovering(hovering)
+        }
+        .onReceive(timer) { date in
+            currentDate = date
+        }
+    }
+
+    @ViewBuilder
+    private func liveContent(for phase: HUDLayoutPhase) -> some View {
+        HStack(spacing: phase == .expanded ? 10 : 8) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.red)
+
+            LegacyHUDLevelBarsView(levels: state.barLevels)
+
+            Text(elapsedString(from: state.startDate, now: currentDate))
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+
+            if phase == .expanded {
+                Text(state.transcriptText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .foregroundColor(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button("Stop", action: onStop)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, phase == .expanded ? 14 : 12)
+        .padding(.vertical, phase == .expanded ? 9 : 8)
+    }
+
+    private var copiedContent: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+            Text("Copied")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private func elapsedString(from startDate: Date, now: Date) -> String {
+        let elapsed = max(0, Int(now.timeIntervalSince(startDate)))
+        let minutes = elapsed / 60
+        let seconds = elapsed % 60
+        let secondsText = seconds < 10 ? "0\(seconds)" : "\(seconds)"
+        return "\(minutes):\(secondsText)"
+    }
+}
+
 // MARK: - Window Controller
 
 @MainActor
@@ -407,6 +504,17 @@ final class HUDWindowController: NSWindowController {
         if #available(macOS 26.4, *) {
             let hostView = NSHostingView(
                 rootView: HUDContentView(state: hudState) { [weak self] in
+                    self?.onStop?()
+                }
+            )
+            hostView.frame = containerView.bounds
+            hostView.autoresizingMask = [.width, .height]
+            hostView.wantsLayer = true
+            hostView.layer?.backgroundColor = NSColor.clear.cgColor
+            containerView.addSubview(hostView)
+        } else {
+            let hostView = NSHostingView(
+                rootView: LegacyHUDContentView(state: hudState) { [weak self] in
                     self?.onStop?()
                 }
             )

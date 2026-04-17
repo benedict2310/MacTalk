@@ -439,6 +439,116 @@ private struct PermissionsTab: View {
     }
 }
 
+private struct LegacySettingsContentView: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    private let modes = ["Mic Only", "Mic + App Audio"]
+    private let providers = ASRProvider.allCases.map(\.displayName)
+    private let models = [
+        "tiny (75 MB, fastest)",
+        "base (140 MB, very fast)",
+        "small (460 MB, balanced)",
+        "medium (1.4 GB, accurate)",
+        "large-v3-turbo (2.8 GB, best)"
+    ]
+    private let languages = [
+        "Auto-detect", "English", "Spanish", "French", "German",
+        "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"
+    ]
+
+    var body: some View {
+        TabView {
+            Form {
+                Toggle("Show in Dock", isOn: $vm.showInDock)
+                    .onChange(of: vm.showInDock) {
+                        vm.applyDockPolicy()
+                        vm.save()
+                    }
+                Toggle("Show notifications", isOn: $vm.showNotifications)
+                    .onChange(of: vm.showNotifications) { vm.save() }
+                Toggle("Auto-paste on Stop", isOn: Binding(
+                    get: { vm.autoPaste },
+                    set: { vm.setAutoPasteEnabled($0) }
+                ))
+            }
+            .padding(12)
+            .tabItem { Label("General", systemImage: "gearshape") }
+
+            Form {
+                Picker("Default Mode", selection: $vm.defaultModeIndex) {
+                    ForEach(0..<modes.count, id: \.self) { Text(modes[$0]) }
+                }
+                .onChange(of: vm.defaultModeIndex) { vm.save() }
+
+                Picker("Provider", selection: $vm.providerIndex) {
+                    ForEach(0..<providers.count, id: \.self) { Text(providers[$0]) }
+                }
+                .onChange(of: vm.providerIndex) { vm.setProvider(vm.providerIndex) }
+
+                Picker("Model", selection: $vm.modelIndex) {
+                    ForEach(0..<models.count, id: \.self) { Text(models[$0]) }
+                }
+                .onChange(of: vm.modelIndex) { vm.save() }
+
+                Picker("Language", selection: $vm.languageIndex) {
+                    ForEach(0..<languages.count, id: \.self) { Text(languages[$0]) }
+                }
+                .onChange(of: vm.languageIndex) { vm.save() }
+            }
+            .padding(12)
+            .tabItem { Label("Audio", systemImage: "waveform") }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Current shortcuts")
+                    .font(.headline)
+                Text("Start Mic-Only: \(vm.startMicOnlyShortcut?.displayString ?? "⌥Space")")
+                Text("Start Mic + App: \(vm.startMicPlusAppShortcut?.displayString ?? "⌃⌥Space")")
+                Text("Shortcut editing uses the newer settings UI on macOS 26.4+.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(16)
+            .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+
+            VStack(alignment: .leading, spacing: 12) {
+                permissionRow("Microphone", status: vm.micStatus)
+                permissionRow("Screen Recording", status: vm.screenStatus)
+                permissionRow("Accessibility", status: vm.accessibilityStatus)
+
+                HStack {
+                    Button("Refresh") { vm.refreshPermissions() }
+                    Button("Microphone Settings") { Permissions.openMicrophoneSettings() }
+                    Button("Accessibility Settings") { Permissions.openAccessibilitySettings() }
+                }
+                Spacer()
+            }
+            .padding(16)
+            .tabItem { Label("Permissions", systemImage: "lock.shield") }
+        }
+        .frame(width: 480, height: 360)
+    }
+
+    @ViewBuilder
+    private func permissionRow(_ name: String, status: SettingsViewModel.PermissionState) -> some View {
+        HStack {
+            Text(name)
+            Spacer()
+            Text(status.rawValue)
+                .foregroundColor(colorForStatus(status))
+        }
+    }
+
+    private func colorForStatus(_ status: SettingsViewModel.PermissionState) -> Color {
+        switch status {
+        case .granted: .green
+        case .denied: .red
+        case .notGranted, .notAsked: .orange
+        case .checking: .secondary
+        }
+    }
+}
+
 // MARK: - Window Controller (thin shell)
 
 @MainActor
@@ -462,6 +572,11 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
 
         if #available(macOS 26.4, *) {
             let host = NSHostingView(rootView: SettingsContentView(vm: viewModel))
+            host.frame = window.contentView!.bounds
+            host.autoresizingMask = [.width, .height]
+            window.contentView?.addSubview(host)
+        } else {
+            let host = NSHostingView(rootView: LegacySettingsContentView(vm: viewModel))
             host.frame = window.contentView!.bounds
             host.autoresizingMask = [.width, .height]
             window.contentView?.addSubview(host)

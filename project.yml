@@ -2,13 +2,13 @@ name: MacTalk
 options:
   bundleIdPrefix: com.mactalk
   deploymentTarget:
-    macOS: "26.4"
+    macOS: "26.0"
   developmentLanguage: en
 
 settings:
   SWIFT_VERSION: "6.0"
   SWIFT_STRICT_CONCURRENCY: complete
-  MACOSX_DEPLOYMENT_TARGET: "26.4"
+  MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 packages:
   FluidAudio:
@@ -63,6 +63,7 @@ targets:
       ENABLE_HARDENED_RUNTIME: NO
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
+      CODE_SIGN_ENTITLEMENTS: MacTalk/MacTalk/MacTalk.entitlements
       GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - sdk: Accelerate.framework
@@ -147,8 +148,9 @@ targets:
           done
 
           # Re-sign the app bundle with deep option using same certificate
+          # Preserve entitlements so release signing can request microphone/accessibility correctly.
           echo "🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY"
-          codesign --force --deep --sign "$SIGNING_IDENTITY" "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
+          codesign --force --deep --sign "$SIGNING_IDENTITY" --preserve-metadata=entitlements "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
 
           echo "✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY"
 

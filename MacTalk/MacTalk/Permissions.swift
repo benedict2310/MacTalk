@@ -12,6 +12,16 @@ import ScreenCaptureKit
 import CoreGraphics
 
 enum Permissions {
+    private static func configureAlertIcon(_ alert: NSAlert) {
+        if let appIcon = NSApp.applicationIconImage {
+            alert.icon = appIcon
+            return
+        }
+
+        let bundleIcon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+        alert.icon = bundleIcon
+    }
+
     // MARK: - Microphone Permission
 
     static func ensureMic(completion: @escaping @MainActor @Sendable (Bool) -> Void) {
@@ -67,6 +77,7 @@ enum Permissions {
     @MainActor
     static func showMicrophonePermissionGuidance() {
         let alert = NSAlert()
+        configureAlertIcon(alert)
         alert.messageText = "Microphone Permission Required"
         alert.informativeText = "MacTalk needs microphone access before it can start recording. You can enable it in System Settings > Privacy & Security > Microphone."
         alert.alertStyle = .informational
@@ -102,6 +113,7 @@ enum Permissions {
     static func ensureScreenRecordingGuide() {
         NSLog("[Permissions] ensureScreenRecordingGuide() called - showing permission guide dialog")
         let alert = NSAlert()
+        configureAlertIcon(alert)
         alert.messageText = "Screen Recording Permission Required"
         alert.informativeText = """
         To capture app audio (Mic + App mode), MacTalk needs Screen Recording permission.
@@ -179,6 +191,7 @@ enum Permissions {
                 await startAccessibilityPolling(onGranted: onGranted)
             case .openSettings:
                 let alert = NSAlert()
+                configureAlertIcon(alert)
                 alert.messageText = "Accessibility Permission Required"
                 alert.informativeText = "Enable MacTalk in System Settings > Privacy & Security > Accessibility to allow auto-paste."
                 alert.alertStyle = .informational

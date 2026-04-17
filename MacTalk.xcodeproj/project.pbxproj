@@ -465,7 +465,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "#!/bin/bash\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n# IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds\n\n# Get the code signing identity from Xcode build settings\nSIGNING_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-Apple Development}\"\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY\"\n\n# Re-sign all dylibs in Frameworks with same certificate as app\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    codesign --force --sign \"$SIGNING_IDENTITY\" \"$lib\" 2>&1 | grep -v \"replacing existing signature\" || true\n    echo \"   ✅ Signed: $(basename $lib)\"\n  fi\ndone\n\n# Re-sign the app bundle with deep option using same certificate\necho \"🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY\"\ncodesign --force --deep --sign \"$SIGNING_IDENTITY\" \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" 2>&1 | grep -v \"replacing existing signature\" || true\n\necho \"✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY\"\n";
+			shellScript = "#!/bin/bash\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n# IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds\n\n# Get the code signing identity from Xcode build settings\nSIGNING_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-Apple Development}\"\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY\"\n\n# Re-sign all dylibs in Frameworks with same certificate as app\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    codesign --force --sign \"$SIGNING_IDENTITY\" \"$lib\" 2>&1 | grep -v \"replacing existing signature\" || true\n    echo \"   ✅ Signed: $(basename $lib)\"\n  fi\ndone\n\n# Re-sign the app bundle with deep option using same certificate\n# Preserve entitlements so release signing can request microphone/accessibility correctly.\necho \"🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY\"\ncodesign --force --deep --sign \"$SIGNING_IDENTITY\" --preserve-metadata=entitlements \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" 2>&1 | grep -v \"replacing existing signature\" || true\n\necho \"✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -575,6 +575,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacTalk/MacTalk/MacTalk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = 9SXL4GJ4TZ;
@@ -661,7 +662,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -719,7 +720,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -735,6 +736,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacTalk/MacTalk/MacTalk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = 9SXL4GJ4TZ;

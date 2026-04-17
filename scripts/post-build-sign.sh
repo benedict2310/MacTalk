@@ -30,9 +30,10 @@ for lib in *.dylib; do
     fi
 done
 
-# Re-sign the app bundle
+# Re-sign the app bundle while preserving entitlements
+# so runtime/TCC-sensitive permissions survive the re-sign step.
 echo "🔐 [Post-Build] Re-signing app bundle..."
 cd - > /dev/null
-codesign --force --deep --sign - "$APP_PATH" 2>&1 | grep -v "replacing existing signature" || true
+codesign --force --deep --sign - --preserve-metadata=entitlements "$APP_PATH" 2>&1 | grep -v "replacing existing signature" || true
 
 echo "✅ [Post-Build] Code signing complete!"

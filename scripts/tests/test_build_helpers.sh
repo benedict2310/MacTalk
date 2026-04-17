@@ -25,4 +25,29 @@ if resolve_latest_mactalk_app_path "$tmpdir/DerivedData/missing" Release >/tmp/b
   exit 1
 fi
 
+fake_app="$tmpdir/Fake.app"
+mkdir -p "$fake_app/Contents/MacOS"
+cat >"$fake_app/Contents/MacOS/MacTalk" <<'SH'
+#!/bin/bash
+exit 99
+SH
+chmod +x "$fake_app/Contents/MacOS/MacTalk"
+
+mkdir -p "$tmpdir/fakebin"
+cat >"$tmpdir/fakebin/open" <<'SH'
+#!/bin/bash
+exit 1
+SH
+chmod +x "$tmpdir/fakebin/open"
+
+if PATH="$tmpdir/fakebin:$PATH" launch_mactalk_app "$fake_app" >/tmp/build-helper-launch-out.txt 2>/tmp/build-helper-launch-err.txt; then
+  echo "expected launch helper to fail when open fails" >&2
+  exit 1
+fi
+
+if ! grep -q 'refusing to launch the inner binary directly' /tmp/build-helper-launch-err.txt; then
+  echo "expected launch helper to explain why direct binary launch is refused" >&2
+  exit 1
+fi
+
 echo "build helper tests passed"

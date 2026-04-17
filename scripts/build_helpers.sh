@@ -32,17 +32,12 @@ PY
 launch_mactalk_app() {
   local app_path="$1"
   local log_path="${2:-/tmp/mactalk-launch.log}"
-  local binary_path="$app_path/Contents/MacOS/MacTalk"
 
-  if open -n "$app_path"; then
+  if open -na "$app_path"; then
     return 0
   fi
 
-  if [ ! -x "$binary_path" ]; then
-    echo "MacTalk binary not found at $binary_path" >&2
-    return 1
-  fi
-
-  echo "open failed; launching binary directly (log: $log_path)" >&2
-  "$binary_path" >"$log_path" 2>&1 &
+  echo "open failed for app bundle: $app_path" >&2
+  echo "refusing to launch the inner binary directly because that bypasses normal app-bundle behavior (icons, LaunchServices, TCC registration). See $log_path for caller logs." >&2
+  return 1
 }
