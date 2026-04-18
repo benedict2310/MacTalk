@@ -6,11 +6,13 @@
 
 > A native macOS app for local voice transcription powered by Whisper and Parakeet
 
-[![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)](https://www.apple.com/macos/)
+[![macOS](https://img.shields.io/badge/macOS-26.0+-blue.svg)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time. Choose between Whisper for accuracy or Parakeet for blazing-fast, real-time streaming transcription. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
+
+The current signed release is notarized, launches correctly on macOS 26.2+, and includes improved first-run permission handling for microphone and auto-paste.
 
 ---
 
@@ -25,6 +27,7 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 - **Menu Bar App** - Lightweight, always accessible
 - **Multiple Models** - Choose from tiny (fast) to large (accurate)
 - **Auto-Paste** - Transcripts copied to clipboard and optionally pasted
+- **Signed & Notarized Releases** - Ready-to-install DMG builds with working permissions on supported macOS 26 releases
 - **Customizable Hotkeys** - Configure your own keyboard shortcuts for hands-free control
 
 ---
@@ -36,16 +39,20 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 *Menu bar dropdown with recording modes, settings, and quick controls. Keyboard shortcuts for all major actions.*
 
-### Recording in Action
-![Recording HUD](docs/screenshots/recording.png)
+### Recording HUD
+![Recording HUD Compact](docs/screenshots/recording-compact.png)
 
-*Live HUD overlay during transcription showing real-time waveform visualization and audio levels.*
+*Compact HUD while recording, with elapsed time and live activity indicator.*
+
+![Recording HUD Expanded](docs/screenshots/recording.png)
+
+*Expanded HUD during transcription with partial text preview and one-click stop control.*
 
 ---
 
 ## Requirements
 
-- macOS 14.0 (Sonoma) or later
+- macOS 26.0 or later
 - Apple Silicon (M1 or newer) recommended
 - 8 GB RAM minimum
 
@@ -55,11 +62,14 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 ### Download Release
 
-1. Download `MacTalk-v1.1.0.dmg` from [Releases](https://github.com/benedict2310/MacTalk/releases)
+1. Download `MacTalk-1.1.3.dmg` from [Releases](https://github.com/benedict2310/MacTalk/releases)
 2. Open the DMG and drag `MacTalk.app` to your Applications folder
-3. Right-click and select "Open" (first launch only)
-4. Grant permissions when prompted (Microphone, Screen Recording, Accessibility)
-5. Select a model to download (recommended: small)
+3. Right-click and select "Open" the first time you launch it
+4. Grant permissions when prompted:
+   - **Microphone** when you start recording
+   - **Screen Recording** when you use Mic + App Audio
+   - **Accessibility** only if you enable auto-paste
+5. Select a model to download (recommended: Whisper `small` or Parakeet for live streaming)
 
 ### Build from Source
 

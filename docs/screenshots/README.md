@@ -12,10 +12,16 @@ This folder contains screenshots of the MacTalk application.
   - Use for: Documentation, README, tutorials
 
 ### Recording HUD
-- **`recording.png`** - HUD overlay during active recording
-  - Real-time waveform visualization
-  - Audio level indicator
+- **`recording-compact.png`** - Compact HUD during active recording
+  - Elapsed time
+  - Live activity indicator
+  - Minimal footprint for dictation
+  - Use for: README, release notes, quick-start docs
+
+- **`recording.png`** - Expanded HUD during active recording
+  - Partial transcript preview
   - Stop button control
+  - Updated Liquid Glass styling
   - Use for: Feature demonstrations, README
 
 ## Taking New Screenshots
@@ -47,8 +53,10 @@ Current usage in main README.md:
 ### Menu Bar Interface
 ![MacTalk Menu](docs/screenshots/menu.png)
 
-### Recording in Action
-![Recording HUD](docs/screenshots/recording.png)
+### Recording HUD
+![Recording HUD Compact](docs/screenshots/recording-compact.png)
+
+![Recording HUD Expanded](docs/screenshots/recording.png)
 ```
 
 ## License
