@@ -14,6 +14,8 @@ MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-t
 
 The current signed release is notarized, launches correctly on macOS 26.2+, and includes improved first-run permission handling for microphone and auto-paste.
 
+> 📝 **Read the full story:** [MacTalk Was My ASR Playground — and It Led to Ora](https://futurelab.studio/blog/mactalk-led-to-ora/) · [Project page on Futurelab Studio](https://futurelab.studio/mactalk/)
+
 ---
 
 ## Features
