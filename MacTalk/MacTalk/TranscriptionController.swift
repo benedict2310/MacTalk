@@ -13,15 +13,45 @@ import os
 
 enum TranscriptCleaner {
     private static let leadingArtifactCharacters = CharacterSet(charactersIn: ".,;:!?…·-–—")
+    private static let fillerPattern = #"\b(?:um+|uh+|erm+|er+|hmm+|hm+)\b[,;:]*"#
 
     static func clean(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        result = stripLeadingArtifacts(from: result)
+        result = removeFillerWords(from: result)
+        result = stripLeadingArtifacts(from: result)
+        result = normalizeSpacing(in: result)
+        result = capitalizeSentenceStarts(in: result)
 
+        // Ensure ends with punctuation
+        let punctuation: Set<Character> = [".", "!", "?"]
+        if let last = result.last, !punctuation.contains(last) {
+            result += "."
+        }
+
+        return result
+    }
+
+    private static func stripLeadingArtifacts(from text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         while let firstScalar = result.unicodeScalars.first,
               leadingArtifactCharacters.contains(firstScalar) {
             result.removeFirst()
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        return result
+    }
+
+    private static func removeFillerWords(from text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: fillerPattern, options: [.caseInsensitive]) else {
+            return text
+        }
+        let range = NSRange(location: 0, length: text.utf16.count)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+    }
+
+    private static func normalizeSpacing(in text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Remove duplicate spaces
         while result.contains("  ") {
@@ -34,17 +64,27 @@ enum TranscriptCleaner {
             result = result.replacingOccurrences(of: artifact, with: replacement)
         }
 
-        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-        // Capitalize first letter
-        if let first = result.first {
-            result = first.uppercased() + result.dropFirst()
-        }
+    private static func capitalizeSentenceStarts(in text: String) -> String {
+        var result = ""
+        var shouldCapitalizeNextLetter = true
 
-        // Ensure ends with punctuation
-        let punctuation: Set<Character> = [".", "!", "?"]
-        if let last = result.last, !punctuation.contains(last) {
-            result += "."
+        for character in text {
+            if shouldCapitalizeNextLetter, character.isLetter {
+                result += character.uppercased()
+                shouldCapitalizeNextLetter = false
+                continue
+            }
+
+            result.append(character)
+
+            if character == "." || character == "!" || character == "?" {
+                shouldCapitalizeNextLetter = true
+            } else if !character.isWhitespace && character.isLetter {
+                shouldCapitalizeNextLetter = false
+            }
         }
 
         return result

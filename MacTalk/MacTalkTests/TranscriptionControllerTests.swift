@@ -101,7 +101,7 @@ final class TranscriptionControllerTests: XCTestCase {
         )
         XCTAssertEqual(
             TranscriptCleaner.clean(", uh this started with a comma"),
-            "Uh this started with a comma."
+            "This started with a comma."
         )
     }
 
@@ -124,6 +124,31 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(
             TranscriptCleaner.clean("is this done?"),
             "Is this done?"
+        )
+    }
+
+    func testTranscriptCleanerRemovesCommonFillerWords() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean("Okay, let's give this um a quick test. Uh and I'm specifically putting a lot of um thinking into this."),
+            "Okay, let's give this a quick test. And I'm specifically putting a lot of thinking into this."
+        )
+        XCTAssertEqual(
+            TranscriptCleaner.clean("Um, this starts with filler. Hmm, this also has hesitation."),
+            "This starts with filler. This also has hesitation."
+        )
+    }
+
+    func testTranscriptCleanerDoesNotRemoveFillerSubstringsInsideWords() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean("The summary number is important."),
+            "The summary number is important."
+        )
+    }
+
+    func testTranscriptCleanerCapitalizesSentenceStartsAfterFillerRemoval() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean("this is first. uh this should be capitalized. um this too"),
+            "This is first. This should be capitalized. This too."
         )
     }
 
