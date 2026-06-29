@@ -121,6 +121,8 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Control
 
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
+        DLOG("Transcription start requested: mode=\(mode)")
+
         // Clear previous state
         audioState.withLock { state in
             state.audioChunk.removeAll()
@@ -140,6 +142,7 @@ final class TranscriptionController: @unchecked Sendable {
             self?.processAudioBuffer(buffer)
         }
         try micCapture.start()
+        DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
         // Set up app audio capture if needed (also starts immediately)
@@ -164,6 +167,7 @@ final class TranscriptionController: @unchecked Sendable {
         try await engine.prepare()
         await engine.reset()
 
+        DLOG("Engine prepared/reset; transcription fully started in mode=\(mode)")
         print("Transcription started in mode: \(mode)")
     }
 
@@ -189,6 +193,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     func stop() {
+        DLOG("Transcription stop requested")
         micCapture.stop()
         screenCapture.stop()
 
@@ -312,6 +317,7 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
 
+        DLOG("Processing chunk: samples=\(chunkSamples.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing chunk with RMS: \(String(format: "%.4f", rms))")
 
         // Transcribe chunk on background queue with performance monitoring
@@ -377,6 +383,7 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
 
+        DLOG("Processing final transcription with ALL audio: samples=\(snapshot.audio.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing final transcription with ALL audio: \(snapshot.audio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
         // Transcribe complete audio recording
@@ -388,6 +395,7 @@ final class TranscriptionController: @unchecked Sendable {
             if let finalSegment {
                 let trimmedText = finalSegment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
+                    DLOG("Final transcription result: \(trimmedText.prefix(120))")
                     audioState.withLock { state in
                         guard state.sessionID == sessionID else { return }
                         state.fullTranscript = [trimmedText]

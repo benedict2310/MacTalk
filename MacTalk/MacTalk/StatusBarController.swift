@@ -1000,10 +1000,19 @@ final class StatusBarController {
             return
         }
 
+        let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false
+        if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
+            let immediateEngine = parakeetEngine ?? ParakeetEngine()
+            parakeetEngine = immediateEngine
+            engine = immediateEngine
+            DLOG("Created Parakeet engine immediately so microphone capture can start before model preparation finishes")
+            NSLog("✅ [StatusBar] Created Parakeet engine immediately; preparation will happen after mic capture starts")
+        }
+
         let preparationDecision = RecordingStartGate.decision(
             provider: provider,
             engineProvider: engine?.provider,
-            modelsAvailable: provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false,
+            modelsAvailable: parakeetModelsAvailable,
             allowParakeetPrepare: allowParakeetPrepare,
             isPreparingParakeetEngine: isParakeetPreparationInFlight
         )
