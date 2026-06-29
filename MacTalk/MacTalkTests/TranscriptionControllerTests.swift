@@ -90,6 +90,43 @@ final class TranscriptionControllerTests: XCTestCase {
 
     // MARK: - Text Post-Processing Tests (cleanTranscript)
 
+    func testTranscriptCleanerStripsLeadingPunctuationArtifacts() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean(". this is a test"),
+            "This is a test."
+        )
+        XCTAssertEqual(
+            TranscriptCleaner.clean("... okay let's try this"),
+            "Okay let's try this."
+        )
+        XCTAssertEqual(
+            TranscriptCleaner.clean(", uh this started with a comma"),
+            "Uh this started with a comma."
+        )
+    }
+
+    func testTranscriptCleanerNormalizesPunctuationSpacing() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean("hello , world !"),
+            "Hello, world!"
+        )
+        XCTAssertEqual(
+            TranscriptCleaner.clean("is this working ?"),
+            "Is this working?"
+        )
+    }
+
+    func testTranscriptCleanerPreservesValidTerminalPunctuation() {
+        XCTAssertEqual(
+            TranscriptCleaner.clean("already done!"),
+            "Already done!"
+        )
+        XCTAssertEqual(
+            TranscriptCleaner.clean("is this done?"),
+            "Is this done?"
+        )
+    }
+
     func testCleanTranscriptRemovesDuplicateSpaces() {
         // Given: A controller
         let tempDir = FileManager.default.temporaryDirectory

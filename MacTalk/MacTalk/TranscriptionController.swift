@@ -11,6 +11,46 @@ import Foundation
 import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
 import os
 
+enum TranscriptCleaner {
+    private static let leadingArtifactCharacters = CharacterSet(charactersIn: ".,;:!?…·-–—")
+
+    static func clean(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        while let firstScalar = result.unicodeScalars.first,
+              leadingArtifactCharacters.contains(firstScalar) {
+            result.removeFirst()
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Remove duplicate spaces
+        while result.contains("  ") {
+            result = result.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        // Normalize common spacing artifacts around punctuation
+        let punctuationSpacingFixes = [" .": ".", " ,": ",", " !": "!", " ?": "?", " ;": ";", " :": ":"]
+        for (artifact, replacement) in punctuationSpacingFixes {
+            result = result.replacingOccurrences(of: artifact, with: replacement)
+        }
+
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Capitalize first letter
+        if let first = result.first {
+            result = first.uppercased() + result.dropFirst()
+        }
+
+        // Ensure ends with punctuation
+        let punctuation: Set<Character> = [".", "!", "?"]
+        if let last = result.last, !punctuation.contains(last) {
+            result += "."
+        }
+
+        return result
+    }
+}
+
 /// Orchestrates audio capture, mixing, and transcription.
 ///
 /// ## Thread Safety
@@ -420,6 +460,9 @@ final class TranscriptionController: @unchecked Sendable {
         guard let combined = combined else { return }
 
         let cleaned = cleanTranscript(combined)
+        if cleaned != combined {
+            DLOG("Cleaned final transcript: raw=\(combined.prefix(120)) | cleaned=\(cleaned.prefix(120))")
+        }
 
         if !cleaned.isEmpty {
             if let onFinal {
@@ -433,28 +476,7 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Text Post-Processing
 
     private func cleanTranscript(_ text: String) -> String {
-        var result = text
-
-        // Remove duplicate spaces
-        while result.contains("  ") {
-            result = result.replacingOccurrences(of: "  ", with: " ")
-        }
-
-        // Trim whitespace
-        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Capitalize first letter
-        if let first = result.first {
-            result = first.uppercased() + result.dropFirst()
-        }
-
-        // Ensure ends with punctuation
-        let punctuation: Set<Character> = [".", "!", "?"]
-        if let last = result.last, !punctuation.contains(last) {
-            result += "."
-        }
-
-        return result
+        TranscriptCleaner.clean(text)
     }
 
     // MARK: - Edge Case Handling

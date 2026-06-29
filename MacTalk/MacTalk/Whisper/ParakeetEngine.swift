@@ -42,7 +42,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
-        let result = try await core.transcribe(buffer: buffer)
+        let result = try await core.finalize(buffer: buffer)
         let words = mapWords(from: result)
         return ASRFinalSegment(text: result.text, words: words)
     }
@@ -87,5 +87,11 @@ private actor ParakeetEngineCore {
         let result = try await manager.transcribe(buffer, decoderState: &state)
         decoderState = state
         return result
+    }
+
+    func finalize(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
+        let manager = try await bootstrap.ensureReady()
+        var finalState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        return try await manager.transcribe(buffer, decoderState: &finalState)
     }
 }
