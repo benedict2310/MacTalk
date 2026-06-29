@@ -63,6 +63,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
 private actor ParakeetEngineCore {
     private let bootstrap: ParakeetBootstrap
     private var manager: AsrManager?
+    private var decoderState: TdtDecoderState?
 
     init(bootstrap: ParakeetBootstrap) {
         self.bootstrap = bootstrap
@@ -73,11 +74,18 @@ private actor ParakeetEngineCore {
     }
 
     func reset() async {
+        decoderState = nil
         await bootstrap.reset()
     }
 
     func transcribe(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
         let manager = try await bootstrap.ensureReady()
-        return try await manager.transcribe(buffer, source: .microphone)
+        if decoderState == nil {
+            decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        }
+        var state = decoderState!
+        let result = try await manager.transcribe(buffer, decoderState: &state)
+        decoderState = state
+        return result
     }
 }

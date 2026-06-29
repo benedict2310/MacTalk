@@ -10,8 +10,6 @@ import CoreML
 import FluidAudio
 import os
 
-extension AsrManager: @unchecked Sendable {}
-
 final class ParakeetBootstrap: @unchecked Sendable {
     enum BootstrapError: LocalizedError, Sendable, Equatable {
         case modelsNotAvailable
@@ -103,8 +101,7 @@ final class ParakeetBootstrap: @unchecked Sendable {
     }
 
     func reset() async {
-        guard let manager = currentManager() else { return }
-        try? await manager.resetDecoderState()
+        // Decoder state is owned per ParakeetEngineCore so shared model loading can remain cached.
     }
 
     private func ensureModelsAvailable() async throws {

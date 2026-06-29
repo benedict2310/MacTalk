@@ -73,13 +73,13 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     static var repoDirectory: URL {
-        modelsDirectory.appendingPathComponent(Repo.parakeet.folderName, isDirectory: true)
+        modelsDirectory.appendingPathComponent(Repo.parakeetV3.folderName, isDirectory: true)
     }
 
     func modelsAvailable() -> Bool {
         let repoPath = Self.repoDirectory
-        let required = ModelNames.ASR.requiredModels
-        let vocabName = ModelNames.ASR.vocabulary(for: .parakeet)
+        let required = ModelNames.ASR.requiredModelsV3()
+        let vocabName = ModelNames.ASR.vocabulary(for: .parakeetV3)
 
         let requiredPaths = required.map { repoPath.appendingPathComponent($0).path }
         let vocabPath = repoPath.appendingPathComponent(vocabName).path
@@ -126,7 +126,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 )
 
                 let encodedPath = filePath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filePath
-                let fileURL = try ModelRegistry.resolveModel(Repo.parakeet.remotePath, encodedPath)
+                let fileURL = try ModelRegistry.resolveModel(Repo.parakeetV3.remotePath, encodedPath)
                 DLOG("Parakeet download URL: \(fileURL.absoluteString)")
 
                 let (tempURL, response) = try await session.download(for: authorizedRequest(url: fileURL))
@@ -176,8 +176,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
 
     private func verifyModelsExist() throws {
         let repoPath = Self.repoDirectory
-        let required = ModelNames.ASR.requiredModels
-        let vocabName = ModelNames.ASR.vocabulary(for: .parakeet)
+        let required = ModelNames.ASR.requiredModelsV3()
+        let vocabName = ModelNames.ASR.vocabulary(for: .parakeetV3)
 
         for model in required {
             let path = repoPath.appendingPathComponent(model).path
@@ -193,8 +193,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     private func listFilesToDownload() async throws -> [String] {
-        let repo = Repo.parakeet
-        let required = ModelNames.ASR.requiredModels
+        let repo = Repo.parakeetV3
+        let required = ModelNames.ASR.requiredModelsV3()
 
         var filesToDownload: [String] = []
 
