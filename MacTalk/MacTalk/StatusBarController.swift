@@ -833,28 +833,35 @@ final class StatusBarController {
 
         controller.onFinal = { [weak self] text in
             NSLog("[StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
+            DLOG("[AutoPaste] onFinal received: chars=\(text.count), prefix=\(text.prefix(120))")
             self?.hudController?.updateFinal(text: text)
 
             let accessibilityTrusted = Permissions.isAccessibilityTrusted()
-            let autoPasteEnabled = (self?.autoPaste ?? false) && accessibilityTrusted
+            let autoPastePreference = self?.autoPaste ?? false
+            let autoPasteEnabled = autoPastePreference && accessibilityTrusted
             if self?.autoPaste == true, !accessibilityTrusted {
                 DLOG("Auto-paste preference is enabled, but Accessibility is not trusted at paste time; disabling effective auto-paste")
                 self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
             }
             NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled) (Accessibility trusted: \(accessibilityTrusted))")
+            DLOG("[AutoPaste] paste decision inputs: preference=\(autoPastePreference), accessibilityTrusted=\(accessibilityTrusted), effective=\(autoPasteEnabled), target=\(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"), frontmost=\(self?.describeApplication(NSWorkspace.shared.frontmostApplication) ?? "unknown")")
 
             // Always copy to clipboard first
             NSLog("[StatusBar] Copying text to clipboard...")
+            DLOG("[AutoPaste] copying final text to clipboard")
             ClipboardManager.setClipboard(text)
 
             var message = "Text copied to clipboard"
 
             // Auto-insert if enabled (uses AX SetValue first, then Cmd+V fallback)
             if autoPasteEnabled, let self {
+                DLOG("[AutoPaste] effective auto-paste enabled; checking target/frontmost match")
                 if self.isRecordingTargetAppStillFrontmost() {
                     NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
+                    DLOG("[AutoPaste] target/frontmost check passed; invoking AutoInsertManager")
                     let result = AutoInsertManager.insertText(text)
                     NSLog("[StatusBar] Auto-insert result: \(result.description)")
+                    DLOG("[AutoPaste] AutoInsertManager returned: \(result.description)")
 
                     switch result {
                     case .axSetValueSuccess, .cmdVFallback:
@@ -870,6 +877,7 @@ final class StatusBarController {
                             shouldPrompt = elapsed >= cooldown
                             if !shouldPrompt {
                                 NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago, cooldown \(Int(cooldown))s)")
+                                DLOG("[AutoPaste] permission prompt throttled: elapsed=\(Int(elapsed))s, cooldown=\(Int(cooldown))s")
                             }
                         } else {
                             shouldPrompt = true
@@ -877,21 +885,28 @@ final class StatusBarController {
 
                         if shouldPrompt {
                             NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
+                            DLOG("[AutoPaste] permission denied; requesting Accessibility permission")
                             self.recordPermissionPromptShown(at: now)
                             Permissions.requestAccessibilityPermission()
                         }
                     case .failed(let reason):
                         NSLog("[StatusBar] Auto-insert failed: \(reason)")
+                        DLOG("[AutoPaste] AutoInsert failed: \(reason)")
                         self.resetPermissionPromptBackoff()
                     }
                 } else {
                     NSLog("⚠️ [StatusBar] Frontmost app changed during recording - skipping auto-paste and leaving text on clipboard")
+                    DLOG("[AutoPaste] skipped because target/frontmost check failed")
                 }
+            } else {
+                DLOG("[AutoPaste] effective auto-paste disabled; leaving text on clipboard")
             }
 
+            DLOG("[AutoPaste] clearing recording target app (was: \(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"))")
             self?.recordingTargetApp = nil
 
             NSLog("[StatusBar] Showing notification: \(message)")
+            DLOG("[AutoPaste] notification message=\(message)")
             self?.showNotification(title: "Transcription Complete", message: message)
         }
 
@@ -940,20 +955,24 @@ final class StatusBarController {
             }
             recordingTargetApp = candidate ?? frontmost
             NSLog("[StatusBar] MacTalk is frontmost — captured underlying app: \(describeApplication(recordingTargetApp))")
+            DLOG("[AutoPaste] capture target while MacTalk frontmost: frontmost=\(describeApplication(frontmost)), candidate=\(describeApplication(candidate)), chosen=\(describeApplication(recordingTargetApp))")
         } else {
             recordingTargetApp = frontmost
             NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
+            DLOG("[AutoPaste] captured recording target app: \(describeApplication(recordingTargetApp))")
         }
     }
 
     private func isRecordingTargetAppStillFrontmost() -> Bool {
         guard let recordingTargetApp else {
             NSLog("⚠️ [StatusBar] No recording target app captured — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: no target captured; allowing paste")
             return true   // Permissive: paste if we couldn't capture
         }
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             NSLog("⚠️ [StatusBar] No frontmost app available — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: no frontmost app; allowing paste")
             return true
         }
 
@@ -962,6 +981,7 @@ final class StatusBarController {
         let selfPID = ProcessInfo.processInfo.processIdentifier
         if frontmostApp.processIdentifier == selfPID {
             NSLog("[StatusBar] MacTalk is frontmost at paste time — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: MacTalk frontmost at paste time; allowing paste. target=\(describeApplication(recordingTargetApp))")
             return true
         }
 
@@ -970,8 +990,10 @@ final class StatusBarController {
             NSLog(
                 "⚠️ [StatusBar] Frontmost app changed during recording: \(describeApplication(recordingTargetApp)) -> \(describeApplication(frontmostApp))"
             )
+            DLOG("[AutoPaste] target/frontmost mismatch: target=\(describeApplication(recordingTargetApp)), frontmost=\(describeApplication(frontmostApp))")
         } else {
             NSLog("[StatusBar] Frontmost app matches recording target: \(describeApplication(frontmostApp))")
+            DLOG("[AutoPaste] target/frontmost matched: \(describeApplication(frontmostApp))")
         }
 
         return isSameApp

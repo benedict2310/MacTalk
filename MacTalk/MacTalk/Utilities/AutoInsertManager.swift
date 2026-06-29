@@ -50,10 +50,12 @@ enum AutoInsertManager {
     /// - Returns: Result indicating which method was used or failure reason
     static func insertText(_ text: String) -> AutoInsertResult {
         NSLog("[AutoInsertManager] insertText called with \(text.count) characters")
+        DLOG("[AutoInsert] insertText called: chars=\(text.count), prefix=\(text.prefix(80))")
 
         // Check accessibility permission first
         let isTrusted = PermissionsActor.shared.isAccessibilityTrusted()
         NSLog("[AutoInsertManager] AXIsProcessTrusted() returned: \(isTrusted)")
+        DLOG("[AutoInsert] AXIsProcessTrusted=\(isTrusted)")
 
         // Log diagnostics for debugging
         let diagnostics = PermissionsActor.shared.getDiagnostics()
@@ -61,27 +63,33 @@ enum AutoInsertManager {
         NSLog("[AutoInsertManager] Team ID: \(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier)")
         NSLog("[AutoInsertManager] Ad-hoc signed: \(diagnostics.isAdHocSigned)")
         NSLog("[AutoInsertManager] Running from Xcode: \(diagnostics.isRunningFromXcode)")
+        DLOG("[AutoInsert] diagnostics: bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
 
         guard isTrusted else {
             NSLog("[AutoInsertManager] Accessibility permission not trusted - returning permissionDenied")
+            DLOG("[AutoInsert] returning permissionDenied because Accessibility is not trusted")
             return .permissionDenied
         }
 
         // Try AX SetValue first
         if tryAXSetValue(text) {
             NSLog("[AutoInsertManager] AX SetValue succeeded")
+            DLOG("[AutoInsert] result=axSetValueSuccess")
             return .axSetValueSuccess
         }
 
         NSLog("[AutoInsertManager] AX SetValue failed, falling back to Cmd+V")
+        DLOG("[AutoInsert] AX SetValue path failed; scheduling Cmd+V fallback after 50ms")
 
         // Fallback to Cmd+V using existing ClipboardManager
         // Use async dispatch with small delay to avoid blocking main thread
         // and to ensure clipboard write is visible to the system
         ClipboardManager.setClipboard(text)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            DLOG("[AutoInsert] Cmd+V fallback timer fired")
             Self.sendCommandV()
         }
+        DLOG("[AutoInsert] result=cmdVFallback (event scheduled, not verified)")
         return .cmdVFallback
     }
 
@@ -95,8 +103,10 @@ enum AutoInsertManager {
         if !PermissionsActor.shared.isAccessibilityTrusted() {
             if requestPermission {
                 NSLog("[AutoInsertManager] Requesting accessibility permission")
+                DLOG("[AutoInsert] insertTextWithPermissionRequest requesting Accessibility prompt")
                 _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
             }
+            DLOG("[AutoInsert] insertTextWithPermissionRequest returning permissionDenied")
             return .permissionDenied
         }
 
@@ -124,14 +134,17 @@ enum AutoInsertManager {
 
         guard focusResult == .success, let element = focusedElement else {
             NSLog("[AutoInsertManager] Failed to get focused element: \(focusResult.rawValue)")
+            DLOG("[AutoInsert] AX focused element lookup failed: raw=\(focusResult.rawValue)")
             return false
         }
 
+        DLOG("[AutoInsert] AX focused element lookup succeeded")
         let axElement = element as! AXUIElement
 
         // CR-02: Check if element is an editable text field
         guard isEditableTextField(axElement) else {
             NSLog("[AutoInsertManager] Focused element is not an editable text field")
+            DLOG("[AutoInsert] focused element rejected as non-editable text field")
             return false
         }
 
@@ -144,6 +157,7 @@ enum AutoInsertManager {
         // Fallback: If insert at selection doesn't work, don't try to replace entire value
         // This prevents accidental data loss - let Cmd+V handle it instead
         NSLog("[AutoInsertManager] AX insert at selection not supported, falling back to Cmd+V")
+        DLOG("[AutoInsert] AX insert at selection failed; will use Cmd+V fallback")
         return false
     }
 
@@ -159,8 +173,11 @@ enum AutoInsertManager {
 
         guard roleResult == .success, let role = roleValue as? String else {
             NSLog("[AutoInsertManager] Could not get element role")
+            DLOG("[AutoInsert] could not get AX role: raw=\(roleResult.rawValue)")
             return false
         }
+
+        DLOG("[AutoInsert] focused AX role=\(role)")
 
         // Check if it's a text field, text area, or combo box
         let textRoles = [
@@ -172,6 +189,7 @@ enum AutoInsertManager {
 
         guard textRoles.contains(role) else {
             NSLog("[AutoInsertManager] Element role '\(role)' is not a text input type")
+            DLOG("[AutoInsert] AX role rejected as not text input: \(role)")
             return false
         }
 
@@ -185,9 +203,11 @@ enum AutoInsertManager {
 
         guard settableResult == .success, isSettable.boolValue else {
             NSLog("[AutoInsertManager] Element value is not settable")
+            DLOG("[AutoInsert] AX value not settable: raw=\(settableResult.rawValue), isSettable=\(isSettable.boolValue)")
             return false
         }
 
+        DLOG("[AutoInsert] AX element is editable and value is settable")
         return true
     }
 
@@ -203,8 +223,11 @@ enum AutoInsertManager {
 
         guard valueResult == .success, let currentText = currentValue as? String else {
             NSLog("[AutoInsertManager] Could not get current value")
+            DLOG("[AutoInsert] could not read AX current value: raw=\(valueResult.rawValue)")
             return false
         }
+
+        DLOG("[AutoInsert] AX current value length=\(currentText.count)")
 
         // Try to get the selected text range
         var selectedRangeValue: AnyObject?
@@ -217,6 +240,7 @@ enum AutoInsertManager {
         // If we can't get selection range, we can't safely insert
         guard rangeResult == .success else {
             NSLog("[AutoInsertManager] Could not get selected text range: \(rangeResult.rawValue)")
+            DLOG("[AutoInsert] could not get selected text range: raw=\(rangeResult.rawValue)")
             return false
         }
 
@@ -225,10 +249,12 @@ enum AutoInsertManager {
         guard let axValue = selectedRangeValue,
               AXValueGetValue(axValue as! AXValue, .cfRange, &range) else {
             NSLog("[AutoInsertManager] Could not extract range from AXValue")
+            DLOG("[AutoInsert] could not extract CFRange from AX selected text range")
             return false
         }
 
         NSLog("[AutoInsertManager] Selection range: location=\(range.location), length=\(range.length)")
+        DLOG("[AutoInsert] selection range: location=\(range.location), length=\(range.length)")
 
         // Build the new text by replacing the selected range with our text
         let startIndex = currentText.index(currentText.startIndex, offsetBy: range.location, limitedBy: currentText.endIndex) ?? currentText.endIndex
@@ -246,18 +272,24 @@ enum AutoInsertManager {
 
         guard setResult == .success else {
             NSLog("[AutoInsertManager] Failed to set new value: \(setResult.rawValue)")
+            DLOG("[AutoInsert] failed to set AX value: raw=\(setResult.rawValue), newLength=\(newText.count)")
             return false
         }
+
+        DLOG("[AutoInsert] AX value set succeeded: newLength=\(newText.count)")
 
         // Move cursor to end of inserted text
         let newCursorPosition = range.location + text.count
         var newRange = CFRange(location: newCursorPosition, length: 0)
         if let newRangeValue = AXValueCreate(.cfRange, &newRange) {
-            _ = AXUIElementSetAttributeValue(
+            let cursorResult = AXUIElementSetAttributeValue(
                 element,
                 kAXSelectedTextRangeAttribute as CFString,
                 newRangeValue
             )
+            DLOG("[AutoInsert] cursor reposition result raw=\(cursorResult.rawValue), position=\(newCursorPosition)")
+        } else {
+            DLOG("[AutoInsert] could not create AX cursor range value for position=\(newCursorPosition)")
         }
 
         return true
@@ -275,6 +307,7 @@ enum AutoInsertManager {
         // Create key down event
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true) else {
             NSLog("[AutoInsertManager] Failed to create key down event")
+            DLOG("[AutoInsert] failed to create Cmd+V keyDown event")
             return
         }
         keyDown.flags = .maskCommand
@@ -282,12 +315,15 @@ enum AutoInsertManager {
         // Create key up event
         guard let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
             NSLog("[AutoInsertManager] Failed to create key up event")
+            DLOG("[AutoInsert] failed to create Cmd+V keyUp event")
             return
         }
         keyUp.flags = .maskCommand
 
         // Post events to system
+        DLOG("[AutoInsert] posting Cmd+V key events to cghidEventTap")
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+        DLOG("[AutoInsert] posted Cmd+V key events")
     }
 }
