@@ -11,6 +11,39 @@ import ScreenCaptureKit
 @preconcurrency import ApplicationServices
 import CoreGraphics
 
+enum AutoPastePermissionPolicy {
+    /// UI and paste execution should only treat auto-paste as enabled when both the
+    /// stored preference is on and macOS currently trusts this exact running build.
+    static func effectiveAutoPaste(
+        storedPreference: Bool,
+        accessibilityTrusted: Bool
+    ) -> Bool {
+        storedPreference && accessibilityTrusted
+    }
+
+    /// Local ad-hoc / DerivedData builds can leave stale TCC rows in System Settings:
+    /// the row appears enabled, but AXIsProcessTrusted() returns false for the current
+    /// code signature/CDHash. In that case, reset the stale approval before asking again.
+    static func shouldResetStaleAccessibilityApproval(
+        accessibilityTrusted: Bool,
+        isAdHocSigned: Bool,
+        isRunningFromXcode: Bool
+    ) -> Bool {
+        !accessibilityTrusted && (isAdHocSigned || isRunningFromXcode)
+    }
+
+    static func shouldResetStaleAccessibilityApproval(
+        accessibilityTrusted: Bool,
+        diagnostics: PermissionDiagnostics
+    ) -> Bool {
+        shouldResetStaleAccessibilityApproval(
+            accessibilityTrusted: accessibilityTrusted,
+            isAdHocSigned: diagnostics.isAdHocSigned,
+            isRunningFromXcode: diagnostics.isRunningFromXcode
+        )
+    }
+}
+
 enum Permissions {
     private static func configureAlertIcon(_ alert: NSAlert) {
         if let appIcon = NSApp.applicationIconImage {

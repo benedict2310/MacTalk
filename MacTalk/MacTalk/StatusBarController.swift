@@ -411,7 +411,10 @@ final class StatusBarController {
             sender.state = .off
             let diagnostics = Permissions.getAccessibilityDiagnostics()
             DLOG("Auto-paste enable requested but Accessibility is not trusted; bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
-            if diagnostics.isAdHocSigned || diagnostics.isRunningFromXcode {
+            if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: diagnostics.isAccessibilityTrusted,
+                diagnostics: diagnostics
+            ) {
                 DLOG("System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
                 Permissions.resetAccessibilityApproval(reason: "Menu auto-paste enable saw stale/untrusted local build")
             }
@@ -844,7 +847,10 @@ final class StatusBarController {
 
             let accessibilityTrusted = Permissions.isAccessibilityTrusted()
             let autoPastePreference = self?.autoPaste ?? false
-            let autoPasteEnabled = autoPastePreference && accessibilityTrusted
+            let autoPasteEnabled = AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: autoPastePreference,
+                accessibilityTrusted: accessibilityTrusted
+            )
             if self?.autoPaste == true, !accessibilityTrusted {
                 DLOG("Auto-paste preference is enabled, but Accessibility is not trusted at paste time; disabling effective auto-paste")
                 self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
@@ -1492,7 +1498,10 @@ final class StatusBarController {
     private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
         let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
-        let effectiveAutoPaste = storedAutoPaste && accessibilityTrusted
+        let effectiveAutoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
+            storedPreference: storedAutoPaste,
+            accessibilityTrusted: accessibilityTrusted
+        )
 
         if storedAutoPaste && !accessibilityTrusted {
             let diagnostics = Permissions.getAccessibilityDiagnostics()

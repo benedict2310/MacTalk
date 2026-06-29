@@ -75,7 +75,10 @@ final class SettingsViewModel: ObservableObject {
         if storedAutoPaste && !accessibilityTrusted {
             DLOG("[Settings] Stored auto-paste preference is on, but current process is not Accessibility-trusted; showing toggle off")
         }
-        autoPaste = storedAutoPaste && accessibilityTrusted
+        autoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
+            storedPreference: storedAutoPaste,
+            accessibilityTrusted: accessibilityTrusted
+        )
         defaultModeIndex = d.integer(forKey: "defaultMode")
         let provider = AppSettings.shared.provider
         providerIndex = ASRProvider.allCases.firstIndex(of: provider) ?? 0
@@ -124,7 +127,10 @@ final class SettingsViewModel: ObservableObject {
 
             let diagnostics = Permissions.getAccessibilityDiagnostics()
             DLOG("[Settings] Auto-paste enable requested but AXIsProcessTrusted=false. bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
-            if diagnostics.isAdHocSigned || diagnostics.isRunningFromXcode {
+            if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: diagnostics.isAccessibilityTrusted,
+                diagnostics: diagnostics
+            ) {
                 DLOG("[Settings] System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
                 Permissions.resetAccessibilityApproval(reason: "Settings auto-paste enable saw stale/untrusted local build")
             }

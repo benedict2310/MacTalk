@@ -452,6 +452,11 @@ final class HUDWindowController: NSWindowController {
         hudState.showPartialText(text)
     }
 
+    @available(*, deprecated, message: "Use updatePartial(text:) or updateFinal(text:) for streaming-aware HUD updates.")
+    func update(text: String) {
+        updatePartial(text: text)
+    }
+
     func updateFinal(text: String) {
         cancelPostFinalTask()
         hudState.showFinalText(text)
