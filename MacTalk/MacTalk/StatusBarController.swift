@@ -93,7 +93,7 @@ final class StatusBarController {
 
         // Load settings from UserDefaults
         let defaults = UserDefaults.standard
-        autoPaste = defaults.bool(forKey: "autoPaste")
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
         provider = AppSettings.shared.provider
 
         // Show notifications defaults to true if not set
@@ -138,6 +138,17 @@ final class StatusBarController {
             ) { [weak self] notification in
                 guard let provider = notification.object as? ASRProvider else { return }
                 self?.providerDidChange(provider)
+            }
+        )
+
+        // Listen for permission changes so stale Accessibility grants do not leave Auto-paste visually enabled.
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .permissionsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.permissionsDidChange()
             }
         )
 
@@ -282,6 +293,7 @@ final class StatusBarController {
         autoPasteItem.target = self
         autoPasteMenuItem = autoPasteItem
         menu.addItem(autoPasteItem)
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -397,6 +409,7 @@ final class StatusBarController {
         } else {
             autoPaste = false
             sender.state = .off
+            DLOG("Auto-paste enable requested but Accessibility is not trusted; requesting permission")
             Permissions.requestAccessibilityPermission { [weak self, weak sender] in
                 self?.autoPaste = true
                 sender?.state = .on
@@ -822,8 +835,13 @@ final class StatusBarController {
             NSLog("[StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
             self?.hudController?.updateFinal(text: text)
 
-            let autoPasteEnabled = self?.autoPaste ?? false
-            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled)")
+            let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+            let autoPasteEnabled = (self?.autoPaste ?? false) && accessibilityTrusted
+            if self?.autoPaste == true, !accessibilityTrusted {
+                DLOG("Auto-paste preference is enabled, but Accessibility is not trusted at paste time; disabling effective auto-paste")
+                self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+            }
+            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled) (Accessibility trusted: \(accessibilityTrusted))")
 
             // Always copy to clipboard first
             NSLog("[StatusBar] Copying text to clipboard...")
@@ -1428,7 +1446,7 @@ final class StatusBarController {
     @objc private func settingsDidChange() {
         // Reload settings from UserDefaults when they change
         let defaults = UserDefaults.standard
-        autoPaste = defaults.bool(forKey: "autoPaste")
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
 
         let newShowNotifications = defaults.object(forKey: "showNotifications") != nil ?
             defaults.bool(forKey: "showNotifications") : true
@@ -1437,8 +1455,29 @@ final class StatusBarController {
             NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
             showNotifications = newShowNotifications
         }
+    }
 
-        autoPasteMenuItem?.state = autoPaste ? .on : .off
+    @objc private func permissionsDidChange() {
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+    }
+
+    private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
+        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+        let effectiveAutoPaste = storedAutoPaste && accessibilityTrusted
+
+        if storedAutoPaste && !accessibilityTrusted {
+            DLOG("Auto-paste preference is on, but Accessibility is not trusted for this build; showing Auto-paste as off")
+            NSLog("⚠️ [MacTalk] Auto-paste preference is on, but Accessibility is not trusted for this build")
+        }
+
+        autoPaste = effectiveAutoPaste
+        transcriber?.autoPasteEnabled = effectiveAutoPaste
+        autoPasteMenuItem?.state = effectiveAutoPaste ? .on : .off
+
+        if updateStoredPreference && storedAutoPaste != effectiveAutoPaste {
+            UserDefaults.standard.set(effectiveAutoPaste, forKey: "autoPaste")
+        }
     }
 
     private func invalidatePendingStart() {
