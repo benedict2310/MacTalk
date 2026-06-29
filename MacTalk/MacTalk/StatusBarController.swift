@@ -409,8 +409,14 @@ final class StatusBarController {
         } else {
             autoPaste = false
             sender.state = .off
-            DLOG("Auto-paste enable requested but Accessibility is not trusted; requesting permission")
+            let diagnostics = Permissions.getAccessibilityDiagnostics()
+            DLOG("Auto-paste enable requested but Accessibility is not trusted; bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
+            if diagnostics.isAdHocSigned || diagnostics.isRunningFromXcode {
+                DLOG("System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
+                Permissions.resetAccessibilityApproval(reason: "Menu auto-paste enable saw stale/untrusted local build")
+            }
             Permissions.requestAccessibilityPermission { [weak self, weak sender] in
+                DLOG("Auto-paste Accessibility grant callback received; enabling preference")
                 self?.autoPaste = true
                 sender?.state = .on
                 UserDefaults.standard.set(true, forKey: "autoPaste")
@@ -1489,7 +1495,8 @@ final class StatusBarController {
         let effectiveAutoPaste = storedAutoPaste && accessibilityTrusted
 
         if storedAutoPaste && !accessibilityTrusted {
-            DLOG("Auto-paste preference is on, but Accessibility is not trusted for this build; showing Auto-paste as off")
+            let diagnostics = Permissions.getAccessibilityDiagnostics()
+            DLOG("Auto-paste preference is on, but Accessibility is not trusted for this build; showing Auto-paste as off. bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath). If System Settings shows MacTalk enabled, that row is likely stale for a previous code signature/CDHash.")
             NSLog("⚠️ [MacTalk] Auto-paste preference is on, but Accessibility is not trusted for this build")
         }
 
