@@ -841,8 +841,8 @@ final class StatusBarController {
         }
 
         controller.onFinal = { [weak self] text in
-            NSLog("[StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
-            DLOG("[AutoPaste] onFinal received: chars=\(text.count), prefix=\(text.prefix(120))")
+            NSLog("[StatusBar] onFinal callback triggered with text length: \(text.count) characters")
+            DLOG("[AutoPaste] onFinal received: chars=\(text.count)")
             self?.hudController?.updateFinal(text: text)
 
             let accessibilityTrusted = Permissions.isAccessibilityTrusted()
@@ -1169,6 +1169,7 @@ final class StatusBarController {
                     self.hudController?.showWindow(nil)
                 }
             } catch is CancellationError {
+                transcriptionController.cancelStart()
                 await MainActor.run {
                     guard startGeneration == self.startGeneration else { return }
                     self.startTask = nil
@@ -1176,6 +1177,7 @@ final class StatusBarController {
                     NSLog("ℹ️ [StatusBar] Recording start cancelled")
                 }
             } catch {
+                transcriptionController.cancelStart()
                 NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 await MainActor.run {
                     guard startGeneration == self.startGeneration else { return }

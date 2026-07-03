@@ -45,6 +45,7 @@ enum AutoPastePermissionPolicy {
 }
 
 enum Permissions {
+    @MainActor
     private static func configureAlertIcon(_ alert: NSAlert) {
         if let appIcon = NSApp.applicationIconImage {
             alert.icon = appIcon

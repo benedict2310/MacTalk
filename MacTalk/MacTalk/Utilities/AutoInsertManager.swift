@@ -50,7 +50,7 @@ enum AutoInsertManager {
     /// - Returns: Result indicating which method was used or failure reason
     static func insertText(_ text: String) -> AutoInsertResult {
         NSLog("[AutoInsertManager] insertText called with \(text.count) characters")
-        DLOG("[AutoInsert] insertText called: chars=\(text.count), prefix=\(text.prefix(80))")
+        DLOG("[AutoInsert] insertText called: chars=\(text.count)")
 
         // Check accessibility permission first
         let isTrusted = PermissionsActor.shared.isAccessibilityTrusted()

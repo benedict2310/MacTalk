@@ -143,6 +143,7 @@ final class TranscriptionController: @unchecked Sendable {
         var lastDiagnosticsLogTime: TimeInterval = 0
         var sessionID: UUID
         var pendingTasks: [UUID: [PendingChunkTask]] = [:]
+        var chunkProcessingTail: Task<Void, Never>?
         var language: String?
 
         init(chunkDuration: Int, language: String?) {
@@ -214,6 +215,7 @@ final class TranscriptionController: @unchecked Sendable {
             state.lastDiagnosticsLogTime = 0
             state.sessionID = UUID()
             state.pendingTasks[state.sessionID] = []
+            state.chunkProcessingTail = nil
         }
 
         // Start microphone capture FIRST so we don't lose the beginning
@@ -228,7 +230,7 @@ final class TranscriptionController: @unchecked Sendable {
         // Set up app audio capture if needed (also starts immediately)
         if case .micPlusAppAudio = mode {
             guard let source = audioSource else {
-                micCapture.stop()
+                await cancelStartAndWait()
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
@@ -237,15 +239,21 @@ final class TranscriptionController: @unchecked Sendable {
             do {
                 try await startAppAudioCapture(source: source)
             } catch {
-                micCapture.stop()
+                await cancelStartAndWait()
                 throw error
             }
         }
 
         // Now prepare the engine — audio is already being captured and
-        // buffered in audioChunk/allAudio while this runs.
-        try await engine.prepare()
-        await engine.reset()
+        // buffered in audioChunk/allAudio while this runs. If preparation fails,
+        // stop captures here so direct callers cannot leave the microphone active.
+        do {
+            try await engine.prepare()
+            await engine.reset()
+        } catch {
+            await cancelStartAndWait()
+            throw error
+        }
 
         DLOG("Engine prepared/reset; transcription fully started in mode=\(mode)")
         print("Transcription started in mode: \(mode)")
@@ -291,17 +299,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     func cancelStart() {
-        micCapture.stop()
-        screenCapture.stop()
-
-        let sessionID = audioState.withLock { state in
-            let sessionID = state.sessionID
-            state.audioChunk.removeAll()
-            state.allAudio.removeAll()
-            state.fullTranscript.removeAll()
-            state.sessionID = UUID()
-            return sessionID
-        }
+        let sessionID = cancelStartAndReturnSession()
 
         Task { [weak self] in
             guard let self else { return }
@@ -309,6 +307,27 @@ final class TranscriptionController: @unchecked Sendable {
         }
 
         print("Transcription start cancelled")
+    }
+
+    private func cancelStartAndWait() async {
+        let sessionID = cancelStartAndReturnSession()
+        await cancelPendingChunkTasks(sessionID: sessionID)
+        print("Transcription start cancelled")
+    }
+
+    private func cancelStartAndReturnSession() -> UUID {
+        micCapture.stop()
+        screenCapture.stop()
+
+        return audioState.withLock { state in
+            let sessionID = state.sessionID
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            state.fullTranscript.removeAll()
+            state.sessionID = UUID()
+            state.chunkProcessingTail = nil
+            return sessionID
+        }
     }
 
     // MARK: - Audio Processing
@@ -400,41 +419,51 @@ final class TranscriptionController: @unchecked Sendable {
         DLOG("Processing chunk: samples=\(chunkSamples.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing chunk with RMS: \(String(format: "%.4f", rms))")
 
-        // Transcribe chunk on background queue with performance monitoring
+        // Transcribe chunks on background tasks, serialized by the previous task tail.
+        // Parakeet streaming carries decoder state between chunks, so chunk order matters.
         let taskID = UUID()
-        let task = Task.detached(priority: .userInitiated) { [weak self, chunkSamples, sessionID, language] in
-            guard let self = self else { return }
-            defer {
-                self.removePendingChunkTask(id: taskID, sessionID: sessionID)
-            }
-
-            do {
-                let partial = try await PerformanceMonitor.shared.measure("ASRInference") {
-                    try await self.engine.process(samples: chunkSamples, language: language)
+        audioState.withLock { state in
+            let previousTask = state.chunkProcessingTail
+            let task = Task.detached(priority: .userInitiated) { [weak self, chunkSamples, sessionID, language, previousTask] in
+                guard let self = self else { return }
+                defer {
+                    self.removePendingChunkTask(id: taskID, sessionID: sessionID)
                 }
 
+                _ = await previousTask?.value
                 guard !Task.isCancelled else { return }
 
-                if let partial {
-                    let trimmedText = partial.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedText.isEmpty {
-                        let didAppend = self.audioState.withLock { state in
-                            guard state.sessionID == sessionID else { return false }
-                            state.fullTranscript.append(trimmedText)
-                            return true
-                        }
-                        if didAppend {
-                            self.throttledUIUpdate(trimmedText)
+                do {
+                    let partial = try await PerformanceMonitor.shared.measure("ASRInference") {
+                        try await self.engine.process(samples: chunkSamples, language: language)
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    if let partial {
+                        let trimmedText = partial.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedText.isEmpty {
+                            let didAppend = self.audioState.withLock { state in
+                                guard state.sessionID == sessionID else { return false }
+                                state.fullTranscript.append(trimmedText)
+                                return true
+                            }
+                            if didAppend {
+                                self.throttledUIUpdate(trimmedText)
+                            }
                         }
                     }
+                } catch {
+                    print("ASR chunk processing failed: \(error.localizedDescription)")
                 }
-            } catch {
-                print("ASR chunk processing failed: \(error.localizedDescription)")
             }
-        }
 
-        audioState.withLock { state in
+            guard state.sessionID == sessionID else {
+                task.cancel()
+                return
+            }
             state.pendingTasks[sessionID, default: []].append(PendingChunkTask(id: taskID, task: task))
+            state.chunkProcessingTail = task
         }
     }
 
@@ -475,7 +504,7 @@ final class TranscriptionController: @unchecked Sendable {
             if let finalSegment {
                 let trimmedText = finalSegment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
-                    DLOG("Final transcription result: \(trimmedText.prefix(120))")
+                    DLOG("Final transcription result received: chars=\(trimmedText.count)")
                     audioState.withLock { state in
                         guard state.sessionID == sessionID else { return }
                         state.fullTranscript = [trimmedText]
@@ -501,7 +530,7 @@ final class TranscriptionController: @unchecked Sendable {
 
         let cleaned = cleanTranscript(combined)
         if cleaned != combined {
-            DLOG("Cleaned final transcript: raw=\(combined.prefix(120)) | cleaned=\(cleaned.prefix(120))")
+            DLOG("Cleaned final transcript: rawChars=\(combined.count), cleanedChars=\(cleaned.count)")
         }
 
         if !cleaned.isEmpty {

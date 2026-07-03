@@ -17,8 +17,8 @@ enum ClipboardManager {
 
     /// Set text to system clipboard
     static func setClipboard(_ text: String) {
-        NSLog("📋 [ClipboardManager] Setting clipboard with text: \(text.prefix(50))...")
-        DLOG("[Clipboard] setClipboard called: chars=\(text.count), prefix=\(text.prefix(80))")
+        NSLog("📋 [ClipboardManager] Setting clipboard with text length: \(text.count) characters")
+        DLOG("[Clipboard] setClipboard called: chars=\(text.count)")
         let pasteboard = NSPasteboard.general
         let beforeChangeCount = pasteboard.changeCount
         pasteboard.clearContents()
