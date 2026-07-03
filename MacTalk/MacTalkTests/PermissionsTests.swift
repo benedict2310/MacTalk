@@ -309,6 +309,87 @@ final class PermissionsTests: XCTestCase {
         XCTAssertTrue(result == true || result == false, "Should return valid bool")
     }
 
+    // MARK: - Auto-paste Permission Policy Tests
+
+    func testAutoPastePermissionPolicyEffectiveStateRequiresStoredPreferenceAndCurrentTrust() {
+        XCTAssertTrue(
+            AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: true,
+                accessibilityTrusted: true
+            )
+        )
+
+        XCTAssertFalse(
+            AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: true,
+                accessibilityTrusted: false
+            ),
+            "A stale stored preference must not make Auto-paste appear enabled when AXIsProcessTrusted() is false."
+        )
+
+        XCTAssertFalse(
+            AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: false,
+                accessibilityTrusted: true
+            )
+        )
+
+        XCTAssertFalse(
+            AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: false,
+                accessibilityTrusted: false
+            )
+        )
+    }
+
+    func testAutoPastePermissionPolicyResetsStaleApprovalForUntrustedLocalBuilds() {
+        XCTAssertTrue(
+            AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: false,
+                isAdHocSigned: true,
+                isRunningFromXcode: false
+            ),
+            "Ad-hoc builds can leave enabled-looking but stale TCC rows; reset before re-requesting."
+        )
+
+        XCTAssertTrue(
+            AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: false,
+                isAdHocSigned: false,
+                isRunningFromXcode: true
+            ),
+            "DerivedData/Xcode-launched builds can leave stale Accessibility rows; reset before re-requesting."
+        )
+
+        XCTAssertTrue(
+            AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: false,
+                isAdHocSigned: true,
+                isRunningFromXcode: true
+            )
+        )
+    }
+
+    func testAutoPastePermissionPolicyDoesNotResetTrustedOrStableBuilds() {
+        XCTAssertFalse(
+            AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: true,
+                isAdHocSigned: true,
+                isRunningFromXcode: true
+            ),
+            "Never reset a grant that AXIsProcessTrusted() already accepts for the current build."
+        )
+
+        XCTAssertFalse(
+            AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: false,
+                isAdHocSigned: false,
+                isRunningFromXcode: false
+            ),
+            "Stable signed builds should use the normal Accessibility prompt flow without destructive reset."
+        )
+    }
+
     // MARK: - Polling Tests
 
     func testPermissionsActorPollingCanStart() async {

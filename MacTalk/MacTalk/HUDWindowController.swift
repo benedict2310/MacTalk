@@ -49,7 +49,7 @@ final class HUDState: ObservableObject {
 
     var onLayoutPhaseChange: (@MainActor @Sendable (HUDLayoutPhase) -> Void)?
 
-    private let springAnimation = Animation.spring(duration: 0.28, bounce: 0.14)
+    private let springAnimation = Animation.spring(response: 0.28, dampingFraction: 0.86)
     private let smoothingFactor: Float = 0.18
     private let idleBarLevels: [CGFloat] = [0.18, 0.28, 0.22, 0.26, 0.18]
     private let barWeights: [CGFloat] = [0.58, 0.82, 1.0, 0.78, 0.6]
@@ -214,10 +214,10 @@ private struct HUDContentView: View {
             }
         }
         .frame(width: phase.preferredSize.width, height: phase.preferredSize.height, alignment: .leading)
-        .glassEffect()
+        .background(.regularMaterial, in: Capsule())
         .clipShape(Capsule())
         .contentShape(Capsule())
-        .animation(.spring(duration: 0.28, bounce: 0.14), value: phase)
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: phase)
         .onHover { hovering in
             state.setHovering(hovering)
         }
@@ -256,7 +256,7 @@ private struct HUDContentView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .frame(width: 26, height: 26)
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(.bordered)
                 .accessibilityLabel("Stop Recording")
             }
         }
@@ -450,6 +450,11 @@ final class HUDWindowController: NSWindowController {
     func updatePartial(text: String) {
         cancelPostFinalTask()
         hudState.showPartialText(text)
+    }
+
+    @available(*, deprecated, message: "Use updatePartial(text:) or updateFinal(text:) for streaming-aware HUD updates.")
+    func update(text: String) {
+        updatePartial(text: text)
     }
 
     func updateFinal(text: String) {

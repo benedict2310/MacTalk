@@ -11,6 +11,86 @@ import Foundation
 import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
 import os
 
+enum TranscriptCleaner {
+    private static let leadingArtifactCharacters = CharacterSet(charactersIn: ".,;:!?…·-–—")
+    private static let fillerPattern = #"\b(?:um+|uh+|erm+|er+|hmm+|hm+)\b[,;:]*"#
+
+    static func clean(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        result = stripLeadingArtifacts(from: result)
+        result = removeFillerWords(from: result)
+        result = stripLeadingArtifacts(from: result)
+        result = normalizeSpacing(in: result)
+        result = capitalizeSentenceStarts(in: result)
+
+        // Ensure ends with punctuation
+        let punctuation: Set<Character> = [".", "!", "?"]
+        if let last = result.last, !punctuation.contains(last) {
+            result += "."
+        }
+
+        return result
+    }
+
+    private static func stripLeadingArtifacts(from text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let firstScalar = result.unicodeScalars.first,
+              leadingArtifactCharacters.contains(firstScalar) {
+            result.removeFirst()
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return result
+    }
+
+    private static func removeFillerWords(from text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: fillerPattern, options: [.caseInsensitive]) else {
+            return text
+        }
+        let range = NSRange(location: 0, length: text.utf16.count)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+    }
+
+    private static func normalizeSpacing(in text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Remove duplicate spaces
+        while result.contains("  ") {
+            result = result.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        // Normalize common spacing artifacts around punctuation
+        let punctuationSpacingFixes = [" .": ".", " ,": ",", " !": "!", " ?": "?", " ;": ";", " :": ":"]
+        for (artifact, replacement) in punctuationSpacingFixes {
+            result = result.replacingOccurrences(of: artifact, with: replacement)
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func capitalizeSentenceStarts(in text: String) -> String {
+        var result = ""
+        var shouldCapitalizeNextLetter = true
+
+        for character in text {
+            if shouldCapitalizeNextLetter, character.isLetter {
+                result += character.uppercased()
+                shouldCapitalizeNextLetter = false
+                continue
+            }
+
+            result.append(character)
+
+            if character == "." || character == "!" || character == "?" {
+                shouldCapitalizeNextLetter = true
+            } else if !character.isWhitespace && character.isLetter {
+                shouldCapitalizeNextLetter = false
+            }
+        }
+
+        return result
+    }
+}
+
 /// Orchestrates audio capture, mixing, and transcription.
 ///
 /// ## Thread Safety
@@ -63,6 +143,7 @@ final class TranscriptionController: @unchecked Sendable {
         var lastDiagnosticsLogTime: TimeInterval = 0
         var sessionID: UUID
         var pendingTasks: [UUID: [PendingChunkTask]] = [:]
+        var chunkProcessingTail: Task<Void, Never>?
         var language: String?
 
         init(chunkDuration: Int, language: String?) {
@@ -121,6 +202,8 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Control
 
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
+        DLOG("Transcription start requested: mode=\(mode)")
+
         // Clear previous state
         audioState.withLock { state in
             state.audioChunk.removeAll()
@@ -132,6 +215,7 @@ final class TranscriptionController: @unchecked Sendable {
             state.lastDiagnosticsLogTime = 0
             state.sessionID = UUID()
             state.pendingTasks[state.sessionID] = []
+            state.chunkProcessingTail = nil
         }
 
         // Start microphone capture FIRST so we don't lose the beginning
@@ -140,12 +224,13 @@ final class TranscriptionController: @unchecked Sendable {
             self?.processAudioBuffer(buffer)
         }
         try micCapture.start()
+        DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
         // Set up app audio capture if needed (also starts immediately)
         if case .micPlusAppAudio = mode {
             guard let source = audioSource else {
-                micCapture.stop()
+                await cancelStartAndWait()
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
@@ -154,16 +239,23 @@ final class TranscriptionController: @unchecked Sendable {
             do {
                 try await startAppAudioCapture(source: source)
             } catch {
-                micCapture.stop()
+                await cancelStartAndWait()
                 throw error
             }
         }
 
         // Now prepare the engine — audio is already being captured and
-        // buffered in audioChunk/allAudio while this runs.
-        try await engine.prepare()
-        await engine.reset()
+        // buffered in audioChunk/allAudio while this runs. If preparation fails,
+        // stop captures here so direct callers cannot leave the microphone active.
+        do {
+            try await engine.prepare()
+            await engine.reset()
+        } catch {
+            await cancelStartAndWait()
+            throw error
+        }
 
+        DLOG("Engine prepared/reset; transcription fully started in mode=\(mode)")
         print("Transcription started in mode: \(mode)")
     }
 
@@ -189,6 +281,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     func stop() {
+        DLOG("Transcription stop requested")
         micCapture.stop()
         screenCapture.stop()
 
@@ -206,17 +299,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     func cancelStart() {
-        micCapture.stop()
-        screenCapture.stop()
-
-        let sessionID = audioState.withLock { state in
-            let sessionID = state.sessionID
-            state.audioChunk.removeAll()
-            state.allAudio.removeAll()
-            state.fullTranscript.removeAll()
-            state.sessionID = UUID()
-            return sessionID
-        }
+        let sessionID = cancelStartAndReturnSession()
 
         Task { [weak self] in
             guard let self else { return }
@@ -224,6 +307,27 @@ final class TranscriptionController: @unchecked Sendable {
         }
 
         print("Transcription start cancelled")
+    }
+
+    private func cancelStartAndWait() async {
+        let sessionID = cancelStartAndReturnSession()
+        await cancelPendingChunkTasks(sessionID: sessionID)
+        print("Transcription start cancelled")
+    }
+
+    private func cancelStartAndReturnSession() -> UUID {
+        micCapture.stop()
+        screenCapture.stop()
+
+        return audioState.withLock { state in
+            let sessionID = state.sessionID
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            state.fullTranscript.removeAll()
+            state.sessionID = UUID()
+            state.chunkProcessingTail = nil
+            return sessionID
+        }
     }
 
     // MARK: - Audio Processing
@@ -312,43 +416,54 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
 
+        DLOG("Processing chunk: samples=\(chunkSamples.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing chunk with RMS: \(String(format: "%.4f", rms))")
 
-        // Transcribe chunk on background queue with performance monitoring
+        // Transcribe chunks on background tasks, serialized by the previous task tail.
+        // Parakeet streaming carries decoder state between chunks, so chunk order matters.
         let taskID = UUID()
-        let task = Task.detached(priority: .userInitiated) { [weak self, chunkSamples, sessionID, language] in
-            guard let self = self else { return }
-            defer {
-                self.removePendingChunkTask(id: taskID, sessionID: sessionID)
-            }
-
-            do {
-                let partial = try await PerformanceMonitor.shared.measure("ASRInference") {
-                    try await self.engine.process(samples: chunkSamples, language: language)
+        audioState.withLock { state in
+            let previousTask = state.chunkProcessingTail
+            let task = Task.detached(priority: .userInitiated) { [weak self, chunkSamples, sessionID, language, previousTask] in
+                guard let self = self else { return }
+                defer {
+                    self.removePendingChunkTask(id: taskID, sessionID: sessionID)
                 }
 
+                _ = await previousTask?.value
                 guard !Task.isCancelled else { return }
 
-                if let partial {
-                    let trimmedText = partial.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedText.isEmpty {
-                        let didAppend = self.audioState.withLock { state in
-                            guard state.sessionID == sessionID else { return false }
-                            state.fullTranscript.append(trimmedText)
-                            return true
-                        }
-                        if didAppend {
-                            self.throttledUIUpdate(trimmedText)
+                do {
+                    let partial = try await PerformanceMonitor.shared.measure("ASRInference") {
+                        try await self.engine.process(samples: chunkSamples, language: language)
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    if let partial {
+                        let trimmedText = partial.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedText.isEmpty {
+                            let didAppend = self.audioState.withLock { state in
+                                guard state.sessionID == sessionID else { return false }
+                                state.fullTranscript.append(trimmedText)
+                                return true
+                            }
+                            if didAppend {
+                                self.throttledUIUpdate(trimmedText)
+                            }
                         }
                     }
+                } catch {
+                    print("ASR chunk processing failed: \(error.localizedDescription)")
                 }
-            } catch {
-                print("ASR chunk processing failed: \(error.localizedDescription)")
             }
-        }
 
-        audioState.withLock { state in
+            guard state.sessionID == sessionID else {
+                task.cancel()
+                return
+            }
             state.pendingTasks[sessionID, default: []].append(PendingChunkTask(id: taskID, task: task))
+            state.chunkProcessingTail = task
         }
     }
 
@@ -377,6 +492,7 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
 
+        DLOG("Processing final transcription with ALL audio: samples=\(snapshot.audio.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing final transcription with ALL audio: \(snapshot.audio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
         // Transcribe complete audio recording
@@ -388,6 +504,7 @@ final class TranscriptionController: @unchecked Sendable {
             if let finalSegment {
                 let trimmedText = finalSegment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
+                    DLOG("Final transcription result received: chars=\(trimmedText.count)")
                     audioState.withLock { state in
                         guard state.sessionID == sessionID else { return }
                         state.fullTranscript = [trimmedText]
@@ -412,6 +529,9 @@ final class TranscriptionController: @unchecked Sendable {
         guard let combined = combined else { return }
 
         let cleaned = cleanTranscript(combined)
+        if cleaned != combined {
+            DLOG("Cleaned final transcript: rawChars=\(combined.count), cleanedChars=\(cleaned.count)")
+        }
 
         if !cleaned.isEmpty {
             if let onFinal {
@@ -425,28 +545,7 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Text Post-Processing
 
     private func cleanTranscript(_ text: String) -> String {
-        var result = text
-
-        // Remove duplicate spaces
-        while result.contains("  ") {
-            result = result.replacingOccurrences(of: "  ", with: " ")
-        }
-
-        // Trim whitespace
-        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Capitalize first letter
-        if let first = result.first {
-            result = first.uppercased() + result.dropFirst()
-        }
-
-        // Ensure ends with punctuation
-        let punctuation: Set<Character> = [".", "!", "?"]
-        if let last = result.last, !punctuation.contains(last) {
-            result += "."
-        }
-
-        return result
+        TranscriptCleaner.clean(text)
     }
 
     // MARK: - Edge Case Handling

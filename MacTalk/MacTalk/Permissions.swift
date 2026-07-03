@@ -11,7 +11,41 @@ import ScreenCaptureKit
 @preconcurrency import ApplicationServices
 import CoreGraphics
 
+enum AutoPastePermissionPolicy {
+    /// UI and paste execution should only treat auto-paste as enabled when both the
+    /// stored preference is on and macOS currently trusts this exact running build.
+    static func effectiveAutoPaste(
+        storedPreference: Bool,
+        accessibilityTrusted: Bool
+    ) -> Bool {
+        storedPreference && accessibilityTrusted
+    }
+
+    /// Local ad-hoc / DerivedData builds can leave stale TCC rows in System Settings:
+    /// the row appears enabled, but AXIsProcessTrusted() returns false for the current
+    /// code signature/CDHash. In that case, reset the stale approval before asking again.
+    static func shouldResetStaleAccessibilityApproval(
+        accessibilityTrusted: Bool,
+        isAdHocSigned: Bool,
+        isRunningFromXcode: Bool
+    ) -> Bool {
+        !accessibilityTrusted && (isAdHocSigned || isRunningFromXcode)
+    }
+
+    static func shouldResetStaleAccessibilityApproval(
+        accessibilityTrusted: Bool,
+        diagnostics: PermissionDiagnostics
+    ) -> Bool {
+        shouldResetStaleAccessibilityApproval(
+            accessibilityTrusted: accessibilityTrusted,
+            isAdHocSigned: diagnostics.isAdHocSigned,
+            isRunningFromXcode: diagnostics.isRunningFromXcode
+        )
+    }
+}
+
 enum Permissions {
+    @MainActor
     private static func configureAlertIcon(_ alert: NSAlert) {
         if let appIcon = NSApp.applicationIconImage {
             alert.icon = appIcon
@@ -156,6 +190,31 @@ enum Permissions {
         return PermissionsActor.shared.requestAccessibility(showPrompt: showPrompt)
     }
 
+    /// Reset Accessibility approval for this bundle ID. This is useful for local ad-hoc/DerivedData
+    /// builds where System Settings can show MacTalk enabled while AXIsProcessTrusted() still
+    /// returns false because the visible TCC row belongs to a previous code signature/CDHash.
+    @discardableResult
+    static func resetAccessibilityApproval(reason: String) -> Bool {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.mactalk.app"
+        DLOG("[Permissions] Resetting Accessibility approval for \(bundleID). Reason: \(reason)")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "Accessibility", bundleID]
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let succeeded = process.terminationStatus == 0
+            DLOG("[Permissions] tccutil reset Accessibility \(bundleID) exited with status=\(process.terminationStatus)")
+            NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
+            return succeeded
+        } catch {
+            DLOG("[Permissions] Failed to run tccutil reset Accessibility \(bundleID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// Get accessibility diagnostics for troubleshooting
     static func getAccessibilityDiagnostics() -> PermissionDiagnostics {
         return PermissionsActor.shared.getDiagnostics()
@@ -166,6 +225,8 @@ enum Permissions {
         onGranted: (@MainActor @Sendable () -> Void)? = nil
     ) {
         NSLog("[Permissions] Requesting accessibility permission from user...")
+        let diagnostics = getAccessibilityDiagnostics()
+        DLOG("[Permissions] requestAccessibilityPermission called: trusted=\(diagnostics.isAccessibilityTrusted), bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
 
         if isAccessibilityTrusted() {
             NotificationCenter.default.post(name: .permissionsDidChange, object: nil)

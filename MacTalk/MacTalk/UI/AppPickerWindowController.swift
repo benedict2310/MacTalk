@@ -155,7 +155,7 @@ private struct PickerContentView: View {
                     .textFieldStyle(.plain)
             }
             .padding(10)
-            .glassEffect()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
@@ -184,7 +184,7 @@ private struct PickerContentView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(state.selectedSource == nil)
-                .buttonStyle(.glass)
+                .buttonStyle(.borderedProminent)
             }
             .padding(12)
         }

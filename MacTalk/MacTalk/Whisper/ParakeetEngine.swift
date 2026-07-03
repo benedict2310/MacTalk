@@ -42,7 +42,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
-        let result = try await core.transcribe(buffer: buffer)
+        let result = try await core.finalize(buffer: buffer)
         let words = mapWords(from: result)
         return ASRFinalSegment(text: result.text, words: words)
     }
@@ -63,6 +63,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
 private actor ParakeetEngineCore {
     private let bootstrap: ParakeetBootstrap
     private var manager: AsrManager?
+    private var decoderState: TdtDecoderState?
 
     init(bootstrap: ParakeetBootstrap) {
         self.bootstrap = bootstrap
@@ -73,11 +74,24 @@ private actor ParakeetEngineCore {
     }
 
     func reset() async {
+        decoderState = nil
         await bootstrap.reset()
     }
 
     func transcribe(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
         let manager = try await bootstrap.ensureReady()
-        return try await manager.transcribe(buffer, source: .microphone)
+        if decoderState == nil {
+            decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        }
+        var state = decoderState!
+        let result = try await manager.transcribe(buffer, decoderState: &state)
+        decoderState = state
+        return result
+    }
+
+    func finalize(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
+        let manager = try await bootstrap.ensureReady()
+        var finalState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        return try await manager.transcribe(buffer, decoderState: &finalState)
     }
 }

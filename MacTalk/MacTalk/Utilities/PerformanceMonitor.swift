@@ -75,7 +75,7 @@ actor PerformanceMonitor {
     }
 
     /// Measure the execution time of a block (async version)
-    func measure<T>(_ identifier: String, block: () async throws -> T) async rethrows -> T {
+    func measure<T: Sendable>(_ identifier: String, block: () async throws -> T) async rethrows -> T {
         startTimer(identifier)
         defer { _ = stopTimer(identifier) }
         return try await block()

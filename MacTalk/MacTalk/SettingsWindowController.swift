@@ -70,7 +70,15 @@ final class SettingsViewModel: ObservableObject {
         let d = UserDefaults.standard
         showInDock = d.bool(forKey: "showInDock")
         showNotifications = d.bool(forKey: "showNotifications")
-        autoPaste = d.bool(forKey: "autoPaste")
+        let storedAutoPaste = d.bool(forKey: "autoPaste")
+        let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+        if storedAutoPaste && !accessibilityTrusted {
+            DLOG("[Settings] Stored auto-paste preference is on, but current process is not Accessibility-trusted; showing toggle off")
+        }
+        autoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
+            storedPreference: storedAutoPaste,
+            accessibilityTrusted: accessibilityTrusted
+        )
         defaultModeIndex = d.integer(forKey: "defaultMode")
         let provider = AppSettings.shared.provider
         providerIndex = ASRProvider.allCases.firstIndex(of: provider) ?? 0
@@ -116,7 +124,19 @@ final class SettingsViewModel: ObservableObject {
         guard Permissions.isAccessibilityTrusted() else {
             autoPaste = false
             save()
+
+            let diagnostics = Permissions.getAccessibilityDiagnostics()
+            DLOG("[Settings] Auto-paste enable requested but AXIsProcessTrusted=false. bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
+            if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: diagnostics.isAccessibilityTrusted,
+                diagnostics: diagnostics
+            ) {
+                DLOG("[Settings] System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
+                Permissions.resetAccessibilityApproval(reason: "Settings auto-paste enable saw stale/untrusted local build")
+            }
+
             Permissions.requestAccessibilityPermission { [weak self] in
+                DLOG("[Settings] Accessibility grant callback received; enabling auto-paste preference")
                 self?.autoPaste = true
                 self?.save()
                 self?.refreshPermissions()
@@ -155,7 +175,14 @@ final class SettingsViewModel: ObservableObject {
         }
 
         screenStatus = Permissions.checkScreenRecordingPermission() ? .granted : .notGranted
-        accessibilityStatus = Permissions.isAccessibilityTrusted() ? .granted : .notGranted
+        let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+        accessibilityStatus = accessibilityTrusted ? .granted : .notGranted
+
+        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        if storedAutoPaste && !accessibilityTrusted && autoPaste {
+            DLOG("[Settings] Refresh noticed stored auto-paste on but Accessibility untrusted; showing toggle off")
+            autoPaste = false
+        }
     }
 
     // MARK: - Engine
@@ -164,22 +191,27 @@ final class SettingsViewModel: ObservableObject {
         tokens.append(NotificationCenter.default.addObserver(
             forName: .parakeetEngineStateDidChange, object: nil, queue: .main
         ) { [weak self] n in
-            if let s = n.object as? ParakeetBootstrap.EngineState { self?.engineState = s }
+            guard let s = n.object as? ParakeetBootstrap.EngineState else { return }
+            Task { @MainActor in
+                self?.engineState = s
+            }
         })
 
         tokens.append(NotificationCenter.default.addObserver(
             forName: .parakeetDownloadStateDidChange, object: nil, queue: .main
         ) { [weak self] n in
             guard let state = n.object as? ParakeetModelDownloader.State else { return }
-            switch state {
-            case .running(let p, _, _, _):
-                self?.downloadVisible = true
-                self?.downloadProgress = p
-            case .verifying:
-                self?.downloadVisible = true
-            case .done, .failed:
-                self?.downloadVisible = false
-            default: break
+            Task { @MainActor in
+                switch state {
+                case .running(let p, _, _, _):
+                    self?.downloadVisible = true
+                    self?.downloadProgress = p
+                case .verifying:
+                    self?.downloadVisible = true
+                case .done, .failed:
+                    self?.downloadVisible = false
+                default: break
+                }
             }
         })
 
@@ -190,7 +222,9 @@ final class SettingsViewModel: ObservableObject {
         tokens.append(NotificationCenter.default.addObserver(
             forName: .permissionsDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.refreshPermissions()
+            Task { @MainActor in
+                self?.refreshPermissions()
+            }
         })
     }
 
@@ -587,7 +621,9 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            self?.viewModel.refreshPermissions()
+            Task { @MainActor in
+                self?.viewModel.refreshPermissions()
+            }
         })
     }
 

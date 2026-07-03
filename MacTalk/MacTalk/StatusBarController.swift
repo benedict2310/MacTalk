@@ -93,7 +93,7 @@ final class StatusBarController {
 
         // Load settings from UserDefaults
         let defaults = UserDefaults.standard
-        autoPaste = defaults.bool(forKey: "autoPaste")
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
         provider = AppSettings.shared.provider
 
         // Show notifications defaults to true if not set
@@ -114,7 +114,9 @@ final class StatusBarController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.shortcutsDidChange()
+                Task { @MainActor in
+                    self?.shortcutsDidChange()
+                }
             }
         )
 
@@ -125,7 +127,9 @@ final class StatusBarController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.settingsDidChange()
+                Task { @MainActor in
+                    self?.settingsDidChange()
+                }
             }
         )
 
@@ -137,7 +141,22 @@ final class StatusBarController {
                 queue: .main
             ) { [weak self] notification in
                 guard let provider = notification.object as? ASRProvider else { return }
-                self?.providerDidChange(provider)
+                Task { @MainActor in
+                    self?.providerDidChange(provider)
+                }
+            }
+        )
+
+        // Listen for permission changes so stale Accessibility grants do not leave Auto-paste visually enabled.
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: .permissionsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.permissionsDidChange()
+                }
             }
         )
 
@@ -149,7 +168,9 @@ final class StatusBarController {
                 queue: .main
             ) { [weak self] notification in
                 guard let state = notification.object as? ParakeetModelDownloader.State else { return }
-                self?.handleParakeetDownloadState(state)
+                Task { @MainActor in
+                    self?.handleParakeetDownloadState(state)
+                }
             }
         )
 
@@ -282,6 +303,7 @@ final class StatusBarController {
         autoPasteItem.target = self
         autoPasteMenuItem = autoPasteItem
         menu.addItem(autoPasteItem)
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -397,7 +419,17 @@ final class StatusBarController {
         } else {
             autoPaste = false
             sender.state = .off
+            let diagnostics = Permissions.getAccessibilityDiagnostics()
+            DLOG("Auto-paste enable requested but Accessibility is not trusted; bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
+            if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
+                accessibilityTrusted: diagnostics.isAccessibilityTrusted,
+                diagnostics: diagnostics
+            ) {
+                DLOG("System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
+                Permissions.resetAccessibilityApproval(reason: "Menu auto-paste enable saw stale/untrusted local build")
+            }
             Permissions.requestAccessibilityPermission { [weak self, weak sender] in
+                DLOG("Auto-paste Accessibility grant callback received; enabling preference")
                 self?.autoPaste = true
                 sender?.state = .on
                 UserDefaults.standard.set(true, forKey: "autoPaste")
@@ -819,24 +851,39 @@ final class StatusBarController {
         }
 
         controller.onFinal = { [weak self] text in
-            NSLog("[StatusBar] onFinal callback triggered with text: \(text.prefix(100))...")
+            NSLog("[StatusBar] onFinal callback triggered with text length: \(text.count) characters")
+            DLOG("[AutoPaste] onFinal received: chars=\(text.count)")
             self?.hudController?.updateFinal(text: text)
 
-            let autoPasteEnabled = self?.autoPaste ?? false
-            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled)")
+            let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+            let autoPastePreference = self?.autoPaste ?? false
+            let autoPasteEnabled = AutoPastePermissionPolicy.effectiveAutoPaste(
+                storedPreference: autoPastePreference,
+                accessibilityTrusted: accessibilityTrusted
+            )
+            if self?.autoPaste == true, !accessibilityTrusted {
+                DLOG("Auto-paste preference is enabled, but Accessibility is not trusted at paste time; disabling effective auto-paste")
+                self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+            }
+            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled) (Accessibility trusted: \(accessibilityTrusted))")
+            DLOG("[AutoPaste] paste decision inputs: preference=\(autoPastePreference), accessibilityTrusted=\(accessibilityTrusted), effective=\(autoPasteEnabled), target=\(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"), frontmost=\(self?.describeApplication(NSWorkspace.shared.frontmostApplication) ?? "unknown")")
 
             // Always copy to clipboard first
             NSLog("[StatusBar] Copying text to clipboard...")
+            DLOG("[AutoPaste] copying final text to clipboard")
             ClipboardManager.setClipboard(text)
 
             var message = "Text copied to clipboard"
 
             // Auto-insert if enabled (uses AX SetValue first, then Cmd+V fallback)
             if autoPasteEnabled, let self {
+                DLOG("[AutoPaste] effective auto-paste enabled; checking target/frontmost match")
                 if self.isRecordingTargetAppStillFrontmost() {
                     NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
+                    DLOG("[AutoPaste] target/frontmost check passed; invoking AutoInsertManager")
                     let result = AutoInsertManager.insertText(text)
                     NSLog("[StatusBar] Auto-insert result: \(result.description)")
+                    DLOG("[AutoPaste] AutoInsertManager returned: \(result.description)")
 
                     switch result {
                     case .axSetValueSuccess, .cmdVFallback:
@@ -852,6 +899,7 @@ final class StatusBarController {
                             shouldPrompt = elapsed >= cooldown
                             if !shouldPrompt {
                                 NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago, cooldown \(Int(cooldown))s)")
+                                DLOG("[AutoPaste] permission prompt throttled: elapsed=\(Int(elapsed))s, cooldown=\(Int(cooldown))s")
                             }
                         } else {
                             shouldPrompt = true
@@ -859,21 +907,28 @@ final class StatusBarController {
 
                         if shouldPrompt {
                             NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
+                            DLOG("[AutoPaste] permission denied; requesting Accessibility permission")
                             self.recordPermissionPromptShown(at: now)
                             Permissions.requestAccessibilityPermission()
                         }
                     case .failed(let reason):
                         NSLog("[StatusBar] Auto-insert failed: \(reason)")
+                        DLOG("[AutoPaste] AutoInsert failed: \(reason)")
                         self.resetPermissionPromptBackoff()
                     }
                 } else {
                     NSLog("⚠️ [StatusBar] Frontmost app changed during recording - skipping auto-paste and leaving text on clipboard")
+                    DLOG("[AutoPaste] skipped because target/frontmost check failed")
                 }
+            } else {
+                DLOG("[AutoPaste] effective auto-paste disabled; leaving text on clipboard")
             }
 
+            DLOG("[AutoPaste] clearing recording target app (was: \(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"))")
             self?.recordingTargetApp = nil
 
             NSLog("[StatusBar] Showing notification: \(message)")
+            DLOG("[AutoPaste] notification message=\(message)")
             self?.showNotification(title: "Transcription Complete", message: message)
         }
 
@@ -922,20 +977,24 @@ final class StatusBarController {
             }
             recordingTargetApp = candidate ?? frontmost
             NSLog("[StatusBar] MacTalk is frontmost — captured underlying app: \(describeApplication(recordingTargetApp))")
+            DLOG("[AutoPaste] capture target while MacTalk frontmost: frontmost=\(describeApplication(frontmost)), candidate=\(describeApplication(candidate)), chosen=\(describeApplication(recordingTargetApp))")
         } else {
             recordingTargetApp = frontmost
             NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
+            DLOG("[AutoPaste] captured recording target app: \(describeApplication(recordingTargetApp))")
         }
     }
 
     private func isRecordingTargetAppStillFrontmost() -> Bool {
         guard let recordingTargetApp else {
             NSLog("⚠️ [StatusBar] No recording target app captured — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: no target captured; allowing paste")
             return true   // Permissive: paste if we couldn't capture
         }
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             NSLog("⚠️ [StatusBar] No frontmost app available — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: no frontmost app; allowing paste")
             return true
         }
 
@@ -944,6 +1003,7 @@ final class StatusBarController {
         let selfPID = ProcessInfo.processInfo.processIdentifier
         if frontmostApp.processIdentifier == selfPID {
             NSLog("[StatusBar] MacTalk is frontmost at paste time — allowing auto-paste")
+            DLOG("[AutoPaste] target/frontmost check: MacTalk frontmost at paste time; allowing paste. target=\(describeApplication(recordingTargetApp))")
             return true
         }
 
@@ -952,8 +1012,10 @@ final class StatusBarController {
             NSLog(
                 "⚠️ [StatusBar] Frontmost app changed during recording: \(describeApplication(recordingTargetApp)) -> \(describeApplication(frontmostApp))"
             )
+            DLOG("[AutoPaste] target/frontmost mismatch: target=\(describeApplication(recordingTargetApp)), frontmost=\(describeApplication(frontmostApp))")
         } else {
             NSLog("[StatusBar] Frontmost app matches recording target: \(describeApplication(frontmostApp))")
+            DLOG("[AutoPaste] target/frontmost matched: \(describeApplication(frontmostApp))")
         }
 
         return isSameApp
@@ -1000,10 +1062,19 @@ final class StatusBarController {
             return
         }
 
+        let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false
+        if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
+            let immediateEngine = parakeetEngine ?? ParakeetEngine()
+            parakeetEngine = immediateEngine
+            engine = immediateEngine
+            DLOG("Created Parakeet engine immediately so microphone capture can start before model preparation finishes")
+            NSLog("✅ [StatusBar] Created Parakeet engine immediately; preparation will happen after mic capture starts")
+        }
+
         let preparationDecision = RecordingStartGate.decision(
             provider: provider,
             engineProvider: engine?.provider,
-            modelsAvailable: provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false,
+            modelsAvailable: parakeetModelsAvailable,
             allowParakeetPrepare: allowParakeetPrepare,
             isPreparingParakeetEngine: isParakeetPreparationInFlight
         )
@@ -1108,6 +1179,7 @@ final class StatusBarController {
                     self.hudController?.showWindow(nil)
                 }
             } catch is CancellationError {
+                transcriptionController.cancelStart()
                 await MainActor.run {
                     guard startGeneration == self.startGeneration else { return }
                     self.startTask = nil
@@ -1115,6 +1187,7 @@ final class StatusBarController {
                     NSLog("ℹ️ [StatusBar] Recording start cancelled")
                 }
             } catch {
+                transcriptionController.cancelStart()
                 NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
                 await MainActor.run {
                     guard startGeneration == self.startGeneration else { return }
@@ -1419,7 +1492,7 @@ final class StatusBarController {
     @objc private func settingsDidChange() {
         // Reload settings from UserDefaults when they change
         let defaults = UserDefaults.standard
-        autoPaste = defaults.bool(forKey: "autoPaste")
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
 
         let newShowNotifications = defaults.object(forKey: "showNotifications") != nil ?
             defaults.bool(forKey: "showNotifications") : true
@@ -1428,8 +1501,33 @@ final class StatusBarController {
             NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
             showNotifications = newShowNotifications
         }
+    }
 
-        autoPasteMenuItem?.state = autoPaste ? .on : .off
+    @objc private func permissionsDidChange() {
+        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+    }
+
+    private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
+        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        let accessibilityTrusted = Permissions.isAccessibilityTrusted()
+        let effectiveAutoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
+            storedPreference: storedAutoPaste,
+            accessibilityTrusted: accessibilityTrusted
+        )
+
+        if storedAutoPaste && !accessibilityTrusted {
+            let diagnostics = Permissions.getAccessibilityDiagnostics()
+            DLOG("Auto-paste preference is on, but Accessibility is not trusted for this build; showing Auto-paste as off. bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath). If System Settings shows MacTalk enabled, that row is likely stale for a previous code signature/CDHash.")
+            NSLog("⚠️ [MacTalk] Auto-paste preference is on, but Accessibility is not trusted for this build")
+        }
+
+        autoPaste = effectiveAutoPaste
+        transcriber?.autoPasteEnabled = effectiveAutoPaste
+        autoPasteMenuItem?.state = effectiveAutoPaste ? .on : .off
+
+        if updateStoredPreference && storedAutoPaste != effectiveAutoPaste {
+            UserDefaults.standard.set(effectiveAutoPaste, forKey: "autoPaste")
+        }
     }
 
     private func invalidatePendingStart() {
