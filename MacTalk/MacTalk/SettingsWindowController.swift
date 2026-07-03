@@ -191,22 +191,27 @@ final class SettingsViewModel: ObservableObject {
         tokens.append(NotificationCenter.default.addObserver(
             forName: .parakeetEngineStateDidChange, object: nil, queue: .main
         ) { [weak self] n in
-            if let s = n.object as? ParakeetBootstrap.EngineState { self?.engineState = s }
+            guard let s = n.object as? ParakeetBootstrap.EngineState else { return }
+            Task { @MainActor in
+                self?.engineState = s
+            }
         })
 
         tokens.append(NotificationCenter.default.addObserver(
             forName: .parakeetDownloadStateDidChange, object: nil, queue: .main
         ) { [weak self] n in
             guard let state = n.object as? ParakeetModelDownloader.State else { return }
-            switch state {
-            case .running(let p, _, _, _):
-                self?.downloadVisible = true
-                self?.downloadProgress = p
-            case .verifying:
-                self?.downloadVisible = true
-            case .done, .failed:
-                self?.downloadVisible = false
-            default: break
+            Task { @MainActor in
+                switch state {
+                case .running(let p, _, _, _):
+                    self?.downloadVisible = true
+                    self?.downloadProgress = p
+                case .verifying:
+                    self?.downloadVisible = true
+                case .done, .failed:
+                    self?.downloadVisible = false
+                default: break
+                }
             }
         })
 
@@ -217,7 +222,9 @@ final class SettingsViewModel: ObservableObject {
         tokens.append(NotificationCenter.default.addObserver(
             forName: .permissionsDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.refreshPermissions()
+            Task { @MainActor in
+                self?.refreshPermissions()
+            }
         })
     }
 
@@ -614,7 +621,9 @@ final class SettingsWindowController: NSWindowController, @unchecked Sendable {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            self?.viewModel.refreshPermissions()
+            Task { @MainActor in
+                self?.viewModel.refreshPermissions()
+            }
         })
     }
 
