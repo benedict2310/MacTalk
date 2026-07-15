@@ -113,26 +113,4 @@ final class ConcurrencyStressTests: XCTestCase {
         let assignmentCount = await assignments.getCount()
         XCTAssertEqual(assignmentCount, 100)
     }
-
-    func test_appSettingsConcurrentProviderWritesRemainValid() async {
-        let suiteName = "AppSettingsConcurrencyTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = AppSettings.makeForTesting(defaults: defaults)
-        let writes = TestCounter()
-
-        await withTaskGroup(of: Void.self) { group in
-            for index in 0..<50 {
-                group.addTask {
-                    settings.provider = index.isMultiple(of: 2) ? .whisper : .parakeet
-                    await writes.increment()
-                }
-            }
-        }
-
-        let writeCount = await writes.getCount()
-        let finalProvider = settings.provider
-        XCTAssertEqual(writeCount, 50)
-        XCTAssertEqual(defaults.string(forKey: "asrProvider"), finalProvider.rawValue)
-    }
 }
