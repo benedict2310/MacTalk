@@ -34,18 +34,18 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
 
     init?(modelURL: URL) {
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            print("Model file does not exist at path: \(modelURL.path)")
+            DLOG("Whisper model file is unavailable")
             return nil
         }
 
         let cPath = (modelURL.path as NSString).utf8String
         guard let path = cPath, let context = wt_whisper_init(path) else {
-            print("Failed to initialize Whisper context")
+            DLOG("Whisper context initialization failed")
             return nil
         }
 
         self.ctx = OpaquePointer(context)
-        print("Whisper engine initialized with model: \(modelURL.lastPathComponent)")
+        DLOG("Whisper engine initialized")
     }
 
     deinit {
@@ -93,12 +93,12 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         noContext: Bool = false
     ) -> Result? {
         guard let ctx = ctx else {
-            print("Whisper context is nil")
+            DLOG("Whisper context is unavailable")
             return nil
         }
 
         guard !samples.isEmpty else {
-            print("No samples to transcribe")
+            DLOG("Whisper received no samples")
             return nil
         }
 
@@ -120,7 +120,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             }
 
             guard let textPointer = textPtr else {
-                print("Transcription returned nil")
+                DLOG("Whisper transcription returned no result")
                 return nil
             }
 
@@ -129,7 +129,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             let text = String(cString: textPointer)
             let processingTime = Date().timeIntervalSince(startTime)
 
-            print("Transcribed \(samples.count) samples in \(processingTime)s: \(text.prefix(50))...")
+            DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
 
             return Result(text: text, processingTime: processingTime)
         }

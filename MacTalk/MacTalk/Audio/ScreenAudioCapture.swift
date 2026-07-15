@@ -125,7 +125,7 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unc
     // MARK: - SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("ScreenCaptureKit stream stopped with error: \(error)")
+        DebugLogger.shared.log(.error(description: error.localizedDescription))
         onStreamError?(error)
     }
 

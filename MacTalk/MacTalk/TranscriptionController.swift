@@ -454,7 +454,7 @@ final class TranscriptionController: @unchecked Sendable {
                         }
                     }
                 } catch {
-                    print("ASR chunk processing failed: \(error.localizedDescription)")
+                    DebugLogger.shared.log(.error(description: error.localizedDescription))
                 }
             }
 
@@ -512,7 +512,7 @@ final class TranscriptionController: @unchecked Sendable {
                 }
             }
         } catch {
-            print("ASR final processing failed: \(error.localizedDescription)")
+            DebugLogger.shared.log(.error(description: error.localizedDescription))
         }
 
         emitFinalTranscript(sessionID: sessionID)
@@ -551,7 +551,7 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Edge Case Handling
 
     private func handleAppAudioError(_ error: Error) {
-        print("⚠️ App audio error: \(error)")
+        DebugLogger.shared.log(.error(description: error.localizedDescription))
 
         // Notify that app audio was lost
         if let onAppAudioLost {

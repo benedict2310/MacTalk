@@ -851,8 +851,7 @@ final class StatusBarController {
         }
 
         controller.onFinal = { [weak self] text in
-            NSLog("[StatusBar] onFinal callback triggered with text length: \(text.count) characters")
-            DLOG("[AutoPaste] onFinal received: chars=\(text.count)")
+            DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
             self?.hudController?.updateFinal(text: text)
 
             let accessibilityTrusted = Permissions.isAccessibilityTrusted()
@@ -882,7 +881,7 @@ final class StatusBarController {
                     NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
                     DLOG("[AutoPaste] target/frontmost check passed; invoking AutoInsertManager")
                     let result = AutoInsertManager.insertText(text)
-                    NSLog("[StatusBar] Auto-insert result: \(result.description)")
+                    NSLog("[StatusBar] Auto-insert operation completed")
                     DLOG("[AutoPaste] AutoInsertManager returned: \(result.description)")
 
                     switch result {
@@ -911,9 +910,8 @@ final class StatusBarController {
                             self.recordPermissionPromptShown(at: now)
                             Permissions.requestAccessibilityPermission()
                         }
-                    case .failed(let reason):
-                        NSLog("[StatusBar] Auto-insert failed: \(reason)")
-                        DLOG("[AutoPaste] AutoInsert failed: \(reason)")
+                    case .failed:
+                        DebugLogger.shared.log(.error(description: "auto-insert failed"))
                         self.resetPermissionPromptBackoff()
                     }
                 } else {

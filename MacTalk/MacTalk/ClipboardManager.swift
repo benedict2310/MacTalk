@@ -107,7 +107,7 @@ enum ClipboardManager {
         if let scriptObject = NSAppleScript(source: script) {
             scriptObject.executeAndReturnError(&error)
             if let error = error {
-                print("AppleScript paste error: \(error)")
+                DebugLogger.shared.log(.error(description: String(describing: error)))
                 return false
             }
             return true

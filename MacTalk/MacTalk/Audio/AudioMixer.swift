@@ -85,7 +85,7 @@ final class AudioMixer: @unchecked Sendable {
         let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
 
         guard status != .error, error == nil else {
-            print("Audio conversion error: \(error?.localizedDescription ?? "unknown")")
+            DebugLogger.shared.log(.error(description: error?.localizedDescription ?? "unknown"))
             return nil
         }
 
