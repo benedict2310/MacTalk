@@ -29,7 +29,7 @@ WTWhisperContextRef wt_whisper_init(const char * model_path) {
     cparams.use_gpu = true;        // Enable Metal backend
     cparams.gpu_device = 0;        // Use default GPU
 
-    NSLog(@"[WhisperBridge] Initializing whisper context from: %s", model_path);
+    NSLog(@"[WhisperBridge] Initializing whisper context");
 
     struct whisper_context* ctx = whisper_init_from_file_with_params(model_path, cparams);
 
@@ -58,8 +58,7 @@ char * wt_whisper_transcribe(
     bool noContext
 ) {
     if (!ctx || !samples || numSamples <= 0) {
-        NSLog(@"[WhisperBridge] Invalid parameters: ctx=%p samples=%p numSamples=%d",
-              ctx, samples, numSamples);
+        NSLog(@"[WhisperBridge] Invalid transcription parameters");
         return nullptr;
     }
 
@@ -98,20 +97,19 @@ char * wt_whisper_transcribe(
     // Audio splitting
     params.audio_ctx = 0;  // Use default
 
-    NSLog(@"[WhisperBridge] Starting transcription of %d samples (%.2f seconds)",
-          numSamples, (float)numSamples / 16000.0f);
+    NSLog(@"[WhisperBridge] Starting transcription");
 
     // Run transcription
     int result = whisper_full(whisper_ctx, params, samples, numSamples);
 
     if (result != 0) {
-        NSLog(@"[WhisperBridge] Transcription failed with code: %d", result);
+        NSLog(@"[WhisperBridge] Transcription failed");
         return nullptr;
     }
 
     // Collect transcript segments
     int n_segments = whisper_full_n_segments(whisper_ctx);
-    NSLog(@"[WhisperBridge] Transcription complete: %d segments", n_segments);
+    NSLog(@"[WhisperBridge] Transcription complete");
 
     std::string transcript;
     transcript.reserve(1024);
@@ -135,8 +133,7 @@ char * wt_whisper_transcribe(
 
     memcpy(result_str, transcript.c_str(), transcript.size() + 1);
 
-    NSLog(@"[WhisperBridge] Returning transcription result (%zu bytes)",
-          transcript.size());
+    NSLog(@"[WhisperBridge] Returning transcription result");
 
     return result_str;
 }
