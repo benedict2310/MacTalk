@@ -135,8 +135,8 @@ char * wt_whisper_transcribe(
 
     memcpy(result_str, transcript.c_str(), transcript.size() + 1);
 
-    NSLog(@"[WhisperBridge] Returning transcript: %s",
-          transcript.substr(0, 50).c_str());
+    NSLog(@"[WhisperBridge] Returning transcription result (%zu bytes)",
+          transcript.size());
 
     return result_str;
 }

@@ -11,14 +11,30 @@ final class PrivacyLoggingTests: XCTestCase {
         let sink = RecordingLogSink()
         let logger = DebugLogger(sink: sink, diagnosticsEnabled: true)
 
-        logger.log(.transcriptCompleted(text: transcript))
-        logger.log(.clipboardUpdated(text: clipboard))
+        logger.log(.transcriptCompleted(characterCount: transcript.count))
+        logger.log(.clipboardUpdated(characterCount: clipboard.count))
         logger.log(.error(description: error.localizedDescription))
 
         let output = sink.messages.joined(separator: "\n")
         XCTAssertFalse(output.contains(transcript))
         XCTAssertFalse(output.contains(clipboard))
         XCTAssertFalse(output.contains(error.localizedDescription))
+    }
+
+    func test_whisperBridgeDoesNotLogTranscriptContent() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let bridgeURL = testsDirectory
+            .appendingPathComponent("../MacTalk/Whisper/WhisperBridge.mm")
+            .standardizedFileURL
+        let source = try String(contentsOf: bridgeURL, encoding: .utf8)
+
+        let nativeTranscriptLogPattern = #"(?is)NSLog\s*\([^;]*\btranscript\b[^;]*(?:c_str|%s|%@|substr)"#
+        let nativeTranscriptLogRegex = try NSRegularExpression(pattern: nativeTranscriptLogPattern)
+        let sourceRange = NSRange(source.startIndex..<source.endIndex, in: source)
+        XCTAssertNil(
+            nativeTranscriptLogRegex.firstMatch(in: source, range: sourceRange),
+            "WhisperBridge must not interpolate transcript content through NSLog"
+        )
     }
 }
 
