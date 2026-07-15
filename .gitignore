@@ -1,5 +1,9 @@
 # MacTalk .gitignore
 
+# Local agent workspaces and profiling output
+.worktrees/
+*.profraw
+
 ## macOS System Files
 .DS_Store
 .AppleDouble
