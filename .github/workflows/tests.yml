@@ -32,8 +32,12 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen 2.44.1
+        shell: bash
+        run: |
+          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
+          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          xcodegen --version
 
       - name: Verify reproducible project generation
         run: bash scripts/tests/test_reproducible_project_generation.sh
