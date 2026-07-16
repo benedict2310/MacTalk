@@ -146,6 +146,40 @@ final class AudioMixerTests: XCTestCase {
         XCTAssertEqual(secondMean, 0.9, accuracy: 0.01)
     }
 
+    func test_streaming44kHzUnevenBuffersMatchesOneShotAtBoundaries() throws {
+        let sampleRate = 44_100.0
+        let totalFrames = 44_100
+        var source: [Float] = []
+        source.reserveCapacity(totalFrames)
+        for frame in 0..<totalFrames {
+            let phase = Float(frame) * 2 * Float.pi * 440 / Float(sampleRate)
+            source.append(sin(phase))
+        }
+        let mixer = AudioMixer()
+        let oneShot = try XCTUnwrap(mixer.convert(buffer: makePCMBuffer(sampleRate: sampleRate, channels: [source])))
+        let stream = mixer.makeStream()
+        let splitSizes = [137, 997, 4_096, 12_345, 271, 8_888, 17_366]
+        var streamed: [Float] = []
+        var sourceOffset = 0
+
+        for splitSize in splitSizes {
+            let end = sourceOffset + splitSize
+            let chunk = Array(source[sourceOffset..<end])
+            streamed += try XCTUnwrap(stream.convert(buffer: makePCMBuffer(sampleRate: sampleRate, channels: [chunk])))
+            sourceOffset = end
+        }
+
+        streamed += try XCTUnwrap(stream.finish())
+
+        XCTAssertEqual(sourceOffset, totalFrames)
+        XCTAssertEqual(streamed.count, oneShot.count, accuracy: 1)
+        let comparableCount = min(streamed.count, oneShot.count)
+        let maxDifference = zip(streamed.prefix(comparableCount), oneShot.prefix(comparableCount))
+            .map { abs($0 - $1) }
+            .max() ?? 0
+        XCTAssertLessThan(maxDifference, 0.05)
+    }
+
     func test_concurrentSameFormatConversionsAllSucceed() async {
         let mixer = AudioMixer()
         let successes = TestCounter()

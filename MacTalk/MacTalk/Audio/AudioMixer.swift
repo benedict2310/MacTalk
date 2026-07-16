@@ -7,13 +7,9 @@
 
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
-/// Audio format converter.
-///
-/// Each call is a complete, stateless conversion of one input buffer. A fresh
-/// `AVAudioConverter` is used for every call so microphone and app-audio
-/// callbacks cannot share converter state or race while draining it. Callers
-/// that need stream continuity should pass buffers from one source in order;
-/// output from separate calls can then be concatenated without frame loss.
+import Foundation
+
+/// Audio format conversion and downmixing to the app's 16 kHz mono format.
 final class AudioMixer: Sendable {
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -24,25 +20,104 @@ final class AudioMixer: Sendable {
 
     init() {}
 
-    /// Convert an AVAudioPCMBuffer to 16kHz mono float32 array.
+    /// Creates an independently stateful converter for one audio source.
     ///
-    /// Empty input is intentionally represented as a non-nil empty array. The
-    /// converter receives `.endOfStream` after the one input buffer, allowing
-    /// it to emit all pending resampler frames before the call returns.
+    /// A stream must not be shared by unrelated sources: its resampling phase
+    /// belongs to the input sequence supplied to it. `Stream` serializes calls,
+    /// so audio callbacks may safely hand buffers to their own source stream.
+    func makeStream() -> Stream {
+        Stream(targetFormat: targetFormat)
+    }
+
+    /// Convert one independent buffer to 16 kHz mono float32.
+    ///
+    /// This API is intentionally stateless. It ends the converter after this
+    /// buffer and is therefore appropriate for standalone buffers, not for
+    /// concatenating arbitrary chunks from a continuous source. Use
+    /// ``makeStream()`` for microphone or app-audio callback sequences.
     func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
         guard buffer.frameLength > 0 else { return [] }
-
-        guard let inputBuffer = makeMonoBuffer(from: buffer),
+        guard let inputBuffer = Self.makeMonoBuffer(from: buffer),
               let converter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
             DebugLogger.shared.log(.error(description: "Failed to create audio converter"))
             return nil
         }
+        return Self.convert(inputBuffer: inputBuffer, converter: converter, endOfStream: true)
+    }
 
-        // Leave room for converter priming/trailing frames. The returned frame
-        // length is still determined by AVAudioConverter, not this capacity.
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let expectedFrames = Double(buffer.frameLength) * ratio
-        let outputFrameCapacity = AVAudioFrameCount(ceil(expectedFrames) + 1024)
+    /// A serialized, stateful converter for one continuous source.
+    final class Stream: @unchecked Sendable {
+        private let targetFormat: AVAudioFormat
+        private let lock = NSLock()
+        private var converter: AVAudioConverter?
+        private var inputFormat: AVAudioFormat?
+
+        fileprivate init(targetFormat: AVAudioFormat) {
+            self.targetFormat = targetFormat
+        }
+
+        /// Converts the next buffer in this stream, preserving resampling phase.
+        func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard buffer.frameLength > 0 else { return [] }
+            guard let inputBuffer = AudioMixer.makeMonoBuffer(from: buffer) else { return nil }
+
+            if converter == nil || inputFormat?.isEqual(inputBuffer.format) != true {
+                guard let newConverter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
+                    DebugLogger.shared.log(.error(description: "Failed to create audio converter"))
+                    return nil
+                }
+                converter = newConverter
+                inputFormat = inputBuffer.format
+            }
+
+            guard let converter else { return nil }
+            return AudioMixer.convert(
+                inputBuffer: inputBuffer,
+                converter: converter,
+                endOfStream: false
+            )
+        }
+
+        /// Drains converter latency at the end of this source sequence.
+        /// The stream is reset and can then be reused for a new sequence.
+        func finish() -> [Float]? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let converter else { return [] }
+            let samples = AudioMixer.convert(
+                inputBuffer: nil,
+                converter: converter,
+                endOfStream: true
+            )
+            converter.reset()
+            self.converter = nil
+            inputFormat = nil
+            return samples
+        }
+
+        /// Starts a fresh source sequence while retaining this stream object.
+        func reset() {
+            lock.lock()
+            converter?.reset()
+            converter = nil
+            inputFormat = nil
+            lock.unlock()
+        }
+    }
+
+    private static func convert(
+        inputBuffer: AVAudioPCMBuffer?,
+        converter: AVAudioConverter,
+        endOfStream: Bool
+    ) -> [Float]? {
+        let targetFormat = converter.outputFormat
+        let inputFormat = inputBuffer?.format ?? converter.inputFormat
+        let ratio = targetFormat.sampleRate / inputFormat.sampleRate
+        let expectedFrames = Double(inputBuffer?.frameLength ?? 0) * ratio
+        let outputFrameCapacity = AVAudioFrameCount(max(1024, ceil(expectedFrames) + 1024))
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: outputFrameCapacity
@@ -54,8 +129,8 @@ final class AudioMixer: Sendable {
         var error: NSError?
         nonisolated(unsafe) var inputConsumed = false
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            guard !inputConsumed else {
-                outStatus.pointee = .endOfStream
+            guard !inputConsumed, let inputBuffer else {
+                outStatus.pointee = endOfStream ? .endOfStream : .noDataNow
                 return nil
             }
             inputConsumed = true
@@ -76,7 +151,7 @@ final class AudioMixer: Sendable {
         ))
     }
 
-    private func makeMonoBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    private static func makeMonoBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard buffer.format.channelCount > 1 else { return buffer }
         guard let source = buffer.floatChannelData else { return nil }
 
@@ -106,12 +181,16 @@ final class AudioMixer: Sendable {
         return monoBuffer
     }
 
-    /// Convert CMSampleBuffer (from ScreenCaptureKit) to float array
+    /// Convert CMSampleBuffer (from ScreenCaptureKit) to float array.
     func convertSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> [Float]? {
-        guard let pcmBuffer = sampleBuffer.makePCMBuffer() else {
-            return nil
-        }
+        guard let pcmBuffer = sampleBuffer.makePCMBuffer() else { return nil }
         return convert(buffer: pcmBuffer)
+    }
+
+    /// Convert a CMSampleBuffer using a continuous source stream.
+    func convertSampleBuffer(_ sampleBuffer: CMSampleBuffer, using stream: Stream) -> [Float]? {
+        guard let pcmBuffer = sampleBuffer.makePCMBuffer() else { return nil }
+        return stream.convert(buffer: pcmBuffer)
     }
 }
 

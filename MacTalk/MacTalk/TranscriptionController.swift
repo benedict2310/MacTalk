@@ -113,7 +113,9 @@ final class TranscriptionController: @unchecked Sendable {
 
     private let micCapture = AudioCapture()
     private let screenCapture = ScreenAudioCapture()
-    private let mixer = AudioMixer()
+    private let mixer: AudioMixer
+    private let micStream: AudioMixer.Stream
+    private let appStream: AudioMixer.Stream
     private let engine: any ASREngine
     private let levelMonitor = MultiChannelLevelMonitor()
 
@@ -170,6 +172,10 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Initialization
 
     init(engine: any ASREngine) {
+        let mixer = AudioMixer()
+        self.mixer = mixer
+        self.micStream = mixer.makeStream()
+        self.appStream = mixer.makeStream()
         self.engine = engine
         self.audioState = OSAllocatedUnfairLock(
             initialState: AudioState(chunkDuration: chunkDurationMs, language: "en")
@@ -205,6 +211,8 @@ final class TranscriptionController: @unchecked Sendable {
         DLOG("Transcription start requested: mode=\(mode)")
 
         // Clear previous state
+        micStream.reset()
+        appStream.reset()
         audioState.withLock { state in
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
@@ -284,6 +292,7 @@ final class TranscriptionController: @unchecked Sendable {
         DLOG("Transcription stop requested")
         micCapture.stop()
         screenCapture.stop()
+        finishAudioStreams()
 
         let sessionID = audioState.withLock { state in
             state.sessionID
@@ -332,8 +341,17 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Audio Processing
 
+    private func finishAudioStreams() {
+        if let samples = micStream.finish(), !samples.isEmpty {
+            appendSamples(samples)
+        }
+        if let samples = appStream.finish(), !samples.isEmpty {
+            appendSamples(samples)
+        }
+    }
+
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let samples = mixer.convert(buffer: buffer) else {
+        guard let samples = micStream.convert(buffer: buffer) else {
             return
         }
 
@@ -349,7 +367,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let samples = mixer.convertSampleBuffer(sampleBuffer) else {
+        guard let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream) else {
             return
         }
 
