@@ -219,6 +219,9 @@ final class TranscriptionController: @unchecked Sendable {
     private let engine: any ASREngine
     private let levelMonitor = MultiChannelLevelMonitor()
     private let audioSessionGate = AudioSessionGate()
+    /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
+    /// can invalidate that stream without interrupting the microphone session.
+    private let appAudioGate = AudioSessionGate()
 
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
@@ -331,6 +334,7 @@ final class TranscriptionController: @unchecked Sendable {
         // stopCapture has been requested.
         let sessionID = audioSessionGate.begin()
         captureSession.stop()
+        appAudioGate.stop()
 
         // Clear previous state
         micStream.reset()
@@ -366,18 +370,24 @@ final class TranscriptionController: @unchecked Sendable {
                 ])
             }
 
+            let appGeneration = appAudioGate.begin()
             do {
                 try await captureSession.startAppAudio(
                     sessionID: sessionID,
                     source: source,
                     callback: { [weak self] callbackSessionID, sampleBuffer in
-                        self?.processSampleBuffer(sampleBuffer, sessionID: callbackSessionID)
+                        self?.processSampleBuffer(
+                            sampleBuffer,
+                            sessionID: callbackSessionID,
+                            appGeneration: appGeneration
+                        )
                     },
                     errorCallback: { [weak self] callbackSessionID, error in
                         guard let self else { return }
                         // Validate before fallback. Capture shutdown and state
                         // mutation must never occur under the gate lock.
-                        guard self.audioSessionGate.accepts(callbackSessionID) else { return }
+                        guard self.audioSessionGate.accepts(callbackSessionID),
+                              self.appAudioGate.accepts(appGeneration) else { return }
                         self.handleAppAudioError(error, sessionID: callbackSessionID)
                     }
                 )
@@ -407,6 +417,7 @@ final class TranscriptionController: @unchecked Sendable {
         // Invalidate callbacks and mark the state before capture shutdown.
         // Queued work can then never append after final stream draining begins.
         audioSessionGate.stop()
+        appAudioGate.stop()
         let sessionID: UUID? = audioState.withLock { state in
             guard !state.isStopping else { return nil }
             state.isStopping = true
@@ -458,6 +469,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func cancelStartAndReturnSession() -> UUID {
         audioSessionGate.stop()
+        appAudioGate.stop()
         captureSession.stop()
 
         return audioState.withLock { state in
@@ -503,10 +515,20 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     @discardableResult
-    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, sessionID: UUID) -> Int? {
-        guard audioSessionGate.accepts(sessionID) else { return nil }
+    private func processSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        sessionID: UUID,
+        appGeneration: UUID
+    ) -> Int? {
+        // ScreenCaptureKit can deliver queued callbacks after stopAppAudio().
+        // Reject them before touching the app stream converter.
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+            return nil
+        }
         let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
-        guard audioSessionGate.accepts(sessionID) else { return nil }
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+            return nil
+        }
         guard let samples else {
             return nil
         }
@@ -749,8 +771,9 @@ final class TranscriptionController: @unchecked Sendable {
         guard audioSessionGate.accepts(sessionID) else { return }
         print("Falling back to microphone-only mode")
 
-        // Stop only app audio capture. Microphone capture must continue so the
-        // fallback preserves an uninterrupted mic-only recording.
+        // Invalidate queued app callbacks before asking ScreenCaptureKit to stop.
+        // The microphone remains active, preserving an uninterrupted fallback.
+        appAudioGate.stop()
         captureSession.stopAppAudio()
 
         // Re-check after capture shutdown; callbacks may have restarted a

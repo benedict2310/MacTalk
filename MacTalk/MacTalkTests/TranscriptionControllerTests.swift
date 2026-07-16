@@ -214,6 +214,36 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.finalizedFrameCounts, [96_000])
     }
 
+    func test_appCallbackQueuedAfterFallbackIsRejectedBeforeConversion() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let engine = LifecycleTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let fallback = expectation(description: "controller falls back to mic-only")
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "deterministic test source",
+            icon: nil
+        )
+        let sampleBuffer = try makeAppSampleBuffer(frameCount: 24_000)
+
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let appCallback = captureSession.appCallbacks[0]
+        let appSessionID = captureSession.appSessionIDs[0]
+        captureSession.triggerAppAudioError()
+        await fulfillment(of: [fallback], timeout: 1)
+
+        // ScreenCaptureKit may deliver this callback after fallback has stopped
+        // its stream. The app stream generation must reject it before conversion.
+        appCallback(appSessionID, sampleBuffer)
+        controller.stop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(engine.processedFrameCounts, [])
+        XCTAssertEqual(engine.finalizedFrameCounts, [])
+    }
+
     func test_appAudioFailureFallsBackToMicOnlyWithoutStoppingMicrophone() async throws {
         let captureSession = LifecycleCaptureSession()
         let controller = TranscriptionController(
@@ -366,14 +396,24 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
 private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {
     let provider: ASRProvider = .whisper
     private let finalizedFrameCountsLock = OSAllocatedUnfairLock(initialState: [Int]())
+    private let processedFrameCountsLock = OSAllocatedUnfairLock(initialState: [Int]())
 
     var finalizedFrameCounts: [Int] {
         finalizedFrameCountsLock.withLock { $0 }
     }
 
+    var processedFrameCounts: [Int] {
+        processedFrameCountsLock.withLock { $0 }
+    }
+
     func prepare() async throws {}
     func reset() async {}
-    func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? { nil }
+    func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
+        processedFrameCountsLock.withLock { counts in
+            counts.append(Int(buffer.frameLength))
+        }
+        return nil
+    }
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
         finalizedFrameCountsLock.withLock { counts in
             counts.append(Int(buffer.frameLength))
