@@ -76,11 +76,11 @@ Docs baseline follows verified evidence from all previous work.
 
 **Files:** `project.yml`, generated `MacTalk.xcodeproj`, resolved package lockfile if supported, `scripts/verify-project-generation.sh`, CI workflow.
 
-- [ ] Write a shell test which copies the repo, regenerates with XcodeGen, and fails if tracked generated output differs or FluidAudio is a version range.
-- [ ] Run it red; current `from: 0.7.11` has no exact lock.
-- [ ] Pin FluidAudio to an approved exact release/revision, track the resolution artifact supported by XcodeGen/Xcode, and regenerate the project.
-- [ ] Run the generation verifier and unsigned build/test.
-- [ ] Commit `build: pin FluidAudio and verify generated project`.
+- [x] Write a shell test which copies the repo, regenerates with XcodeGen, and fails if tracked generated output differs or FluidAudio is a version range.
+- [x] Run it red; current `from: 0.7.11` had no exact lock.
+- [x] Pin FluidAudio to the API-compatible exact release `0.15.5`, track the canonical resolution artifact, and regenerate the project.
+- [x] Run the generation verifier, signed Release build/run, and focused tests.
+- [x] Commit `build: pin FluidAudio and verify generated project` (`88d975c`, `b64acb5`).
 
 ### Task 5: P1 Make settings authoritative (`TODO-9ead3f5f`)
 
