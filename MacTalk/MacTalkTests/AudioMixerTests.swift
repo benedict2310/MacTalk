@@ -7,6 +7,7 @@
 
 import XCTest
 @preconcurrency import AVFoundation
+@preconcurrency import CoreMedia
 @testable import MacTalk
 
 final class AudioMixerTests: XCTestCase {
@@ -168,6 +169,48 @@ final class AudioMixerTests: XCTestCase {
         XCTAssertEqual(successCount, 40)
     }
 
+    func test_monoFloat32SampleBufferConvertsSamples() throws {
+        let sampleBuffer = try makeFloat32SampleBuffer(
+            channels: [[0.1, 0.2, 0.3, 0.4]],
+            interleaved: false
+        )
+
+        let samples = try XCTUnwrap(AudioMixer().convertSampleBuffer(sampleBuffer))
+
+        XCTAssertEqual(samples.count, 4)
+        for (actual, expected) in zip(samples, [0.1, 0.2, 0.3, 0.4]) {
+            XCTAssertEqual(Double(actual), Double(expected), accuracy: 0.0001)
+        }
+    }
+
+    func test_interleavedStereoFloat32SampleBufferDownmixesBothChannels() throws {
+        let sampleBuffer = try makeFloat32SampleBuffer(
+            channels: [[0.1, 0.2, 0.3, 0.4], [0.9, 0.8, 0.7, 0.6]],
+            interleaved: true
+        )
+
+        let samples = try XCTUnwrap(AudioMixer().convertSampleBuffer(sampleBuffer))
+
+        XCTAssertEqual(samples.count, 4)
+        for (actual, expected) in zip(samples, [0.5, 0.5, 0.5, 0.5]) {
+            XCTAssertEqual(Double(actual), Double(expected), accuracy: 0.0001)
+        }
+    }
+
+    func test_nonInterleavedStereoFloat32SampleBufferDownmixesBothChannels() throws {
+        let sampleBuffer = try makeFloat32SampleBuffer(
+            channels: [[0.1, 0.2, 0.3, 0.4], [0.9, 0.8, 0.7, 0.6]],
+            interleaved: false
+        )
+
+        let samples = try XCTUnwrap(AudioMixer().convertSampleBuffer(sampleBuffer))
+
+        XCTAssertEqual(samples.count, 4)
+        for (actual, expected) in zip(samples, [0.5, 0.5, 0.5, 0.5]) {
+            XCTAssertEqual(Double(actual), Double(expected), accuracy: 0.0001)
+        }
+    }
+
     func test_concurrentMicAndAppFormatsAllSucceed() async {
         let mixer = AudioMixer()
         let successes = TestCounter()
@@ -187,6 +230,115 @@ final class AudioMixerTests: XCTestCase {
 
         let successCount = await successes.getCount()
         XCTAssertEqual(successCount, 40)
+    }
+
+    private func makeFloat32SampleBuffer(
+        channels: [[Float]],
+        interleaved: Bool
+    ) throws -> CMSampleBuffer {
+        precondition(!channels.isEmpty)
+        precondition(channels.allSatisfy { $0.count == channels[0].count })
+
+        let channelCount = channels.count
+        let frameCount = channels[0].count
+        let bytesPerSample = MemoryLayout<Float>.size
+        let bytesPerFrame = interleaved ? bytesPerSample * channelCount : bytesPerSample
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: 16_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+                | (interleaved ? 0 : kAudioFormatFlagIsNonInterleaved),
+            mBytesPerPacket: UInt32(bytesPerFrame),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(bytesPerFrame),
+            mChannelsPerFrame: UInt32(channelCount),
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+
+        var formatDescription: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+        guard formatStatus == noErr, let formatDescription else {
+            throw NSError(domain: "AudioMixerTests", code: Int(formatStatus))
+        }
+
+        let byteCount = frameCount * bytesPerFrame
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 16_000),
+            presentationTimeStamp: .zero,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: formatDescription,
+            sampleCount: frameCount,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr, let sampleBuffer else {
+            throw NSError(domain: "AudioMixerTests", code: Int(sampleStatus))
+        }
+
+        var encoded = [Float]()
+        encoded.reserveCapacity(frameCount * channelCount)
+        if interleaved {
+            for frame in 0..<frameCount {
+                for channel in channels {
+                    encoded.append(channel[frame])
+                }
+            }
+        } else {
+            encoded = channels.flatMap { $0 }
+        }
+
+        let audioBufferList = AudioBufferList.allocate(maximumBuffers: interleaved ? 1 : channelCount)
+        audioBufferList.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(interleaved ? 1 : channelCount)
+        defer { audioBufferList.unsafeMutablePointer.deallocate() }
+        let setStatus = encoded.withUnsafeMutableBufferPointer { encodedBuffer in
+            if interleaved {
+                audioBufferList[0] = AudioBuffer(
+                    mNumberChannels: UInt32(channelCount),
+                    mDataByteSize: UInt32(byteCount),
+                    mData: encodedBuffer.baseAddress
+                )
+            } else {
+                for channel in 0..<channelCount {
+                    audioBufferList[channel] = AudioBuffer(
+                        mNumberChannels: 1,
+                        mDataByteSize: UInt32(frameCount * bytesPerSample),
+                        mData: encodedBuffer.baseAddress!.advanced(by: channel * frameCount)
+                    )
+                }
+            }
+            return CMSampleBufferSetDataBufferFromAudioBufferList(
+                sampleBuffer,
+                blockBufferAllocator: kCFAllocatorDefault,
+                blockBufferMemoryAllocator: kCFAllocatorDefault,
+                flags: 0,
+                bufferList: audioBufferList.unsafePointer
+            )
+        }
+        guard setStatus == noErr else {
+            throw NSError(domain: "AudioMixerTests", code: Int(setStatus))
+        }
+        return sampleBuffer
     }
 
     private func makePCMBuffer(sampleRate: Double, channels: [[Float]]) -> AVAudioPCMBuffer {

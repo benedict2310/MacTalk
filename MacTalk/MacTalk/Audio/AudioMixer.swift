@@ -119,53 +119,71 @@ final class AudioMixer: Sendable {
 
 extension CMSampleBuffer {
     func makePCMBuffer() -> AVAudioPCMBuffer? {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(self) else {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(self),
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
+              streamDescription.mFormatID == kAudioFormatLinearPCM,
+              streamDescription.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              streamDescription.mFormatFlags & kAudioFormatFlagIsPacked != 0,
+              streamDescription.mBitsPerChannel == 32,
+              streamDescription.mChannelsPerFrame > 0,
+              let blockBuffer = CMSampleBufferGetDataBuffer(self) else {
             return nil
         }
 
-        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee
-        guard let streamDescription = asbd else { return nil }
+        let channelCount = Int(streamDescription.mChannelsPerFrame)
+        let bytesPerSample = MemoryLayout<Float>.size
+        let isInterleaved = streamDescription.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+        let bytesPerFrame = isInterleaved ? bytesPerSample * channelCount : bytesPerSample
 
+        // The source data must describe packed Float32 PCM. Reject layouts whose
+        // stride does not match the layout flags instead of copying one channel
+        // and silently corrupting stereo audio.
+        guard streamDescription.mBytesPerFrame == UInt32(bytesPerFrame),
+              streamDescription.mBytesPerPacket == UInt32(bytesPerFrame),
+              let dataLength = Int(exactly: CMBlockBufferGetDataLength(blockBuffer)),
+              dataLength % (bytesPerSample * channelCount) == 0 else {
+            return nil
+        }
+
+        let frameCount = dataLength / (bytesPerSample * channelCount)
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: streamDescription.mSampleRate,
             channels: streamDescription.mChannelsPerFrame,
             interleaved: false
-        ) else {
+        ), let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(frameCount)
+        ), let channelData = buffer.floatChannelData else {
             return nil
         }
+        buffer.frameLength = AVAudioFrameCount(frameCount)
 
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(self) else {
-            return nil
+        // CMSampleBuffer data can be segmented. Copying through CMBlockBuffer
+        // preserves the complete payload before interpreting its declared
+        // interleaved or planar layout.
+        var pcmData = [UInt8](repeating: 0, count: dataLength)
+        let copyStatus = pcmData.withUnsafeMutableBytes { destination in
+            CMBlockBufferCopyDataBytes(
+                blockBuffer,
+                atOffset: 0,
+                dataLength: dataLength,
+                destination: destination.baseAddress!
+            )
         }
+        guard copyStatus == kCMBlockBufferNoErr else { return nil }
 
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-
-        let status = CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        )
-
-        guard status == kCMBlockBufferNoErr, let data = dataPointer else {
-            return nil
-        }
-
-        let frameCount = UInt32(length) / UInt32(streamDescription.mBytesPerFrame)
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            return nil
-        }
-
-        buffer.frameLength = frameCount
-
-        // Copy audio data
-        if let channelData = buffer.floatChannelData {
-            let byteCount = Int(frameCount) * MemoryLayout<Float>.size
-            memcpy(channelData[0], data, byteCount)
+        pcmData.withUnsafeBytes { rawBytes in
+            let source = rawBytes.bindMemory(to: Float.self)
+            for channel in 0..<channelCount {
+                let destination = channelData[channel]
+                for frame in 0..<frameCount {
+                    let sourceIndex = isInterleaved
+                        ? frame * channelCount + channel
+                        : channel * frameCount + frame
+                    destination[frame] = source[sourceIndex]
+                }
+            }
         }
 
         return buffer
