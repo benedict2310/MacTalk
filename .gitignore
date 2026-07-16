@@ -50,6 +50,10 @@ xcuserdata/
 *.xcscmblueprint
 *.xcscheme
 !*.xcscheme.shared
+# Shared XcodeGen schemes are tracked reproducibility inputs.
+!MacTalk.xcodeproj/xcshareddata/
+!MacTalk.xcodeproj/xcshareddata/xcschemes/
+!MacTalk.xcodeproj/xcshareddata/xcschemes/*.xcscheme
 
 # Xcode Workspace
 *.xcworkspace
