@@ -92,17 +92,13 @@ final class StatusBarController {
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
 
-        // Load settings from UserDefaults
-        let defaults = UserDefaults.standard
+        // Load the authoritative settings snapshot.
+        let settingsSnapshot = AppSettings.shared.snapshot
         refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-        provider = AppSettings.shared.provider
-
-        // Show notifications defaults to true if not set
-        if defaults.object(forKey: "showNotifications") != nil {
-            showNotifications = defaults.bool(forKey: "showNotifications")
-        } else {
-            showNotifications = true  // Default
-        }
+        provider = settingsSnapshot.provider
+        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
+        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        showNotifications = settingsSnapshot.showNotifications
 
         NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
         NSLog("🔧 [MacTalk] Loaded show-notifications setting: \(showNotifications)")
@@ -412,13 +408,11 @@ final class StatusBarController {
         if autoPaste {
             autoPaste = false
             sender.state = .off
-            UserDefaults.standard.set(false, forKey: "autoPaste")
-            NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+            AppSettings.shared.setAutoPaste(false)
         } else if Permissions.isAccessibilityTrusted() {
             autoPaste = true
             sender.state = .on
-            UserDefaults.standard.set(true, forKey: "autoPaste")
-            NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+            AppSettings.shared.setAutoPaste(true)
         } else {
             autoPaste = false
             sender.state = .off
@@ -435,8 +429,7 @@ final class StatusBarController {
                 DLOG("Auto-paste Accessibility grant callback received; enabling preference")
                 self?.autoPaste = true
                 sender?.state = .on
-                UserDefaults.standard.set(true, forKey: "autoPaste")
-                NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+                AppSettings.shared.setAutoPaste(true)
             }
         }
 
@@ -446,6 +439,9 @@ final class StatusBarController {
     @objc private func selectModel(_ sender: NSMenuItem) {
         guard let modelName = sender.representedObject as? String else { return }
         currentWhisperModelName = modelName
+        if let spec = ModelCatalog.findByFilename(modelName) {
+            AppSettings.shared.setWhisperModelID(spec.id)
+        }
 
         requestProviderSwitch(to: .whisper, promptForDownload: false)
         updateProviderMenuState()
@@ -458,6 +454,7 @@ final class StatusBarController {
         guard let spec = sender.representedObject as? ModelSpec else { return }
         selectedModel = spec
         currentWhisperModelName = spec.filename
+        AppSettings.shared.setWhisperModelID(spec.id)
 
         requestProviderSwitch(to: .whisper, promptForDownload: false)
         updateProviderMenuState()
@@ -816,8 +813,10 @@ final class StatusBarController {
         guard provider != newProvider else { return }
 
         let wasRecording = isRecording || isStartInFlight
+        // Settings are session-scoped. Do not tear down an active session when
+        // the user edits provider; the new provider is applied on next start.
         if wasRecording {
-            stopRecording()
+            return
         }
 
         provider = newProvider
@@ -1069,6 +1068,13 @@ final class StatusBarController {
             NSLog("⚠️ [StatusBar] Ignoring start request while recording is active, starting, or finalizing")
             return
         }
+
+        // Take one authoritative snapshot for this recording session.
+        let settingsSnapshot = AppSettings.shared.snapshotAtRecordingStart()
+        provider = settingsSnapshot.provider
+        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
+        selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
 
         let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false
         if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
@@ -1507,17 +1513,21 @@ final class StatusBarController {
     }
 
     @objc private func settingsDidChange() {
-        // Reload settings from UserDefaults when they change
-        let defaults = UserDefaults.standard
+        let settingsSnapshot = AppSettings.shared.snapshot
         refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+        showNotifications = settingsSnapshot.showNotifications
 
-        let newShowNotifications = defaults.object(forKey: "showNotifications") != nil ?
-            defaults.bool(forKey: "showNotifications") : true
-
-        if newShowNotifications != showNotifications {
-            NSLog("🔔 [MacTalk] Show notifications setting changed: \(showNotifications) → \(newShowNotifications)")
-            showNotifications = newShowNotifications
+        // Runtime settings are session-scoped. Edits during capture are stored
+        // now but become authoritative only on the next recording.
+        guard !isRecording, !isStartInFlight, !isFinalizing else { return }
+        provider = settingsSnapshot.provider
+        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
+        selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
+        if engine?.provider != provider {
+            engine = nil
         }
+        updateProviderMenuState()
     }
 
     @objc private func permissionsDidChange() {
@@ -1525,7 +1535,7 @@ final class StatusBarController {
     }
 
     private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
-        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        let storedAutoPaste = AppSettings.shared.snapshot.autoPaste
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
         let effectiveAutoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
             storedPreference: storedAutoPaste,
@@ -1543,7 +1553,7 @@ final class StatusBarController {
         autoPasteMenuItem?.state = effectiveAutoPaste ? .on : .off
 
         if updateStoredPreference && storedAutoPaste != effectiveAutoPaste {
-            UserDefaults.standard.set(effectiveAutoPaste, forKey: "autoPaste")
+            AppSettings.shared.setAutoPaste(effectiveAutoPaste)
         }
     }
 

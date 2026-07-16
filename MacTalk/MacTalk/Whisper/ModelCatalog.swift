@@ -2,6 +2,7 @@ import Foundation
 
 struct ModelSpec: Codable, Identifiable, Hashable {
     let id: String                 // e.g. "whisper-large-v3-turbo-q5_0"
+    var provider: ASRProvider { .whisper }
     let displayName: String        // UI label
     let filename: String           // local file name (.gguf)
     let sha256: String             // lowercase hex digest (full file)

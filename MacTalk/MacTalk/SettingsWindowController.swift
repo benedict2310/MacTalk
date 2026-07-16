@@ -65,6 +65,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private nonisolated(unsafe) var tokens: [NSObjectProtocol] = []
+    private let settingsStore = AppSettings.shared
 
     init() {
         let d = UserDefaults.standard
@@ -79,13 +80,12 @@ final class SettingsViewModel: ObservableObject {
             storedPreference: storedAutoPaste,
             accessibilityTrusted: accessibilityTrusted
         )
-        defaultModeIndex = d.integer(forKey: "defaultMode")
-        let provider = AppSettings.shared.provider
-        providerIndex = ASRProvider.allCases.firstIndex(of: provider) ?? 0
-        let savedModel = d.integer(forKey: "modelIndex")
-        modelIndex = savedModel == 0 ? 4 : savedModel
-        let savedLang = d.integer(forKey: "languageIndex")
-        languageIndex = savedLang == 0 ? 1 : savedLang
+        let snapshot = settingsStore.snapshot
+        defaultModeIndex = snapshot.captureMode == .micPlusAppAudio ? 1 : 0
+        providerIndex = ASRProvider.allCases.firstIndex(of: snapshot.provider) ?? 0
+        modelIndex = ModelCatalog.bundled().firstIndex { $0.id == snapshot.whisperModelID } ?? 4
+        let languages = ["en", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
+        languageIndex = languages.firstIndex(of: snapshot.language) ?? 1
 
         startMicOnlyShortcut = Self.loadShortcut(forKey: "startMicOnlyShortcut")
         startMicPlusAppShortcut = Self.loadShortcut(forKey: "startMicPlusAppShortcut")
@@ -107,10 +107,18 @@ final class SettingsViewModel: ObservableObject {
         d.set(showInDock, forKey: "showInDock")
         d.set(showNotifications, forKey: "showNotifications")
         d.set(autoPaste, forKey: "autoPaste")
-        d.set(defaultModeIndex, forKey: "defaultMode")
-        d.set(modelIndex, forKey: "modelIndex")
-        d.set(languageIndex, forKey: "languageIndex")
-        NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+        settingsStore.setAutoPaste(autoPaste)
+        settingsStore.setShowNotifications(showNotifications)
+        settingsStore.setCaptureMode(defaultModeIndex == 1 ? .micPlusAppAudio : .micOnly)
+        let models = ModelCatalog.bundled()
+        if models.indices.contains(modelIndex) {
+            settingsStore.setWhisperModelID(models[modelIndex].id)
+        }
+        let languages = ["en", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
+        if languages.indices.contains(languageIndex) {
+            settingsStore.setLanguage(languages[languageIndex])
+        }
+        NotificationCenter.default.post(name: .settingsDidChange, object: settingsStore.snapshot)
     }
 
     func setAutoPasteEnabled(_ enabled: Bool) {
@@ -159,7 +167,7 @@ final class SettingsViewModel: ObservableObject {
     func setProvider(_ idx: Int) {
         providerIndex = idx
         let provider = ASRProvider.allCases[idx]
-        AppSettings.shared.provider = provider
+        settingsStore.provider = provider
         save()
     }
 

@@ -213,6 +213,7 @@ final class TranscriptionController: @unchecked Sendable {
     // MARK: - Properties
 
     private let captureSession: any TranscriptionCaptureSession
+    private let settingsStore: AppSettings
     private let mixer: AudioMixer
     private let micStream: AudioMixer.Stream
     private let appStream: AudioMixer.Stream
@@ -280,10 +281,12 @@ final class TranscriptionController: @unchecked Sendable {
 
     init(
         engine: any ASREngine,
-        captureSession: any TranscriptionCaptureSession = LiveTranscriptionCaptureSession()
+        captureSession: any TranscriptionCaptureSession = LiveTranscriptionCaptureSession(),
+        settings: AppSettings = .shared
     ) {
         let mixer = AudioMixer()
         self.captureSession = captureSession
+        self.settingsStore = settings
         self.mixer = mixer
         self.micStream = mixer.makeStream()
         self.appStream = mixer.makeStream()
@@ -333,6 +336,7 @@ final class TranscriptionController: @unchecked Sendable {
         // streams. ScreenCaptureKit may still deliver a queued callback after
         // stopCapture has been requested.
         let sessionID = audioSessionGate.begin()
+        let settingsSnapshot = settingsStore.snapshotAtRecordingStart()
         captureSession.stop()
         appAudioGate.stop()
 
@@ -348,6 +352,7 @@ final class TranscriptionController: @unchecked Sendable {
             state.lastUIUpdateTime = 0
             state.lastDiagnosticsLogTime = 0
             state.sessionID = sessionID
+            state.language = settingsSnapshot.language
             state.pendingTasks[sessionID] = []
             state.chunkProcessingTail = nil
             state.isStopping = false
