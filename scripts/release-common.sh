@@ -59,6 +59,36 @@ release_source_tag() {
     printf '%s\n' "$tag"
 }
 
+# Bind publishing to either a peeled annotated tag or a lightweight direct
+# tag. The direct ref must always exist; an annotated tag is trusted only when
+# its peeled commit is present and matches the expected immutable commit.
+release_verify_remote_tag() {
+    local tag="$1" expected_commit="$2" direct_ref peeled_ref refs direct peeled remote
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$expected_commit" =~ ^[[:xdigit:]]{40}$ ]] || {
+        echo 'remote tag verification inputs are invalid' >&2; return 64;
+    }
+    direct_ref="refs/tags/$tag"
+    peeled_ref="${direct_ref}^{}"
+    refs="$(git ls-remote origin "$direct_ref" "$peeled_ref")"
+    direct="$(awk -v ref="$direct_ref" '$2 == ref { count++; value = $1 } END { if (count != 1) exit 2; print value }' <<< "$refs")" || {
+        echo 'remote release tag direct ref is missing or ambiguous' >&2; return 65;
+    }
+    [[ "$direct" =~ ^[[:xdigit:]]{40}$ ]] || { echo 'remote release tag direct ref is invalid' >&2; return 65; }
+    peeled="$(awk -v ref="$peeled_ref" '$2 == ref { count++; value = $1 } END { if (count > 1) exit 2; if (count == 1) print value }' <<< "$refs")" || {
+        echo 'remote release tag peeled ref is ambiguous' >&2; return 65;
+    }
+    if [[ -n "$peeled" ]]; then
+        [[ "$peeled" =~ ^[[:xdigit:]]{40}$ ]] || { echo 'remote release tag peeled ref is invalid' >&2; return 65; }
+        remote="$peeled"
+    else
+        remote="$direct"
+    fi
+    [[ "$remote" == "$expected_commit" ]] || {
+        echo "remote release tag commit $remote does not match expected $expected_commit" >&2; return 65;
+    }
+    printf '%s\n' "$remote"
+}
+
 # Validate the immutable source selected for a release before any signing or
 # notarization secret is read. A release is always made from a detached,
 # clean checkout whose HEAD is exactly the requested tag commit.
@@ -322,26 +352,113 @@ release_create_handoff() {
 }
 
 release_verify_handoff() {
-    local archive="$1" hash="$2" expected actual
+    local archive="$1" hash="$2" expected actual expected_name actual_name
     [[ -f "$archive" && -f "$hash" ]] || { echo 'release handoff archive/hash is missing' >&2; return 65; }
-    expected="$(awk 'NF { print $1; exit }' "$hash")"
+    expected_name="$(basename "$archive")"
+    # Accept exactly one sidecar record and bind it to this container. A hash
+    # copied from another handoff must never make the ZIP appear authentic.
+    if ! actual_name="$(awk -v name="$expected_name" '
+        NF { count++; if (NF != 2 || $2 != name) exit 2; value = $1 }
+        END { if (count != 1) exit 2; print value }
+    ' "$hash")"; then
+        echo 'release handoff sidecar is malformed or names another archive' >&2
+        return 65
+    fi
+    expected="$actual_name"
     actual="$(release_sha256 "$archive")"
     [[ "$expected" =~ ^[[:xdigit:]]{64}$ && "$expected" == "$actual" ]] || { echo 'release handoff archive digest mismatch' >&2; return 65; }
 }
 
 release_extract_handoff() {
-    local archive="$1" hash="$2" output_dir="$3" temp
+    local archive="$1" hash="$2" output_dir="$3"
     require_release_command ditto
     release_verify_handoff "$archive" "$hash"
-    temp="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-extract.XXXXXX")"
-    trap 'rm -rf "$temp"' RETURN
-    ditto -x -k "$archive" "$temp"
-    mkdir -p "$output_dir"
-    ditto "$temp/." "$output_dir"
-    [[ -d "$output_dir/MacTalk.xcarchive" && -f "$output_dir/release-provenance.env" ]] || {
-        echo 'release handoff extraction is incomplete' >&2
-        return 65
+    # Use a subshell-local EXIT trap. A RETURN trap leaks into callers under
+    # `set -u`, where its local temporary variable is already out of scope.
+    (
+        local temp
+        temp="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-extract.XXXXXX")"
+        trap 'rm -rf "$temp"' EXIT
+        ditto -x -k "$archive" "$temp"
+        mkdir -p "$output_dir"
+        ditto "$temp/." "$output_dir"
+        [[ -d "$output_dir/MacTalk.xcarchive" && -f "$output_dir/release-provenance.env" ]] || {
+            echo 'release handoff extraction is incomplete' >&2
+            exit 65
+        }
+    )
+}
+
+# Verify a verified handoff on a consumer runner. This deliberately does not
+# call release_preflight/release_verify_metadata/release_verify_state: those
+# functions bind a producer checkout and its phase markers to the local git
+# repository. A consumer trusts only the authenticated ZIP, its sidecar, and
+# the public signing policy.
+release_verify_verified_handoff_output() {
+    local output_dir="$1" expected_phase="${2:-verified}" metadata marker app archive
+    [[ "$expected_phase" == verified ]] || { echo 'consumer only accepts phase=verified handoffs' >&2; return 64; }
+    metadata="$(release_metadata_path "$output_dir")"
+    marker="$(release_state "$output_dir" verified)"
+    archive="$output_dir/MacTalk.xcarchive"
+    app="$archive/Products/Applications/MacTalk.app"
+    release_verify_consumer_metadata "$output_dir" "$expected_phase"
+    [[ -f "$marker" ]] || { echo 'verified handoff state marker is missing' >&2; return 65; }
+    [[ "$(awk 'index($0, "=") > 0 { print substr($0, 1, index($0, "=") - 1) }' "$marker" | sort | tr '\n' ' ')" == "metadata_sha256 path phase source_commit " ]] || {
+        echo 'verified handoff state schema is invalid' >&2; return 65;
     }
+    [[ "$(awk -F= '$1 == "phase" { print $2 }' "$marker")" == verified ]] || { echo 'verified handoff state phase mismatch' >&2; return 65; }
+    [[ "$(awk -F= '$1 == "metadata_sha256" { print $2 }' "$marker")" == "$(tr -d '[:space:]' < "$(release_metadata_digest_path "$output_dir")")" ]] || {
+        echo 'verified handoff state metadata digest mismatch' >&2; return 65;
+    }
+    [[ "$(awk -F= '$1 == "source_commit" { print $2 }' "$marker")" == "$(awk -F= '$1 == "source_commit" { print $2 }' "$metadata")" ]] || {
+        echo 'verified handoff state source commit mismatch' >&2; return 65;
+    }
+    require_release_command codesign python3
+    release_verify_artifact_digests "$output_dir" "$archive" "$app"
+    release_verify_bundle_identity "$app"
+    release_require_timestamp "$app"
+    while IFS= read -r library; do
+        release_require_timestamp "$library"
+    done < <(find "$app/Contents/Frameworks" -type f -name '*.dylib' -print)
+    VERIFY_SIGNING_SKIP_GATEKEEPER=1 VERIFY_SIGNING_OFFLINE=1 \
+    SIGNING_TEAM_ID="${MACTALK_DEVELOPMENT_TEAM:-}" \
+        "$RELEASE_ROOT/scripts/verify-signing.sh" "$app"
+}
+
+release_verify_consumer_metadata() {
+    local output_dir="$1" expected_phase="$2" metadata digest phase version build tag source_commit submodule_commit
+    metadata="$(release_metadata_path "$output_dir")"
+    digest="$(release_metadata_digest_path "$output_dir")"
+    [[ -f "$metadata" && -f "$digest" ]] || { echo 'release provenance metadata is missing' >&2; return 65; }
+    [[ "$(tr -d '[:space:]' < "$digest")" == "$(release_sha256 "$metadata")" ]] || {
+        echo 'release provenance metadata digest mismatch' >&2; return 65;
+    }
+    [[ "$(awk 'index($0, "=") > 0 { print substr($0, 1, index($0, "=") - 1) }' "$metadata" | sort | tr '\n' ' ')" == "app_sha256 archive_sha256 build dmg_sha256 phase source_commit submodule_commit tag timestamp_utc version whisper_recipe " ]] || {
+        echo 'release provenance schema is invalid' >&2; return 65;
+    }
+    phase="$(awk -F= '$1 == "phase" { print $2 }' "$metadata")"
+    [[ "$phase" == "$expected_phase" ]] || { echo "release provenance phase $phase is not $expected_phase" >&2; return 65; }
+    version="$(awk -F= '$1 == "version" { print $2 }' "$metadata")"
+    build="$(awk -F= '$1 == "build" { print $2 }' "$metadata")"
+    [[ "$version" == "$MACTALK_MARKETING_VERSION" && "$build" == "$MACTALK_BUILD_NUMBER" ]] || {
+        echo 'release provenance version/build mismatch' >&2; return 65;
+    }
+    tag="$(awk -F= '$1 == "tag" { print $2 }' "$metadata")"
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'release provenance tag is invalid' >&2; return 65; }
+    [[ -z "${RELEASE_TAG:-}" || "$tag" == "$RELEASE_TAG" ]] || { echo 'release provenance tag mismatch' >&2; return 65; }
+    source_commit="$(awk -F= '$1 == "source_commit" { print $2 }' "$metadata")"
+    submodule_commit="$(awk -F= '$1 == "submodule_commit" { print $2 }' "$metadata")"
+    [[ "$source_commit" =~ ^[[:xdigit:]]{40}$ && "$submodule_commit" =~ ^[[:xdigit:]]{40}$ ]] || {
+        echo 'release provenance commit fields are invalid' >&2; return 65;
+    }
+}
+
+release_verify_verified_handoff() {
+    local archive="$1" hash="$2" output_dir="$3" phase="${4:-verified}"
+    [[ "$phase" == verified ]] || { echo 'consumer only accepts phase=verified handoffs' >&2; return 64; }
+    release_verify_handoff "$archive" "$hash"
+    release_extract_handoff "$archive" "$hash" "$output_dir"
+    release_verify_verified_handoff_output "$output_dir" "$phase"
 }
 
 release_state() {

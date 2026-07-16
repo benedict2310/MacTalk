@@ -160,11 +160,36 @@ fi
 ( cd "$fixture/work" && bash scripts/verify-release.sh --output-dir "$fixture/work/release/out" )
 # The handoff is a real archive boundary: metadata, modes, and symlinks survive.
 mkdir -p "$fixture/work/release/received"
-( cd "$fixture/work" && source scripts/release-common.sh && release_extract_handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" "$fixture/work/release/received" )
+# The consumer receives a fresh directory and has no producer signing identity
+# or phase-marker assumptions. The original ZIP and sidecar remain outside it
+# and are passed explicitly into the notarization command.
+env -u MACTALK_CODE_SIGN_IDENTITY -u MACTALK_NOTARY_KEYCHAIN_PROFILE \
+  bash "$fixture/work/scripts/reverify-handoff.sh" \
+  --handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" \
+  --handoff-sha256 "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" \
+  --received-dir "$fixture/work/release/received" --phase verified
 test -L "$fixture/work/release/received/MacTalk.xcarchive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper-link.dylib"
 test "$(stat -f '%Lp' "$fixture/work/release/received/MacTalk.xcarchive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib")" = 751
 test -f "$fixture/work/release/received/release-provenance.env"
-( cd "$fixture/work" && bash scripts/notarize-release.sh --output-dir "$fixture/work/release/out" )
+cp "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" "$fixture/work/release/bad-sidecar"
+sed -i.bak 's/MacTalk-release-handoff.zip/not-the-original.zip/' "$fixture/work/release/bad-sidecar"
+rm -f "$fixture/work/release/bad-sidecar.bak"
+if bash "$fixture/work/scripts/reverify-handoff.sh" \
+  --handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" \
+  --handoff-sha256 "$fixture/work/release/bad-sidecar" \
+  --received-dir "$fixture/work/release/bad-received" --phase verified >/dev/null 2>&1; then
+  echo 'consumer accepted a sidecar naming another container' >&2; exit 1
+fi
+if bash "$fixture/work/scripts/reverify-handoff.sh" \
+  --handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" \
+  --handoff-sha256 "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" \
+  --received-dir "$fixture/work/release/bad-phase" --phase archive >/dev/null 2>&1; then
+  echo 'consumer accepted a non-verified phase' >&2; exit 1
+fi
+( cd "$fixture/work" && bash scripts/notarize-release.sh \
+  --output-dir "$fixture/work/release/received" \
+  --handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" \
+  --handoff-sha256 "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" )
 
 # A failed external gate retains the DMG and emits recovery guidance.
 ( cd "$fixture/work" && bash scripts/archive-release.sh --output-dir "$fixture/work/release/retry" >/dev/null )
@@ -178,7 +203,7 @@ else
   echo 'notarization failure fixture unexpectedly succeeded' >&2; exit 1
 fi
 
-python3 - "$log" "$fixture/work/release/out" <<'PY'
+python3 - "$log" "$fixture/work/release/received" <<'PY'
 from pathlib import Path
 import sys
 log = Path(sys.argv[1]).read_text().splitlines()

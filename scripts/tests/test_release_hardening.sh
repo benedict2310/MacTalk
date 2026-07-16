@@ -19,7 +19,9 @@ assert 'v1.1.3 is immutable' in common
 assert 'permissions: {}' in workflow and 'contents: write' in workflow
 assert workflow.count('environment: release') >= 4, 'privileged jobs are not bound to release environment'
 assert 'needs.preflight.outputs.source_commit' in workflow, 'preflight commit is not propagated'
-assert 'refs/tags/$RELEASE_TAG^{}' in workflow, 'publish does not compare the peeled remote tag'
+assert 'release_verify_remote_tag "$RELEASE_TAG" "$RELEASE_EXPECTED_COMMIT"' in workflow, 'publish does not securely verify remote tag refs'
+assert 'peeled_ref="${direct_ref}^{}"' in common, 'remote tag verifier lacks peeled annotated support'
+assert 'received' in workflow and 'reverify-handoff.sh' in workflow, 'consumer handoff is not isolated in received'
 assert re.search(r'uses: actions/checkout@[0-9a-f]{40}', workflow)
 assert not re.search(r'uses: actions/(checkout|upload-artifact|download-artifact)@v[0-9]', workflow)
 assert 'concurrency:' in workflow and 'gh release create' in workflow and '--draft' in workflow

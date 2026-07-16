@@ -6,17 +6,32 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/release-common.sh"
 OUTPUT_DIR="$ROOT_DIR/release"
+HANDOFF_PATH=''
+HANDOFF_SHA256_PATH=''
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output-dir) [[ $# -ge 2 ]] || { echo '--output-dir requires a path' >&2; exit 64; }; OUTPUT_DIR="$2"; shift 2 ;;
-        *) echo "usage: $0 [--output-dir PATH]" >&2; exit 64 ;;
+        --handoff) [[ $# -ge 2 ]] || { echo '--handoff requires a path' >&2; exit 64; }; HANDOFF_PATH="$2"; shift 2 ;;
+        --handoff-sha256|--sidecar) [[ $# -ge 2 ]] || { echo "$1 requires a path" >&2; exit 64; }; HANDOFF_SHA256_PATH="$2"; shift 2 ;;
+        *) echo "usage: $0 [--output-dir PATH] [--handoff ZIP --handoff-sha256 SIDECAR]" >&2; exit 64 ;;
     esac
 done
+if [[ -n "$HANDOFF_PATH" || -n "$HANDOFF_SHA256_PATH" ]]; then
+    [[ -n "$HANDOFF_PATH" && -n "$HANDOFF_SHA256_PATH" ]] || { echo '--handoff and --handoff-sha256 must be supplied together' >&2; exit 64; }
+    # The original producer container is retained by the workflow and passed
+    # here explicitly. Reverify without a private identity before credentials
+    # are read; this also prevents a stale received directory being trusted.
+    release_verify_handoff "$HANDOFF_PATH" "$HANDOFF_SHA256_PATH"
+    release_verify_verified_handoff_output "$OUTPUT_DIR" verified
+else
+    # Backwards-compatible local invocation for a producer checkout. Consumer
+    # jobs must use --handoff so they do not depend on producer state markers.
+    release_verify_source_identity "$OUTPUT_DIR" verified
+    release_verify_state "$OUTPUT_DIR" verified
+    release_verify_handoff "$OUTPUT_DIR/MacTalk-release-handoff.zip" "$OUTPUT_DIR/MacTalk-release-handoff.zip.sha256"
+fi
 # No Apple credential is read until the detached/tagged source and verified
 # provenance handoff have passed.
-release_verify_source_identity "$OUTPUT_DIR" verified
-release_verify_state "$OUTPUT_DIR" verified
-release_verify_handoff "$OUTPUT_DIR/MacTalk-release-handoff.zip" "$OUTPUT_DIR/MacTalk-release-handoff.zip.sha256"
 require_release_env MACTALK_CODE_SIGN_IDENTITY MACTALK_DEVELOPMENT_TEAM
 if [[ -n "${MACTALK_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
     NOTARY_ARGS=(--keychain-profile "$MACTALK_NOTARY_KEYCHAIN_PROFILE")

@@ -159,14 +159,15 @@ jobs:
         with:
           name: mactalk-verified-archive
           path: ${{ runner.temp }}/mactalk-handoff
-      - name: Extract and strictly reverify handoff
+      - name: Extract to received and strictly reverify handoff
         run: |
           set -euo pipefail
-          source scripts/release-common.sh
-          mkdir -p "$RUNNER_TEMP/mactalk-release"
-          release_extract_handoff "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip" "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip.sha256" "$RUNNER_TEMP/mactalk-release"
-          bash scripts/verify-release.sh --output-dir "$RUNNER_TEMP/mactalk-release"
-          spctl --assess --type execute --verbose=4 "$RUNNER_TEMP/mactalk-release/MacTalk.xcarchive/Products/Applications/MacTalk.app"
+          mkdir -p "$RUNNER_TEMP/mactalk-release/received"
+          MACTALK_DEVELOPMENT_TEAM="$MACTALK_DEVELOPMENT_TEAM" bash scripts/reverify-handoff.sh \
+            --handoff "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip" \
+            --handoff-sha256 "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip.sha256" \
+            --received-dir "$RUNNER_TEMP/mactalk-release/received" \
+            --phase verified
       - name: Import signing certificate for DMG timestamp
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.MACTALK_CERTIFICATE_P12_BASE64 }}
@@ -187,7 +188,11 @@ jobs:
           APPLE_ID: ${{ secrets.MACTALK_APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.MACTALK_APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.MACTALK_APPLE_APP_SPECIFIC_PASSWORD }}
-        run: bash scripts/notarize-release.sh --output-dir "$RUNNER_TEMP/mactalk-release"
+        run: |
+          bash scripts/notarize-release.sh \
+            --output-dir "$RUNNER_TEMP/mactalk-release/received" \
+            --handoff "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip" \
+            --handoff-sha256 "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip.sha256"
       - name: Upload notarized publish handoff
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
@@ -260,8 +265,9 @@ jobs:
           manifest_commit="$(awk -F= '$1 == "commit" { print $2 }' "$manifest")"
           actual="$(shasum -a 256 "$dmg" | awk '{print $1}')"
           test -n "$expected" -a "$expected" = "$actual" -a "$manifest_commit" = "$RELEASE_EXPECTED_COMMIT"
-          remote_tag_commit="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          test -n "$remote_tag_commit" -a "$remote_tag_commit" = "$manifest_commit" -a "$remote_tag_commit" = "$RELEASE_EXPECTED_COMMIT"
+          source scripts/release-common.sh
+          remote_tag_commit="$(release_verify_remote_tag "$RELEASE_TAG" "$RELEASE_EXPECTED_COMMIT")"
+          test "$remote_tag_commit" = "$manifest_commit"
           remote="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "'"$(basename "$dmg")"'") | .digest')"
           test "$remote" = "sha256:$expected"
       - name: Publish verified draft

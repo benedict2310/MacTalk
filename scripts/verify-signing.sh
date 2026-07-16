@@ -40,36 +40,39 @@ if ! grep -q '^TeamIdentifier=' <<< "$APP_DETAILS" || grep -qiE 'not signed|code
     fail_signature "bundle is unsigned"
 fi
 
-# A signed fixture can be checked without private-key access, but a real
-# Developer ID release must prove that the configured identity is installed.
-IDENTITIES_OUTPUT=""
-if ! IDENTITIES_OUTPUT="$(security find-identity -v -p codesigning 2>&1)"; then
-    echo "⚠️  signing credentials unavailable: security could not inspect the keychain" >&2
-    exit 2
+# Consumer reverification intentionally has no private-key/keychain identity.
+# The producer path retains the stronger identity-installed check.
+if [[ "${VERIFY_SIGNING_OFFLINE:-0}" == 1 ]]; then
+    [[ -n "$EXPECTED_TEAM" ]] || fail_signature "expected Team ID is unavailable for offline verification"
+else
+    IDENTITIES_OUTPUT=""
+    if ! IDENTITIES_OUTPUT="$(security find-identity -v -p codesigning 2>&1)"; then
+        echo "⚠️  signing credentials unavailable: security could not inspect the keychain" >&2
+        exit 2
+    fi
+    if [[ -z "$SIGNING_IDENTITY" ]]; then
+        SIGNING_IDENTITY="$(sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' <<< "$IDENTITIES_OUTPUT" | head -1)"
+    fi
+    if [[ -z "$SIGNING_IDENTITY" || "$SIGNING_IDENTITY" == "-" ]]; then
+        echo "⚠️  signing credentials unavailable: no Developer ID Application identity" >&2
+        exit 2
+    fi
+    if ! grep -Fq "\"$SIGNING_IDENTITY\"" <<< "$IDENTITIES_OUTPUT"; then
+        echo "⚠️  signing credentials unavailable: identity is not installed: $SIGNING_IDENTITY" >&2
+        exit 2
+    fi
+    if [[ -z "$EXPECTED_TEAM" ]]; then
+        EXPECTED_TEAM="$(sed -n 's/.*(\([^()]\+\))[^()]*$/\1/p' <<< "$SIGNING_IDENTITY" | tail -1)"
+    fi
+    [[ -n "$EXPECTED_TEAM" ]] || fail_signature "expected Team ID is unavailable"
 fi
-if [[ -z "$SIGNING_IDENTITY" ]]; then
-    SIGNING_IDENTITY="$(sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' <<< "$IDENTITIES_OUTPUT" | head -1)"
-fi
-if [[ -z "$SIGNING_IDENTITY" || "$SIGNING_IDENTITY" == "-" ]]; then
-    echo "⚠️  signing credentials unavailable: no Developer ID Application identity" >&2
-    exit 2
-fi
-if ! grep -Fq "\"$SIGNING_IDENTITY\"" <<< "$IDENTITIES_OUTPUT"; then
-    echo "⚠️  signing credentials unavailable: identity is not installed: $SIGNING_IDENTITY" >&2
-    exit 2
-fi
-
-if [[ -z "$EXPECTED_TEAM" ]]; then
-    EXPECTED_TEAM="$(sed -n 's/.*(\([^()]\+\))[^()]*$/\1/p' <<< "$SIGNING_IDENTITY" | tail -1)"
-fi
-[[ -n "$EXPECTED_TEAM" ]] || fail_signature "expected Team ID is unavailable"
 
 APP_TEAM="$(sed -n 's/^TeamIdentifier=//p' <<< "$APP_DETAILS" | head -1)"
 [[ "$APP_TEAM" == "$EXPECTED_TEAM" ]] || fail_signature "app Team ID $APP_TEAM does not match expected $EXPECTED_TEAM"
 if ! grep -Fq "Authority=Developer ID Application:" <<< "$APP_DETAILS"; then
     fail_signature "bundle is not signed with a Developer ID Application certificate"
 fi
-if ! grep -Fq "Authority=$SIGNING_IDENTITY" <<< "$APP_DETAILS"; then
+if [[ "${VERIFY_SIGNING_OFFLINE:-0}" != 1 ]] && ! grep -Fq "Authority=$SIGNING_IDENTITY" <<< "$APP_DETAILS"; then
     fail_signature "bundle identity does not match $SIGNING_IDENTITY"
 fi
 if ! grep -qE 'flags=.*runtime' <<< "$APP_DETAILS"; then
