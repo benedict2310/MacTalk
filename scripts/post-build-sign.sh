@@ -26,7 +26,7 @@ for lib in "$FRAMEWORKS_PATH"/*.dylib; do
     if [[ -f "$lib" ]]; then
         found_library=true
         echo "🔐 [Post-Build] Signing $(basename "$lib")"
-        codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$lib"
+        codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$lib"
     fi
 done
 if [[ "$found_library" != true ]]; then
@@ -35,6 +35,6 @@ if [[ "$found_library" != true ]]; then
 fi
 
 echo "🔐 [Post-Build] Signing app bundle"
-codesign --force --options runtime --sign "$SIGNING_IDENTITY" \
+codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
     --preserve-metadata=entitlements,requirements,flags "$APP_PATH"
 echo "✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY"

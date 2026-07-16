@@ -6,6 +6,24 @@ passes those values to Xcode as `MARKETING_VERSION` and
 `CURRENT_PROJECT_VERSION`; the archive verifier rejects a bundle with any
 other values.
 
+## Trust and release preflight policy
+
+Releases are made only from a clean, detached checkout whose `HEAD` equals
+an explicitly supplied immutable tag. The tag must be exactly `vX.Y.Z` and
+must equal `MACTALK_MARKETING_VERSION`; versions also use exactly `X.Y.Z`.
+`v1.1.3` is permanently reserved and must never be moved. Bump
+`scripts/release-version.env`, commit it, and create a new tag before starting
+the workflow. The repository must protect release tags (no force-push/delete)
+and require release environment reviewers; the tag policy is the trust root,
+not a mutable branch ref.
+
+A secret-free preflight runs before certificate or notarization credentials are
+read. It records the source commit, whisper.cpp submodule commit, exact fresh
+build recipe, UTC timestamp, and archive/app/DMG digests in chained provenance
+metadata. Every later phase verifies the metadata digest and its input digest.
+Signing uses secure Apple timestamps and verification rejects signatures without
+one. No phase downloads a model or retries notarization automatically.
+
 ## Prerequisites
 
 - macOS with Xcode, XcodeGen 2.44.1, CMake, `codesign`, `hdiutil`, `spctl`,
@@ -31,6 +49,10 @@ Run from the repository root. This creates artifacts under `release/` (or the
 specified output directory), but does not create a tag or GitHub release:
 
 ```bash
+# Use a newly created immutable tag; never reuse v1.1.3.
+git fetch --tags origin
+git checkout --detach vX.Y.Z
+export RELEASE_TAG='vX.Y.Z'
 export MACTALK_CODE_SIGN_IDENTITY='Developer ID Application: Name (TEAM_ID)'
 export MACTALK_DEVELOPMENT_TEAM='TEAM_ID'
 export MACTALK_NOTARY_KEYCHAIN_PROFILE='MacTalk-Notary'
@@ -55,10 +77,20 @@ cat release/MacTalk-*-manifest.txt
 ## GitHub Actions
 
 `.github/workflows/release.yml` runs for a `v*.*.*` tag or manual dispatch of
-an existing tag. Configure repository variables
+a newly created immutable tag. Checkout uses the explicit tag with
+`persist-credentials: false`; all actions are pinned to commit SHAs. The
+workflow is serialized per tag. Build/verify jobs have `contents: read`, and
+only signing/notarization steps receive Apple inputs. Certificates and
+P12/keychains are deleted in unconditional cleanup steps. The final publish
+job alone has `contents: write`: it creates a draft, uploads the DMG and
+manifest, verifies the uploaded SHA-256 digest, then publishes the draft.
+Configure repository variables
 `MACTALK_CODE_SIGN_IDENTITY` and `MACTALK_DEVELOPMENT_TEAM`, and secrets
 `MACTALK_CERTIFICATE_P12_BASE64`, `MACTALK_CERTIFICATE_PASSWORD`,
-`MACTALK_KEYCHAIN_PASSWORD`, `MACTALK_APPLE_ID`,
-`MACTALK_APPLE_TEAM_ID`, and `MACTALK_APP_SPECIFIC_PASSWORD`. It grants only
-`contents: write`, and publishes only after the final Gatekeeper and checksum
-steps. Local runs must not create or push tags/releases.
+`MACTALK_KEYCHAIN_PASSWORD`, `MACTALK_NOTARY_KEYCHAIN_PROFILE` (or
+`MACTALK_APPLE_ID`, `MACTALK_APPLE_TEAM_ID`, and
+`MACTALK_APPLE_APP_SPECIFIC_PASSWORD`). Local runs must not create or push
+tags/releases. Apple membership,
+signing certificates, notarization credentials, and protected-tag/environment
+configuration remain external prerequisites; never source real credentials in
+hermetic tests.
