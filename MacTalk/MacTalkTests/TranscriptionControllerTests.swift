@@ -116,6 +116,48 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
 
+    func test_controllerRejectsConcurrentOldCallbacksDuringRestart() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let engine = LifecycleTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "deterministic test source",
+            icon: nil
+        )
+        let oldSampleBuffer = try makeAppSampleBuffer(frameCount: 12_000)
+        let newSampleBuffer = try makeAppSampleBuffer(frameCount: 24_000)
+
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let oldCallback = captureSession.appCallbacks[0]
+        let oldSessionID = captureSession.sessionIDs[1]
+        controller.stop()
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let newCallback = captureSession.appCallbacks[1]
+        let newSessionID = captureSession.sessionIDs[3]
+
+        // Simulate queued delivery racing with a new stream. The old callback
+        // must be rejected by its session token; every new callback is valid.
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask {
+                    oldCallback(oldSessionID, oldSampleBuffer)
+                }
+                group.addTask {
+                    newCallback(newSessionID, newSampleBuffer)
+                }
+            }
+        }
+        controller.stop()
+
+        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(engine.finalizedFrameCounts, [96_000])
+    }
+
     func test_appAudioFailureFallsBackToMicOnlyWithoutStoppingMicrophone() async throws {
         let captureSession = LifecycleCaptureSession()
         let controller = TranscriptionController(

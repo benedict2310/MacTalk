@@ -24,6 +24,10 @@ final class AudioCapture: NSObject, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let bus = 0
     private let lifecycleLock = NSLock()
+    private let callbackQueue = DispatchQueue(
+        label: "com.mactalk.audio-capture.delivery",
+        qos: .userInitiated
+    )
     private var isRunning = false
 
     /// Starts a capture session with an immutable callback registration.
@@ -48,8 +52,14 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         let input = engine.inputNode
         let format = input.inputFormat(forBus: bus)
 
-        input.installTap(onBus: bus, bufferSize: 2048, format: format) { buffer, time in
-            onPCMFloatBuffer(sessionID, buffer, time)
+        input.installTap(onBus: bus, bufferSize: 2048, format: format) { [callbackQueue] buffer, time in
+            // AVAudioEngine invokes taps on a real-time thread. Queue the
+            // session-scoped callback instead of doing conversion, locking, or
+            // arbitrary client work on that thread. The captured session ID
+            // makes queued delivery safe across stop/restart.
+            callbackQueue.async {
+                onPCMFloatBuffer(sessionID, buffer, time)
+            }
         }
         engine.prepare()
 
