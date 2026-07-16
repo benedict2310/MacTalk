@@ -7,20 +7,14 @@
 
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
-import os
-
-/// Thread-safe audio format converter.
+/// Audio format converter.
 ///
-/// ## Thread Safety
-/// This class uses `OSAllocatedUnfairLock` to protect the converter cache,
-/// preventing data races when called from multiple audio threads (mic + app audio).
-///
-/// ## Sendable Conformance
-/// Marked `@unchecked Sendable` because:
-/// - The converter cache is protected by `OSAllocatedUnfairLock`
-/// - `targetFormat` is immutable after initialization
-/// - AVAudioConverter instances are thread-safe for conversion operations
-final class AudioMixer: @unchecked Sendable {
+/// Each call is a complete, stateless conversion of one input buffer. A fresh
+/// `AVAudioConverter` is used for every call so microphone and app-audio
+/// callbacks cannot share converter state or race while draining it. Callers
+/// that need stream continuity should pass buffers from one source in order;
+/// output from separate calls can then be concatenated without frame loss.
+final class AudioMixer: Sendable {
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16000,
@@ -28,75 +22,88 @@ final class AudioMixer: @unchecked Sendable {
         interleaved: false
     )!
 
-    /// Cache of converters keyed by input format's ObjectIdentifier.
-    /// Protected by OSAllocatedUnfairLock for thread-safe access.
-    private let converterCache = OSAllocatedUnfairLock<[ObjectIdentifier: AVAudioConverter]>(
-        initialState: [:]
-    )
-
     init() {}
 
-    /// Convert an AVAudioPCMBuffer to 16kHz mono float32 array
+    /// Convert an AVAudioPCMBuffer to 16kHz mono float32 array.
+    ///
+    /// Empty input is intentionally represented as a non-nil empty array. The
+    /// converter receives `.endOfStream` after the one input buffer, allowing
+    /// it to emit all pending resampler frames before the call returns.
     func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
-        // Get or create converter for this format (thread-safe)
-        let formatID = ObjectIdentifier(buffer.format)
+        guard buffer.frameLength > 0 else { return [] }
 
-        let converter: AVAudioConverter? = converterCache.withLock { cache in
-            if let existing = cache[formatID] {
-                return existing
-            }
-            guard let newConverter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-                print("Failed to create audio converter")
-                return nil
-            }
-            cache[formatID] = newConverter
-            return newConverter
+        guard let inputBuffer = makeMonoBuffer(from: buffer),
+              let converter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
+            DebugLogger.shared.log(.error(description: "Failed to create audio converter"))
+            return nil
         }
 
-        guard let converter = converter else { return nil }
-
-        // Calculate output buffer size
+        // Leave room for converter priming/trailing frames. The returned frame
+        // length is still determined by AVAudioConverter, not this capacity.
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let outputFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-
+        let expectedFrames = Double(buffer.frameLength) * ratio
+        let outputFrameCapacity = AVAudioFrameCount(ceil(expectedFrames) + 1024)
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: outputFrameCapacity
         ) else {
-            print("Failed to create output buffer")
+            DebugLogger.shared.log(.error(description: "Failed to create output buffer"))
             return nil
         }
 
         var error: NSError?
-        // Use nonisolated(unsafe) because this closure is synchronous and called
-        // on the same thread - AVAudioConverter.convert() is blocking.
         nonisolated(unsafe) var inputConsumed = false
-
-        let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
-            if inputConsumed {
-                outStatus.pointee = .noDataNow
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            guard !inputConsumed else {
+                outStatus.pointee = .endOfStream
                 return nil
             }
             inputConsumed = true
             outStatus.pointee = .haveData
-            return buffer
+            return inputBuffer
         }
 
         let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
-
         guard status != .error, error == nil else {
             DebugLogger.shared.log(.error(description: error?.localizedDescription ?? "unknown"))
             return nil
         }
 
-        // Extract float samples from first channel
         guard let channelData = outputBuffer.floatChannelData else { return nil }
-        let samples = Array(UnsafeBufferPointer(
+        return Array(UnsafeBufferPointer(
             start: channelData[0],
             count: Int(outputBuffer.frameLength)
         ))
+    }
 
-        return samples
+    private func makeMonoBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.format.channelCount > 1 else { return buffer }
+        guard let source = buffer.floatChannelData else { return nil }
+
+        let monoFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: buffer.format.sampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+        guard let monoBuffer = AVAudioPCMBuffer(
+            pcmFormat: monoFormat,
+            frameCapacity: buffer.frameLength
+        ), let destination = monoBuffer.floatChannelData?[0] else {
+            return nil
+        }
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        for frame in 0..<frameCount {
+            var sum: Float = 0
+            for channel in 0..<channelCount {
+                sum += source[channel][frame]
+            }
+            destination[frame] = sum / Float(channelCount)
+        }
+        monoBuffer.frameLength = buffer.frameLength
+        return monoBuffer
     }
 
     /// Convert CMSampleBuffer (from ScreenCaptureKit) to float array
