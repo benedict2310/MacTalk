@@ -48,7 +48,9 @@ final class AppPickerWindowController: NSWindowController {
     // MARK: - Properties
 
     private let allSources: [AudioSource]
+    private var selectionInProgress = false
     var onSelection: ((AudioSource) -> Void)?
+    var onCancel: (() -> Void)?
 
     // MARK: - Initialization
 
@@ -66,6 +68,7 @@ final class AppPickerWindowController: NSWindowController {
         window.center()
 
         super.init(window: window)
+        window.delegate = self
 
         if #available(macOS 26.4, *) {
             let state = PickerState(sources: allSources)
@@ -73,10 +76,13 @@ final class AppPickerWindowController: NSWindowController {
                 rootView: PickerContentView(
                     state: state,
                     onSelect: { [weak self] source in
+                        self?.selectionInProgress = true
                         self?.onSelection?(source)
                         self?.close()
                     },
                     onCancel: { [weak self] in
+                        self?.selectionInProgress = true
+                        self?.onCancel?()
                         self?.close()
                     }
                 )
@@ -90,10 +96,13 @@ final class AppPickerWindowController: NSWindowController {
                 rootView: LegacyPickerContentView(
                     state: state,
                     onSelect: { [weak self] source in
+                        self?.selectionInProgress = true
                         self?.onSelection?(source)
                         self?.close()
                     },
                     onCancel: { [weak self] in
+                        self?.selectionInProgress = true
+                        self?.onCancel?()
                         self?.close()
                     }
                 )
@@ -105,6 +114,13 @@ final class AppPickerWindowController: NSWindowController {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+extension AppPickerWindowController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard !selectionInProgress else { return }
+        onCancel?()
+    }
 }
 
 // MARK: - SwiftUI (macOS 26.4+)

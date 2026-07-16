@@ -366,11 +366,16 @@ final class StatusBarController {
         mode = .micOnly
         pendingStartMode = .micOnly
         pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micOnly))
-        withMicrophonePermission { [weak self] in
-            guard let self else { return }
-            self.captureRecordingTargetApp()
-            self.startRecording()
-        }
+        withMicrophonePermission(
+            onGranted: { [weak self] in
+                guard let self else { return }
+                self.captureRecordingTargetApp()
+                self.startRecording()
+            },
+            onAbandoned: { [weak self] in
+                self?.abandonPendingStart()
+            }
+        )
     }
 
     @objc private func startMicPlusApp() {
@@ -379,21 +384,27 @@ final class StatusBarController {
         pendingStartMode = .micPlusAppAudio
         pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micPlusAppAudio))
 
-        withMicrophonePermission { [weak self] in
-            guard let self else { return }
-            self.captureRecordingTargetApp()
+        withMicrophonePermission(
+            onGranted: { [weak self] in
+                guard let self else { return }
+                self.captureRecordingTargetApp()
 
-            // Check screen recording permission
-            NSLog("🔍 [StatusBar] Checking screen recording permission...")
-            if Permissions.checkScreenRecordingPermission() {
-                NSLog("✅ [StatusBar] Permission granted, showing app picker")
-                self.showAppPicker()
-            } else {
-                NSLog("❌ [StatusBar] Screen recording permission not granted")
-                // Show guide to help user enable permission
-                Permissions.ensureScreenRecordingGuide()
+                // Check screen recording permission
+                NSLog("🔍 [StatusBar] Checking screen recording permission...")
+                if Permissions.checkScreenRecordingPermission() {
+                    NSLog("✅ [StatusBar] Permission granted, showing app picker")
+                    self.showAppPicker()
+                } else {
+                    NSLog("❌ [StatusBar] Screen recording permission not granted")
+                    self.abandonPendingStart()
+                    // Show guide to help user enable permission
+                    Permissions.ensureScreenRecordingGuide()
+                }
+            },
+            onAbandoned: { [weak self] in
+                self?.abandonPendingStart()
             }
-        }
+        )
     }
 
     @objc private func stopRecording() {
@@ -519,7 +530,10 @@ final class StatusBarController {
         }
     }
 
-    private func withMicrophonePermission(_ onGranted: @escaping @MainActor () -> Void) {
+    private func withMicrophonePermission(
+        onGranted: @escaping @MainActor () -> Void,
+        onAbandoned: @escaping @MainActor () -> Void
+    ) {
         switch PermissionFlowGate.microphoneAction(for: Permissions.microphonePermissionState()) {
         case .proceed:
             onGranted()
@@ -528,10 +542,12 @@ final class StatusBarController {
                 if granted {
                     onGranted()
                 } else {
+                    onAbandoned()
                     Permissions.showMicrophonePermissionGuidance()
                 }
             }
         case .openSettings:
+            onAbandoned()
             Permissions.showMicrophonePermissionGuidance()
         }
     }
@@ -1443,6 +1459,7 @@ final class StatusBarController {
 
                 guard !sources.isEmpty else {
                     NSLog("⚠️ [StatusBar] No audio sources available")
+                    abandonPendingStart()
                     showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
                     return
                 }
@@ -1459,6 +1476,10 @@ final class StatusBarController {
                     self?.appPickerController = nil  // Release after selection
                     self?.startRecording()
                 }
+                picker.onCancel = { [weak self] in
+                    self?.appPickerController = nil
+                    self?.abandonPendingStart()
+                }
 
                 // Force window load synchronously BEFORE showing
                 _ = picker.window
@@ -1471,9 +1492,11 @@ final class StatusBarController {
 
             } catch let error as ScreenCaptureError {
                 NSLog("❌ [StatusBar] Screen capture error: \(error)")
+                abandonPendingStart()
                 showError(error.localizedDescription ?? "Unknown screen capture error")
             } catch {
                 NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
+                abandonPendingStart()
                 showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
             }
         }
@@ -1488,6 +1511,7 @@ final class StatusBarController {
 
         guard hasPermission else {
             NSLog("❌ [StatusBar] Screen recording permission NOT granted")
+            abandonPendingStart()
             showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
             return []
         }
@@ -1627,6 +1651,14 @@ final class StatusBarController {
         if updateStoredPreference && storedAutoPaste != effectiveAutoPaste {
             AppSettings.shared.setAutoPaste(effectiveAutoPaste)
         }
+    }
+
+    private func abandonPendingStart() {
+        pendingSettingsLatch.clear()
+        pendingStartMode = nil
+        pendingParakeetStartRetry = false
+        pendingParakeetStartGeneration = nil
+        isStartInFlight = false
     }
 
     private func invalidatePendingStart() {

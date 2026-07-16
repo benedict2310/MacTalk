@@ -126,6 +126,25 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertNil(latch.snapshot)
     }
 
+    func test_abandonedStartDoesNotLatchSettingsForNextRequest() {
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+        var latch = RecordingStartSnapshotLatch()
+
+        latch.captureIfNeeded(settings.snapshotAtRecordingStart().withCaptureMode(.micPlusAppAudio))
+        settings.setLanguage("de")
+        settings.setCaptureMode(.micOnly)
+        settings.setWhisperModelID("whisper-base-q5_1")
+
+        // Permission denial, picker cancellation, and source-load failures all
+        // abandon the request. A later request must capture the updated values.
+        latch.clear()
+        latch.captureIfNeeded(settings.snapshotAtRecordingStart().withCaptureMode(.micOnly))
+
+        XCTAssertEqual(latch.snapshot?.language, "de")
+        XCTAssertEqual(latch.snapshot?.captureMode, .micOnly)
+        XCTAssertEqual(latch.snapshot?.whisperModelID, "whisper-base-q5_1")
+    }
+
     func test_persistsProviderSelection() {
         let settings = AppSettings.makeForTesting(defaults: defaults)
         settings.provider = .parakeet
