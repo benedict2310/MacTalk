@@ -116,6 +116,65 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
 
+    func test_controllerRejectsOldMicrophoneCallbackAfterStopAndRestart() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let engine = LifecycleTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+
+        try await controller.start(mode: .micOnly)
+        let oldCallback = captureSession.microphoneCallbacks[0]
+        let oldSessionID = captureSession.microphoneSessionIDs[0]
+        controller.stop()
+        try await controller.start(mode: .micOnly)
+        let newCallback = captureSession.microphoneCallbacks[1]
+        let newSessionID = captureSession.microphoneSessionIDs[1]
+        let buffer = makeConstantPCMBuffer(sampleRate: 16_000, channels: 1, frameCount: 1_600)
+        let time = AVAudioTime(hostTime: 0, sampleTime: 0, atRate: 16_000)
+
+        oldCallback(oldSessionID, buffer, time)
+        newCallback(newSessionID, buffer, time)
+        controller.stop()
+
+        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(engine.finalizedFrameCounts, [1_600])
+    }
+
+    func test_controllerRejectsOldScreenAudioErrorAfterStopAndRestart() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let engine = LifecycleTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "deterministic test source",
+            icon: nil
+        )
+        let fallback = expectation(description: "current session falls back")
+        fallback.assertForOverFulfill = false
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let oldError = captureSession.errorCallbacks[0]
+        let oldSessionID = captureSession.appSessionIDs[0]
+        controller.stop()
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let newError = captureSession.errorCallbacks[1]
+        let newSessionID = captureSession.appSessionIDs[1]
+        let stopAppCountBeforeStaleError = captureSession.stopAppAudioCount
+
+        oldError(oldSessionID, NSError(domain: "old-screen-session", code: 1))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(captureSession.stopAppAudioCount, stopAppCountBeforeStaleError)
+
+        newError(newSessionID, NSError(domain: "current-screen-session", code: 2))
+        await fulfillment(of: [fallback], timeout: 1)
+        XCTAssertEqual(captureSession.stopAppAudioCount, stopAppCountBeforeStaleError + 1)
+        controller.stop()
+    }
+
     func test_controllerRejectsConcurrentOldCallbacksDuringRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
@@ -264,6 +323,8 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
     private(set) var appCallbacks: [(@Sendable (UUID, CMSampleBuffer) -> Void)] = []
     private(set) var errorCallbacks: [(@Sendable (UUID, Error) -> Void)] = []
     private(set) var sessionIDs: [UUID] = []
+    private(set) var microphoneSessionIDs: [UUID] = []
+    private(set) var appSessionIDs: [UUID] = []
     private(set) var microphoneStartCount = 0
     private(set) var stopCount = 0
     private(set) var stopAppAudioCount = 0
@@ -274,6 +335,7 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
     ) throws {
         microphoneStartCount += 1
         sessionIDs.append(sessionID)
+        microphoneSessionIDs.append(sessionID)
         microphoneCallbacks.append(callback)
     }
 
@@ -284,6 +346,7 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
         errorCallback: @escaping @Sendable (UUID, Error) -> Void
     ) async throws {
         sessionIDs.append(sessionID)
+        appSessionIDs.append(sessionID)
         appCallbacks.append(callback)
         errorCallbacks.append(errorCallback)
     }

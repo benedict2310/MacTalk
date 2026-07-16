@@ -383,8 +383,14 @@ final class TranscriptionController: @unchecked Sendable {
                         self?.processSampleBuffer(sampleBuffer, sessionID: callbackSessionID)
                     },
                     errorCallback: { [weak self] callbackSessionID, error in
-                        guard self?.audioSessionGate.accepts(callbackSessionID) == true else { return }
-                        self?.handleAppAudioError(error)
+                        guard let self else { return }
+                        // Validate and mutate while holding the same session gate.
+                        // A stop/restart cannot slip between acceptance and the
+                        // fallback mode mutation, so stale ScreenCaptureKit
+                        // errors cannot affect the restarted session.
+                        self.audioSessionGate.withAcceptedSession(callbackSessionID) {
+                            self.handleAppAudioError(error)
+                        }
                     }
                 )
             } catch {
