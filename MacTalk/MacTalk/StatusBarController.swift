@@ -42,6 +42,7 @@ final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
     private var statusItem: NSStatusItem!
     private var engine: (any ASREngine)?
+    private let engineReloadCoordinator = EngineReloadCoordinator(loader: DefaultEngineSelectionLoader())
     private var transcriber: TranscriptionController?
     private var hudController: HUDWindowController?
     private var settingsController: SettingsWindowController?
@@ -466,8 +467,11 @@ final class StatusBarController {
         requestProviderSwitch(to: .whisper, promptForDownload: false)
         updateProviderMenuState()
 
-        // Reload model
-        prepareWhisperModel()
+        // A recording owns its engine. The selected model is reconciled at the
+        // next start rather than replacing an engine underneath that recording.
+        if !isRecording && !isStartInFlight && !isFinalizing {
+            prepareWhisperModel()
+        }
     }
 
     @objc private func selectModelSpec(_ sender: NSMenuItem) {
@@ -479,11 +483,13 @@ final class StatusBarController {
         requestProviderSwitch(to: .whisper, promptForDownload: false)
         updateProviderMenuState()
 
-        // Disable start items while downloading
-        setStartItemsEnabled(false)
-
-        // Prepare model with auto-download
-        prepareWhisperModelWithAutoDownload(spec: spec)
+        // Prepare model with auto-download only while idle. During a recording
+        // this selection is persisted for the next session and menu state stays
+        // owned by the active recording.
+        if !isRecording && !isStartInFlight && !isFinalizing {
+            setStartItemsEnabled(false)
+            prepareWhisperModelWithAutoDownload(spec: spec)
+        }
     }
 
     @objc private func selectParakeet() {
@@ -605,8 +611,8 @@ final class StatusBarController {
                 showModelMissingAlert(modelName: currentWhisperModelName, path: modelURL.path)
                 return
             }
-            if provider == .whisper {
-                engine = NativeWhisperEngine(modelURL: modelURL)
+            if provider == .whisper, let loadedEngine = NativeWhisperEngine(modelURL: modelURL) {
+                adoptLoadedEngine(loadedEngine, selection: engineSelection(for: AppSettings.shared.snapshot))
             }
         }
     }
@@ -623,7 +629,12 @@ final class StatusBarController {
                 guard let self else { return }
                 if isValid {
                     guard self.provider == .whisper else { return }
-                    self.engine = NativeWhisperEngine(modelURL: url)
+                    if let loadedEngine = NativeWhisperEngine(modelURL: url) {
+                        self.adoptLoadedEngine(
+                            loadedEngine,
+                            selection: .whisper(spec)
+                        )
+                    }
                     self.setStartItemsEnabled(true)
                 } else {
                     // Missing/malformed catalog metadata is an external
@@ -679,8 +690,11 @@ final class StatusBarController {
             self?.setStartItemsEnabled(true)
             switch result {
             case .success(let url):
-                if self?.provider == .whisper {
-                    self?.engine = NativeWhisperEngine(modelURL: url)
+                if self?.provider == .whisper, let loadedEngine = NativeWhisperEngine(modelURL: url) {
+                    self?.adoptLoadedEngine(
+                        loadedEngine,
+                        selection: .whisper(spec)
+                    )
                 }
             case .failure(let error):
                 self?.progressItem?.title = "Model error: \(error.localizedDescription)"
@@ -781,6 +795,33 @@ final class StatusBarController {
         }
     }
 
+    private func engineSelection(for settings: SettingsSnapshot) -> EngineSelection? {
+        switch settings.provider {
+        case .whisper:
+            guard let spec = ModelCatalog.findById(settings.whisperModelID) else { return nil }
+            return .whisper(spec)
+        case .parakeet:
+            return .parakeet
+        }
+    }
+
+    private func isEngineAvailableLocally(_ selection: EngineSelection) -> Bool {
+        switch selection.provider {
+        case .whisper:
+            guard let spec = ModelCatalog.findById(selection.modelID) else { return false }
+            return ModelStore.exists(spec)
+        case .parakeet:
+            return ParakeetModelDownloader().modelsAvailable()
+        }
+    }
+
+    private func adoptLoadedEngine(_ engine: any ASREngine, selection: EngineSelection?) {
+        self.engine = engine
+        if let selection {
+            engineReloadCoordinator.adoptLoadedEngine(engine, selection: selection)
+        }
+    }
+
     @MainActor
     private func prepareEngineForCurrentProvider() async {
         switch provider {
@@ -848,7 +889,7 @@ final class StatusBarController {
                 return
             }
             parakeetEngine = engine
-            self.engine = engine
+            adoptLoadedEngine(engine, selection: .parakeet)
             setStartItemsEnabled(true)
             finishParakeetPreparation(triggerRetry: true)
         } catch {
@@ -862,15 +903,14 @@ final class StatusBarController {
     private func providerDidChange(_ newProvider: ASRProvider) {
         guard provider != newProvider else { return }
 
-        let wasRecording = isRecording || isStartInFlight
-        // Settings are session-scoped. Do not tear down an active session when
-        // the user edits provider; the new provider is applied on next start.
-        if wasRecording {
-            return
-        }
+        // Settings are session-scoped. Do not tear down or replace an engine
+        // while a recording (or its start) is active; the next start reads the
+        // authoritative snapshot and reconciles it below.
+        guard !isRecording, !isStartInFlight, !isFinalizing else { return }
 
         provider = newProvider
         engine = nil
+        engineReloadCoordinator.clearLoadedEngine()
         if newProvider == .whisper {
             parakeetEngine = nil
         }
@@ -879,12 +919,6 @@ final class StatusBarController {
         Task { [weak self] in
             guard let self else { return }
             await self.prepareEngineForCurrentProvider()
-            guard wasRecording,
-                  let engine = self.engine,
-                  engine.provider == self.provider else { return }
-            await MainActor.run {
-                self.resumeRecordingAfterProviderSwitch()
-            }
         }
     }
 
@@ -1150,6 +1184,47 @@ final class StatusBarController {
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
 
+        // Reconcile the complete engine identity before each new recording.
+        // Provider-only checks are insufficient when the selected Whisper model
+        // changes. Availability is checked locally; this path never downloads.
+        if let pendingSelection = engineSelection(for: settingsSnapshot),
+           engineReloadCoordinator.loadedSelection != pendingSelection || engineReloadCoordinator.loadedEngine == nil {
+            if isEngineAvailableLocally(pendingSelection) {
+                isStartInFlight = true
+                startGeneration += 1
+                let reconciliationGeneration = startGeneration
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        let loaded = try await self.engineReloadCoordinator.reconcile(
+                            pending: PendingSettingsSnapshot(engine: pendingSelection),
+                            isRecording: false
+                        )
+                        guard self.startGeneration == reconciliationGeneration, !self.isRecording else {
+                            return
+                        }
+                        self.adoptLoadedEngine(loaded, selection: pendingSelection)
+                        self.isStartInFlight = false
+                        self.startRecording(allowParakeetPrepare: allowParakeetPrepare)
+                    } catch {
+                        guard self.startGeneration == reconciliationGeneration else { return }
+                        self.isStartInFlight = false
+                        self.pendingSettingsLatch.clear()
+                        self.pendingStartMode = nil
+                        self.showError("Failed to load the selected engine: \(error.localizedDescription)")
+                    }
+                }
+                return
+            } else if pendingSelection.provider == .whisper {
+                engine = nil
+                engineReloadCoordinator.clearLoadedEngine()
+                pendingSettingsLatch.clear()
+                pendingStartMode = nil
+                showError("The selected Whisper model is not available locally.")
+                return
+            }
+        }
+
         let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false
         if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
             let immediateEngine = parakeetEngine ?? ParakeetEngine()
@@ -1170,6 +1245,7 @@ final class StatusBarController {
         if preparationDecision.clearMismatchedEngine, let engine {
             NSLog("⚠️ [StatusBar] Engine/provider mismatch (\(engine.provider) vs \(provider)) - clearing")
             self.engine = nil
+            engineReloadCoordinator.clearLoadedEngine()
         }
 
         switch preparationDecision.action {
@@ -1622,6 +1698,7 @@ final class StatusBarController {
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
         if engine?.provider != provider {
             engine = nil
+            engineReloadCoordinator.clearLoadedEngine()
         }
         updateProviderMenuState()
     }
