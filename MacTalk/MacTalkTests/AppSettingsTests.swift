@@ -106,6 +106,26 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.snapshot.provider, .parakeet)
     }
 
+    func test_pendingRetrySnapshotIgnoresLaterSettingsEdits() {
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+        var latch = RecordingStartSnapshotLatch()
+        let requested = settings.snapshotAtRecordingStart().withCaptureMode(.micPlusAppAudio)
+        latch.captureIfNeeded(requested)
+
+        settings.setLanguage("de")
+        settings.setWhisperModelID("whisper-base-q5_1")
+        settings.provider = .parakeet
+        settings.setCaptureMode(.micOnly)
+
+        // A preparation/download retry must use the original request, not a
+        // fresh AppSettings snapshot taken after these edits.
+        latch.captureIfNeeded(settings.snapshotAtRecordingStart())
+        XCTAssertEqual(latch.snapshot, requested)
+
+        latch.clear()
+        XCTAssertNil(latch.snapshot)
+    }
+
     func test_persistsProviderSelection() {
         let settings = AppSettings.makeForTesting(defaults: defaults)
         settings.provider = .parakeet

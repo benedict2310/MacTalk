@@ -34,6 +34,22 @@ struct SettingsSnapshot: Equatable, Sendable {
     }
 }
 
+/// Holds the immutable settings selected when a recording request begins.
+/// Retries must reuse this value instead of reading AppSettings again.
+struct RecordingStartSnapshotLatch: Sendable {
+    private(set) var snapshot: SettingsSnapshot?
+
+    mutating func captureIfNeeded(_ snapshot: SettingsSnapshot) {
+        if self.snapshot == nil {
+            self.snapshot = snapshot
+        }
+    }
+
+    mutating func clear() {
+        snapshot = nil
+    }
+}
+
 final class AppSettings: @unchecked Sendable {
     static let shared = AppSettings()
 

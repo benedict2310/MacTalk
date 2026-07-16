@@ -52,6 +52,9 @@ final class StatusBarController {
     private var mode: TranscriptionController.Mode = .micOnly
     /// Explicit menu/hotkey intent survives settings edits and preparation retries.
     private var pendingStartMode: TranscriptionController.Mode?
+    /// The settings captured when a start request begins. It remains stable
+    /// through permission prompts, app picking, downloads, and engine retries.
+    private var pendingSettingsLatch = RecordingStartSnapshotLatch()
     private var isRecording = false
     private var isFinalizing = false
     private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -362,6 +365,7 @@ final class StatusBarController {
     @objc private func startMicOnly() {
         mode = .micOnly
         pendingStartMode = .micOnly
+        pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micOnly))
         withMicrophonePermission { [weak self] in
             guard let self else { return }
             self.captureRecordingTargetApp()
@@ -373,6 +377,7 @@ final class StatusBarController {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
         pendingStartMode = .micPlusAppAudio
+        pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micPlusAppAudio))
 
         withMicrophonePermission { [weak self] in
             guard let self else { return }
@@ -790,18 +795,27 @@ final class StatusBarController {
     private func finishParakeetPreparation(triggerRetry: Bool) {
         let shouldRetry = triggerRetry && pendingParakeetStartRetry
         let pendingGeneration = pendingParakeetStartGeneration
+        let hasPendingStart = pendingSettingsLatch.snapshot != nil
         pendingParakeetStartRetry = false
         pendingParakeetStartGeneration = nil
         isParakeetPreparationInFlight = false
 
         guard let pendingGeneration, pendingGeneration == startGeneration else {
+            if !triggerRetry || !hasPendingStart {
+                pendingSettingsLatch.clear()
+            }
             return
         }
 
         isStartInFlight = false
 
         if shouldRetry {
+            // Keep the latched snapshot until the retried start either succeeds
+            // or reports failure. Settings edits during preparation are for the
+            // next recording and must not alter this request.
             startRecording(allowParakeetPrepare: false)
+        } else {
+            pendingSettingsLatch.clear()
         }
     }
 
@@ -1079,6 +1093,11 @@ final class StatusBarController {
         if let requestedMode {
             pendingStartMode = requestedMode
             mode = requestedMode
+            if pendingSettingsLatch.snapshot == nil {
+                pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(
+                    requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+                ))
+            }
         }
         NSLog("🎬 [StatusBar] startRecording() called")
         if recordingTargetApp == nil {
@@ -1099,11 +1118,17 @@ final class StatusBarController {
         // Take one authoritative snapshot for this recording session. Explicit
         // menu/hotkey intent overrides the configured default mode, but all
         // other provider/model/language values come from this one snapshot.
-        let configuredSnapshot = AppSettings.shared.snapshotAtRecordingStart()
         let requestedMode = pendingStartMode ?? mode
-        let settingsSnapshot = configuredSnapshot.withCaptureMode(
-            requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
-        )
+        let settingsSnapshot: SettingsSnapshot
+        if let pendingSettingsSnapshot = pendingSettingsLatch.snapshot {
+            settingsSnapshot = pendingSettingsSnapshot
+        } else {
+            let configuredSnapshot = AppSettings.shared.snapshotAtRecordingStart()
+            settingsSnapshot = configuredSnapshot.withCaptureMode(
+                requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+            )
+            pendingSettingsLatch.captureIfNeeded(settingsSnapshot)
+        }
         provider = settingsSnapshot.provider
         mode = requestedMode
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
@@ -1145,10 +1170,15 @@ final class StatusBarController {
                             }
                         } catch {
                             await MainActor.run {
+                                self.pendingSettingsLatch.clear()
+                                self.pendingStartMode = nil
                                 self.showError("Parakeet download failed: \(error.localizedDescription)")
                             }
                         }
                     }
+                } else {
+                    self.pendingSettingsLatch.clear()
+                    self.pendingStartMode = nil
                 }
             }
             return
@@ -1184,6 +1214,8 @@ final class StatusBarController {
 
         guard let engine = engine, engine.provider == provider else {
             NSLog("❌ [StatusBar] Engine not loaded or provider mismatch!")
+            pendingSettingsLatch.clear()
+            pendingStartMode = nil
             showError("Engine not loaded. Check that the \(provider.displayName) models are available.")
             return
         }
@@ -1232,6 +1264,7 @@ final class StatusBarController {
                     self.isStartInFlight = false
                     self.isRecording = true
                     self.pendingStartMode = nil
+                    self.pendingSettingsLatch.clear()
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(self.mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)
@@ -1242,6 +1275,8 @@ final class StatusBarController {
                     guard startGeneration == self.startGeneration else { return }
                     self.startTask = nil
                     self.isStartInFlight = false
+                    self.pendingSettingsLatch.clear()
+                    self.pendingStartMode = nil
                     NSLog("ℹ️ [StatusBar] Recording start cancelled")
                 }
             } catch {
@@ -1251,6 +1286,8 @@ final class StatusBarController {
                     guard startGeneration == self.startGeneration else { return }
                     self.startTask = nil
                     self.isStartInFlight = false
+                    self.pendingSettingsLatch.clear()
+                    self.pendingStartMode = nil
                     self.recordingTargetApp = nil
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
@@ -1596,6 +1633,8 @@ final class StatusBarController {
         startGeneration += 1
         pendingParakeetStartRetry = false
         pendingParakeetStartGeneration = nil
+        pendingSettingsLatch.clear()
+        pendingStartMode = nil
         isStartInFlight = false
         startTask?.cancel()
         startTask = nil
