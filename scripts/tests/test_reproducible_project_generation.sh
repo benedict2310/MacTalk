@@ -38,12 +38,20 @@ PY
 
 before_project="$(mktemp)"
 before_lock="$(mktemp)"
-trap 'rm -f "$before_project" "$before_lock"' EXIT
-shasum MacTalk.xcodeproj/project.pbxproj MacTalk.xcodeproj/xcshareddata/xcschemes/MacTalk-TSan.xcscheme > "$before_project"
+before_scheme="$(mktemp)"
+trap 'rm -f "$before_project" "$before_lock" "$before_scheme"' EXIT
+shasum MacTalk.xcodeproj/project.pbxproj > "$before_project"
 shasum "$LOCKFILE" > "$before_lock"
 xcodegen generate >/dev/null
 shasum -c "$before_project" >/dev/null
 shasum -c "$before_lock" >/dev/null
+
+SCHEME="MacTalk.xcodeproj/xcshareddata/xcschemes/MacTalk-TSan.xcscheme"
+shasum "$SCHEME" > "$before_scheme"
+xcodegen generate >/dev/null
+shasum -c "$before_project" >/dev/null
+shasum -c "$before_lock" >/dev/null
+shasum -c "$before_scheme" >/dev/null
 
 if ! xcodebuild -list -project MacTalk.xcodeproj 2>/dev/null | grep -Fx '        MacTalk-TSan'; then
     echo "MacTalk-TSan scheme is not discoverable" >&2
