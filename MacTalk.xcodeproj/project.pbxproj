@@ -24,11 +24,13 @@
 		31AF70C191CCF991E619649E /* PerformanceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */; };
 		324D5DEB6A98DBF07FCE11C9 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF01E16D9F042ED0D5426CE5 /* Permissions.swift */; };
 		40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */; };
+		40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */; };
 		412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */; };
 		416496001FD72456227393F3 /* EngineSelectionLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F6F864A70D9ADC1DE6D778 /* EngineSelectionLoader.swift */; };
 		4743AF96C26282668AE7107A /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E9EED0C012BA63AE29807D /* HotkeyManager.swift */; };
 		4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */; };
 		4E3418A79136E93D144D1A3E /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E02C702E7A93C3C3EB66EC4 /* AppSettingsTests.swift */; };
+		50FE09108D301C3C52E2D93C /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD951499247140D4AAFCEA4F /* UserNotifications.framework */; };
 		520D5CB08C0BEE4FBB233F47 /* NativeWhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA82C17EF6BC9027FA3048E8 /* NativeWhisperEngineTests.swift */; };
 		5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81ABE900575F1149ED6F49B /* TestHelpers.swift */; };
 		5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */; };
@@ -77,6 +79,7 @@
 		E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */; };
 		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
+		F6722E9D10CAB9ECA3FD3B16 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74DAEDA2792B773A15191DA0 /* NotificationManager.swift */; };
 		F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */; };
 		F8737753B44C1AEC16F43DC7 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E458427B2F013B3D86FF976 /* StatusBarController.swift */; };
 		FCB78911B3F69224381E5FEB /* ScreenCaptureKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 392B5C1EE24551C4C7BA55FB /* ScreenCaptureKit.framework */; };
@@ -124,6 +127,7 @@
 		6E458427B2F013B3D86FF976 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
 		739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		74DAEDA2792B773A15191DA0 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetEngineTests.swift; sourceTree = "<group>"; };
 		81F3CF3EAB00EA975604C5A1 /* PrivacyLoggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyLoggingTests.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
@@ -136,6 +140,7 @@
 		9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowController.swift; sourceTree = "<group>"; };
 		A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalog.swift; sourceTree = "<group>"; };
 		AB1711734B0AD4FDB46A70A1 /* EngineSelectionLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSelectionLoaderTests.swift; sourceTree = "<group>"; };
+		AD951499247140D4AAFCEA4F /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		AF1D34C2AC9B4101C1ACF491 /* EngineReloadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineReloadCoordinator.swift; sourceTree = "<group>"; };
 		B1DFB8FB82C42012D63E1919 /* NativeWhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWhisperEngine.swift; sourceTree = "<group>"; };
 		B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionController.swift; sourceTree = "<group>"; };
@@ -149,6 +154,7 @@
 		CC13B415ED06C97834D8484E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		CC4F33E65DF8138019C37275 /* RingBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBufferTests.swift; sourceTree = "<group>"; };
 		CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoInsertManager.swift; sourceTree = "<group>"; };
+		D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManagerTests.swift; sourceTree = "<group>"; };
 		D16C4E018975F87D9DE6D45F /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		D2F6F864A70D9ADC1DE6D778 /* EngineSelectionLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSelectionLoader.swift; sourceTree = "<group>"; };
 		D465A46A98C40FCE2AC3C775 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
@@ -187,6 +193,7 @@
 				E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */,
 				FDA1357E6499774BF197B5EF /* AppKit.framework in Frameworks */,
 				FCB78911B3F69224381E5FEB /* ScreenCaptureKit.framework in Frameworks */,
+				50FE09108D301C3C52E2D93C /* UserNotifications.framework in Frameworks */,
 				CD8CFF3413450B0B52DDC9EB /* CoreML.framework in Frameworks */,
 				BAD2320D9521ED8C2B05863B /* FluidAudio in Frameworks */,
 			);
@@ -237,6 +244,7 @@
 				CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */,
 				AF1D34C2AC9B4101C1ACF491 /* EngineReloadCoordinator.swift */,
 				D2F6F864A70D9ADC1DE6D778 /* EngineSelectionLoader.swift */,
+				74DAEDA2792B773A15191DA0 /* NotificationManager.swift */,
 				ED043C82B3643877AFAA01CE /* NotificationNames.swift */,
 				E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */,
 				2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */,
@@ -262,6 +270,7 @@
 				43939A73281D9B60CA7A0912 /* ModelIntegrityTests.swift */,
 				E8ED5B1124AF544E69B234D2 /* ModelManagerTests.swift */,
 				EA82C17EF6BC9027FA3048E8 /* NativeWhisperEngineTests.swift */,
+				D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */,
 				7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */,
 				83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */,
 				E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */,
@@ -314,6 +323,7 @@
 				CC13B415ED06C97834D8484E /* Foundation.framework */,
 				17A686CDEF44401730A9967E /* Metal.framework */,
 				392B5C1EE24551C4C7BA55FB /* ScreenCaptureKit.framework */,
+				AD951499247140D4AAFCEA4F /* UserNotifications.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -518,6 +528,7 @@
 				DB47CCD04FB7C1B3419C7F33 /* ModelManager.swift in Sources */,
 				5AEA53717EA74573AC492E8E /* ModelStore.swift in Sources */,
 				A616C89260D388D11E7AD999 /* NativeWhisperEngine.swift in Sources */,
+				F6722E9D10CAB9ECA3FD3B16 /* NotificationManager.swift in Sources */,
 				2B93773FDDA520DE760B85F4 /* NotificationNames.swift in Sources */,
 				6CA60FEE44034413EF9AD91D /* ParakeetBootstrap.swift in Sources */,
 				93BD41773F100E2B0F8FA5C6 /* ParakeetEngine.swift in Sources */,
@@ -556,6 +567,7 @@
 				CB36CD51A8713642F3EF11A6 /* ModelIntegrityTests.swift in Sources */,
 				6DF8C9E51C8CF1146A192820 /* ModelManagerTests.swift in Sources */,
 				520D5CB08C0BEE4FBB233F47 /* NativeWhisperEngineTests.swift in Sources */,
+				40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */,
 				B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */,
 				5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */,
 				031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */,
@@ -632,6 +644,7 @@
 					"-framework AVFoundation",
 					"-framework AppKit",
 					"-framework ScreenCaptureKit",
+					"-framework UserNotifications",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.app;
 				SDKROOT = macosx;
@@ -793,6 +806,7 @@
 					"-framework AVFoundation",
 					"-framework AppKit",
 					"-framework ScreenCaptureKit",
+					"-framework UserNotifications",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.app;
 				SDKROOT = macosx;

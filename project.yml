@@ -58,6 +58,7 @@ targets:
         - -framework AVFoundation
         - -framework AppKit
         - -framework ScreenCaptureKit
+        - -framework UserNotifications
       LD_RUNPATH_SEARCH_PATHS:
         - "@executable_path/../Frameworks"
         - "@loader_path/../Frameworks"
@@ -73,6 +74,7 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: AppKit.framework
       - sdk: ScreenCaptureKit.framework
+      - sdk: UserNotifications.framework
       - sdk: CoreML.framework
       - package: FluidAudio
     postBuildScripts:

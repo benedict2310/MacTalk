@@ -66,9 +66,14 @@ final class SettingsViewModel: ObservableObject {
 
     private nonisolated(unsafe) var tokens: [NSObjectProtocol] = []
     private let settingsStore: AppSettings
+    private let notificationManager: NotificationManager
 
-    init(settingsStore: AppSettings = .shared) {
+    init(
+        settingsStore: AppSettings = .shared,
+        notificationManager: NotificationManager = .shared
+    ) {
         self.settingsStore = settingsStore
+        self.notificationManager = notificationManager
         let d = UserDefaults.standard
         showInDock = d.bool(forKey: "showInDock")
         let settingsSnapshot = settingsStore.snapshot
@@ -116,6 +121,14 @@ final class SettingsViewModel: ObservableObject {
         if AppSettings.languageOptions.indices.contains(languageIndex) {
             settingsStore.setLanguage(AppSettings.languageOptions[languageIndex])
         }
+    }
+
+    /// Persists a user-driven notification preference change and, when enabling,
+    /// starts the system authorization flow. Ordinary saves never authorize.
+    func setShowNotificationsEnabled(_ enabled: Bool) {
+        showNotifications = enabled
+        save()
+        notificationManager.userChangedNotificationsPreference(to: enabled)
     }
 
     func setAutoPasteEnabled(_ enabled: Bool) {
@@ -260,7 +273,7 @@ private struct GeneralTab: View {
             Toggle("Show in Dock", isOn: $vm.showInDock)
                 .onChange(of: vm.showInDock) { vm.save(); vm.applyDockPolicy() }
             Toggle("Show Notifications", isOn: $vm.showNotifications)
-                .onChange(of: vm.showNotifications) { vm.save() }
+                .onChange(of: vm.showNotifications) { vm.setShowNotificationsEnabled(vm.showNotifications) }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -498,7 +511,7 @@ private struct LegacySettingsContentView: View {
                         vm.save()
                     }
                 Toggle("Show notifications", isOn: $vm.showNotifications)
-                    .onChange(of: vm.showNotifications) { vm.save() }
+                    .onChange(of: vm.showNotifications) { vm.setShowNotificationsEnabled(vm.showNotifications) }
                 Toggle("Auto-paste on Stop", isOn: Binding(
                     get: { vm.autoPaste },
                     set: { vm.setAutoPasteEnabled($0) }

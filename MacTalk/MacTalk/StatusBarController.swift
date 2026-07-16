@@ -50,6 +50,7 @@ final class StatusBarController {
     private var provider: ASRProvider = AppSettings.shared.provider
     private var autoPaste = false
     private var showNotifications = true  // Default to true
+    private let notificationManager: NotificationManager
     private var mode: TranscriptionController.Mode = .micOnly
     /// Explicit menu/hotkey intent survives settings edits and preparation retries.
     private var pendingStartMode: TranscriptionController.Mode?
@@ -94,7 +95,8 @@ final class StatusBarController {
     // Use nonisolated(unsafe) because deinit cannot access @MainActor-isolated properties
     private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
 
-    init() {
+    init(notificationManager: NotificationManager = .shared) {
+        self.notificationManager = notificationManager
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
 
@@ -1011,9 +1013,8 @@ final class StatusBarController {
             DLOG("[AutoPaste] clearing recording target app (was: \(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"))")
             self?.recordingTargetApp = nil
 
-            NSLog("[StatusBar] Showing notification: \(message)")
-            DLOG("[AutoPaste] notification message=\(message)")
-            self?.showNotification(title: "Transcription Complete", message: message)
+            NSLog("[StatusBar] Showing transcription completion notification")
+            self?.notificationManager.submit(.transcriptionComplete, enabled: self?.showNotifications ?? false)
         }
 
         controller.onFinalizationComplete = { [weak self, weak controller] in
@@ -1040,17 +1041,11 @@ final class StatusBarController {
         }
 
         controller.onAppAudioLost = { [weak self] in
-            self?.showNotification(
-                title: "App Audio Lost",
-                message: "The selected app's audio stream was interrupted. Retrying..."
-            )
+            self?.notificationManager.submit(.appAudioLost, enabled: self?.showNotifications ?? false)
         }
 
         controller.onFallbackToMicOnly = { [weak self] in
-            self?.showNotification(
-                title: "Switched to Mic-Only Mode",
-                message: "App audio could not be restored. Continuing with microphone only."
-            )
+            self?.notificationManager.submit(.fallbackToMicOnly, enabled: self?.showNotifications ?? false)
             self?.hudController?.setAppMeterVisible(false)
         }
     }
@@ -1450,20 +1445,6 @@ final class StatusBarController {
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
-    }
-
-    private func showNotification(title: String, message: String) {
-        // Only show notifications if enabled in settings
-        guard showNotifications else {
-            NSLog("🔕 [MacTalk] Notifications disabled - skipping: \(title)")
-            return
-        }
-
-        let notification = NSUserNotification()
-        notification.title = title
-        notification.informativeText = message
-        notification.soundName = NSUserNotificationDefaultSoundName
-        NSUserNotificationCenter.default.deliver(notification)
     }
 
     func cleanup() {
