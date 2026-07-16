@@ -59,6 +59,7 @@ final class AppSettings: @unchecked Sendable {
 
     private let stateLock: OSAllocatedUnfairLock<State>
     private let defaults: UserDefaults
+    private let beforePersist: @Sendable () -> Void
 
     private static let providerKey = "asrProvider"
     private static let whisperModelIDKey = "whisperModelID"
@@ -70,8 +71,12 @@ final class AppSettings: @unchecked Sendable {
     private static let defaultModelID = "whisper-large-v3-turbo-q5_0"
     private static let defaultLanguage = "en"
 
-    private init(defaults: UserDefaults = .standard) {
+    private init(
+        defaults: UserDefaults = .standard,
+        beforePersist: @escaping @Sendable () -> Void = {}
+    ) {
         self.defaults = defaults
+        self.beforePersist = beforePersist
         Self.migrateLegacyKeys(in: defaults)
         let snapshot = Self.loadSnapshot(from: defaults)
         self.stateLock = OSAllocatedUnfairLock(initialState: State(snapshot: snapshot))
@@ -116,12 +121,18 @@ final class AppSettings: @unchecked Sendable {
     }
 
     #if DEBUG
-    static func makeForTesting(defaults: UserDefaults) -> AppSettings {
-        AppSettings(defaults: defaults)
+    static func makeForTesting(
+        defaults: UserDefaults,
+        beforePersist: @escaping @Sendable () -> Void = {}
+    ) -> AppSettings {
+        AppSettings(defaults: defaults, beforePersist: beforePersist)
     }
     #else
-    static func makeForTesting(defaults: UserDefaults) -> AppSettings {
-        AppSettings(defaults: defaults)
+    static func makeForTesting(
+        defaults: UserDefaults,
+        beforePersist: @escaping @Sendable () -> Void = {}
+    ) -> AppSettings {
+        AppSettings(defaults: defaults, beforePersist: beforePersist)
     }
     #endif
 
@@ -134,10 +145,15 @@ final class AppSettings: @unchecked Sendable {
             change(&next)
             guard next != state.snapshot else { return nil }
             state.snapshot = next
+
+            // Keep persistence in the same critical section as the state
+            // mutation. Otherwise a slower older write can overwrite a newer
+            // snapshot in UserDefaults after this lock has been released.
+            beforePersist()
+            Self.persist(next, to: defaults)
             return next
         }
         guard let changedSnapshot else { return }
-        Self.persist(changedSnapshot, to: defaults)
         if postProviderNotification {
             NotificationCenter.default.post(name: .providerDidChange, object: changedSnapshot.provider)
         }

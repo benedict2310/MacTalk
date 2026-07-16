@@ -8,6 +8,43 @@
 import XCTest
 @testable import MacTalk
 
+private final class PersistenceGate: @unchecked Sendable {
+    let firstPersistStarted = DispatchSemaphore(value: 0)
+    let secondPersistStarted = DispatchSemaphore(value: 0)
+    let releaseFirstPersist = DispatchSemaphore(value: 0)
+
+    private let lock = NSLock()
+    private var persistCount = 0
+    private var shouldBlockFirstPersist = false
+    private var didBlockFirstPersist = false
+    private var blockedPersistCount = 0
+
+    func activate() {
+        lock.lock()
+        shouldBlockFirstPersist = true
+        lock.unlock()
+    }
+
+    func beforePersist() {
+        lock.lock()
+        persistCount += 1
+        let shouldBlock = shouldBlockFirstPersist && !didBlockFirstPersist
+        if shouldBlock {
+            didBlockFirstPersist = true
+            blockedPersistCount = persistCount
+        }
+        let isSecondPersist = didBlockFirstPersist && persistCount == blockedPersistCount + 1
+        lock.unlock()
+
+        if shouldBlock {
+            firstPersistStarted.signal()
+            releaseFirstPersist.wait()
+        } else if isSecondPersist {
+            secondPersistStarted.signal()
+        }
+    }
+}
+
 final class AppSettingsTests: XCTestCase {
 
     private var defaults: UserDefaults!
@@ -163,5 +200,63 @@ final class AppSettingsTests: XCTestCase {
         settings.provider = .parakeet
 
         wait(for: [expectation], timeout: 1.0)
+    }
+
+    func test_concurrentUpdatesPersistTheFinalInMemorySnapshot() {
+        let suiteName = "AppSettingsConcurrentPersistenceTests"
+        let concurrentDefaults = UserDefaults(suiteName: suiteName)!
+        concurrentDefaults.removePersistentDomain(forName: suiteName)
+        defer { concurrentDefaults.removePersistentDomain(forName: suiteName) }
+
+        let gate = PersistenceGate()
+        let settings = AppSettings.makeForTesting(
+            defaults: concurrentDefaults,
+            beforePersist: { gate.beforePersist() }
+        )
+
+        let modelIDs = ["whisper-large-v3-turbo-q5_0", "whisper-base-q5_1"]
+        let languages: [String?] = [nil, "en", "de"]
+        for round in 0..<8 {
+            DispatchQueue.concurrentPerform(iterations: 512) { index in
+                let selector = (round * 512 + index) % 6
+                switch selector {
+                case 0:
+                    settings.setWhisperModelID(modelIDs[index % modelIDs.count])
+                case 1:
+                    settings.setLanguage(languages[index % languages.count])
+                case 2:
+                    settings.setCaptureMode(index.isMultiple(of: 2) ? .micOnly : .micPlusAppAudio)
+                case 3:
+                    settings.setShowNotifications(index.isMultiple(of: 2))
+                case 4:
+                    settings.setAutoPaste(index.isMultiple(of: 2))
+                default:
+                    settings.provider = index.isMultiple(of: 2) ? .whisper : .parakeet
+                }
+            }
+        }
+
+        gate.activate()
+        let firstLanguage = settings.snapshot.language == "de" ? "fr" : "de"
+        let secondLanguage = firstLanguage == "de" ? "fr" : "de"
+        let firstUpdate = DispatchWorkItem {
+            settings.setLanguage(firstLanguage)
+        }
+        DispatchQueue.global().async(execute: firstUpdate)
+        XCTAssertEqual(gate.firstPersistStarted.wait(timeout: .now() + 1), .success)
+
+        let secondUpdate = DispatchWorkItem {
+            settings.setLanguage(secondLanguage)
+        }
+        DispatchQueue.global().async(execute: secondUpdate)
+        _ = gate.secondPersistStarted.wait(timeout: .now() + .milliseconds(100))
+        gate.releaseFirstPersist.signal()
+        firstUpdate.wait()
+        secondUpdate.wait()
+
+        let expected = settings.snapshot
+        XCTAssertEqual(expected.language, secondLanguage)
+        let reloaded = AppSettings.makeForTesting(defaults: concurrentDefaults)
+        XCTAssertEqual(reloaded.snapshot, expected)
     }
 }
