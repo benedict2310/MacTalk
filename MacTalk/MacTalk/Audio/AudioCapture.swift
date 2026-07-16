@@ -20,6 +20,77 @@ struct AudioCaptureFrame: Sendable, Equatable {
     let sampleRate: Double
 }
 
+/// Coalesces delivery scheduling for a bounded audio handoff.
+///
+/// `scheduled` means one drain closure is queued, while `draining` means that
+/// closure is currently consuming the ring. Producers never schedule another
+/// closure while either state is active. The final empty check after the state
+/// transition closes the race where a producer enqueues between the last pop
+/// and clearing `draining`.
+final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
+    private static let scheduled = 1
+    private static let draining = 2
+
+    private let queue: OwnedAudioRing
+    private let schedule: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private let delivery: @Sendable (UUID, AudioCaptureFrame) -> Void
+    private let state = Atomic<Int>(0)
+
+    init(
+        slotCount: Int,
+        maxFramesPerBuffer: Int,
+        schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
+        delivery: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+    ) {
+        queue = OwnedAudioRing(slotCount: slotCount, maxFrames: maxFramesPerBuffer)
+        self.schedule = schedule
+        self.delivery = delivery
+    }
+
+    @discardableResult
+    func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID) -> Bool {
+        guard queue.push(buffer: buffer, sampleRate: sampleRate, sessionID: sessionID) else {
+            return false
+        }
+        requestDrain()
+        return true
+    }
+
+    var droppedBufferCount: UInt64 { queue.droppedCount }
+
+    private func requestDrain() {
+        let result = state.compareExchange(
+            expected: 0,
+            desired: Self.scheduled,
+            ordering: .acquiringAndReleasing
+        )
+        guard result.exchanged else { return }
+        schedule { [weak self] in self?.drain() }
+    }
+
+    private func drain() {
+        let result = state.compareExchange(
+            expected: Self.scheduled,
+            desired: Self.draining,
+            ordering: .acquiringAndReleasing
+        )
+        guard result.exchanged else { return }
+
+        while let item = queue.pop() {
+            delivery(item.sessionID, item.frame)
+        }
+
+        _ = state.compareExchange(
+            expected: Self.draining,
+            desired: 0,
+            ordering: .acquiringAndReleasing
+        )
+        if queue.hasItems {
+            requestDrain()
+        }
+    }
+}
+
 /// Microphone audio capture using AVAudioEngine.
 ///
 /// The render callback performs only a bounded slot check and a copy into
@@ -34,7 +105,9 @@ final class AudioCapture: NSObject, @unchecked Sendable {
     private static let defaultDeliveryQueue = DispatchQueue(
         label: "com.mactalk.audio-capture.delivery", qos: .userInitiated
     )
-    private let queue: OwnedAudioRing
+    private let slotCount: Int
+    private let maxFramesPerBuffer: Int
+    private var deliveryCoordinator: AudioCaptureDeliveryCoordinator?
     private var isRunning = false
 
     init(
@@ -44,7 +117,8 @@ final class AudioCapture: NSObject, @unchecked Sendable {
             AudioCapture.defaultDeliveryQueue.async(execute: work)
         }
     ) {
-        self.queue = OwnedAudioRing(slotCount: slotCount, maxFrames: maxFramesPerBuffer)
+        self.slotCount = slotCount
+        self.maxFramesPerBuffer = maxFramesPerBuffer
         self.schedule = schedule
         super.init()
     }
@@ -65,14 +139,21 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         let input = engine.inputNode
         let format = input.inputFormat(forBus: bus)
         let sampleRate = format.sampleRate
+        let coordinator = AudioCaptureDeliveryCoordinator(
+            slotCount: slotCount,
+            maxFramesPerBuffer: maxFramesPerBuffer,
+            schedule: schedule,
+            delivery: onPCMFloatBuffer
+        )
+        deliveryCoordinator = coordinator
 
-        input.installTap(onBus: bus, bufferSize: AVAudioFrameCount(queue.maxFrames), format: format) {
+        input.installTap(onBus: bus, bufferSize: AVAudioFrameCount(maxFramesPerBuffer), format: format) {
             [weak self] buffer, _ in
             guard let self else { return }
-            // This is the complete render-thread handoff. No AVAudio object is
-            // captured by the scheduled work and no lock/alloc occurs here.
-            guard self.queue.push(buffer: buffer, sampleRate: sampleRate, sessionID: sessionID) else { return }
-            self.schedule { [weak self] in self?.drain(delivery: onPCMFloatBuffer) }
+            // This is the complete render-thread handoff. No AVAudio object
+            // escapes into scheduled work; the bounded queue applies drop-newest
+            // backpressure and coalesces the delivery schedule.
+            _ = coordinator.push(buffer: buffer, sampleRate: sampleRate, sessionID: sessionID)
         }
         engine.prepare()
 
@@ -96,13 +177,7 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         engine.reset()
     }
 
-    var droppedBufferCount: UInt64 { queue.droppedCount }
-
-    private func drain(delivery: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void) {
-        while let item = queue.pop() {
-            delivery(item.sessionID, item.frame)
-        }
-    }
+    var droppedBufferCount: UInt64 { deliveryCoordinator?.droppedBufferCount ?? 0 }
 
     func getCurrentLevel() -> Float {
         engine.inputNode.volume
@@ -171,6 +246,10 @@ final class OwnedAudioRing: @unchecked Sendable {
         slot.sessionID = sessionID
         producerIndex.store(next, ordering: .releasing)
         return true
+    }
+
+    var hasItems: Bool {
+        consumerIndex.load(ordering: .relaxed) != producerIndex.load(ordering: .acquiring)
     }
 
     typealias Item = (sessionID: UUID, frame: AudioCaptureFrame)
