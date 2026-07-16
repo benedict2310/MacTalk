@@ -51,6 +51,7 @@ final class StatusBarController {
     private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
     private var isRecording = false
+    private var isFinalizing = false
     private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
     private var selectedAudioSource: AppPickerWindowController.AudioSource?
     private var recordingTargetApp: NSRunningApplication?
@@ -395,6 +396,8 @@ final class StatusBarController {
         let shouldFlushFinalTranscript = isRecording
         invalidatePendingStart()
         if shouldFlushFinalTranscript {
+            isFinalizing = true
+            setStartItemsEnabled(false)
             transcriber?.stop()
         } else {
             transcriber?.cancelStart()
@@ -930,6 +933,13 @@ final class StatusBarController {
             self?.showNotification(title: "Transcription Complete", message: message)
         }
 
+        controller.onFinalizationComplete = { [weak self, weak controller] in
+            guard let self, let controller, self.transcriber === controller else { return }
+            self.isFinalizing = false
+            self.setStartItemsEnabled(true)
+            DLOG("Transcription finalization completed; recording controls re-enabled")
+        }
+
         controller.onMicLevel = { [weak self] levelData in
             self?.hudController?.updateMicLevel(
                 rms: levelData.rms,
@@ -1055,8 +1065,8 @@ final class StatusBarController {
             NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
         }
 
-        if isRecording || isStartInFlight {
-            NSLog("⚠️ [StatusBar] Ignoring duplicate start request while recording is active or starting")
+        if isRecording || isStartInFlight || isFinalizing {
+            NSLog("⚠️ [StatusBar] Ignoring start request while recording is active, starting, or finalizing")
             return
         }
 
@@ -1139,13 +1149,22 @@ final class StatusBarController {
             return
         }
 
-        NSLog("✅ [StatusBar] Engine available, creating TranscriptionController...")
-        let transcriptionController = TranscriptionController(engine: engine)
+        let transcriptionController: TranscriptionController
+        if let existing = transcriber,
+           existing.provider == provider,
+           existing.isUsingEngine(engine) {
+            transcriptionController = existing
+            DLOG("Reusing TranscriptionController and microphone engine for provider=\(provider.rawValue)")
+            NSLog("✅ [StatusBar] Reusing existing TranscriptionController")
+        } else {
+            NSLog("✅ [StatusBar] Engine available, creating TranscriptionController...")
+            transcriptionController = TranscriptionController(engine: engine)
+            setupTranscriptionCallbacks(transcriptionController)
+            transcriber = transcriptionController
+            NSLog("🎬 [StatusBar] TranscriptionController created")
+        }
         transcriptionController.autoPasteEnabled = autoPaste
-        NSLog("🎬 [StatusBar] TranscriptionController created with autoPaste=\(autoPaste)")
-
-        setupTranscriptionCallbacks(transcriptionController)
-        transcriber = transcriptionController
+        NSLog("🎬 [StatusBar] TranscriptionController configured with autoPaste=\(autoPaste)")
         isStartInFlight = true
         startGeneration += 1
         let startGeneration = self.startGeneration

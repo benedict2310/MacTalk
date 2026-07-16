@@ -13,6 +13,14 @@ import os
 @testable import MacTalk
 
 final class TranscriptionControllerTests: XCTestCase {
+    func test_whisperUsesIncrementalChunkProcessing() {
+        XCTAssertTrue(ASRProvider.whisper.usesIncrementalChunkProcessing)
+    }
+
+    func test_parakeetUsesFinalOnlyProcessingToAvoidInferenceOverlap() {
+        XCTAssertFalse(ASRProvider.parakeet.usesIncrementalChunkProcessing)
+    }
+
     func test_stripsLeadingPunctuationArtifacts() {
         XCTAssertEqual(TranscriptCleaner.clean(". this is a test"), "This is a test.")
         XCTAssertEqual(TranscriptCleaner.clean("... okay let's try this"), "Okay let's try this.")
