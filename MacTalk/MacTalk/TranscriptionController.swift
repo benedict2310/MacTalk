@@ -122,6 +122,7 @@ final class TranscriptionController: @unchecked Sendable {
     private let samplesPerMs = 16  // 16kHz sample rate
     private let maxFinalAudioSamples = 9_600_000  // 10 minutes at 16kHz mono
     private let finalAudioTrimMarginSamples = 160_000  // Trim in 10s chunks to reduce churn
+    private let tailDrainMs: Int = 100
     private let diagnosticsQueue = DispatchQueue(label: "com.mactalk.audio.diagnostics", qos: .utility)
     private let audioDiagnosticsEnabled = false
     private let audioDiagnosticsInterval: TimeInterval = 1.0
@@ -145,6 +146,7 @@ final class TranscriptionController: @unchecked Sendable {
         var pendingTasks: [UUID: [PendingChunkTask]] = [:]
         var chunkProcessingTail: Task<Void, Never>?
         var language: String?
+        var isStopping = false
 
         init(chunkDuration: Int, language: String?) {
             self.currentChunkDuration = chunkDuration
@@ -161,6 +163,7 @@ final class TranscriptionController: @unchecked Sendable {
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?  // Callback when app audio is lost
     var onFallbackToMicOnly: (@Sendable @MainActor () -> Void)?  // Callback when falling back to mic-only
+    var onFinalizationComplete: (@Sendable @MainActor () -> Void)?
     var autoPasteEnabled = false
 
     // Performance optimization
@@ -184,6 +187,14 @@ final class TranscriptionController: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    var provider: ASRProvider {
+        engine.provider
+    }
+
+    func isUsingEngine(_ candidate: any ASREngine) -> Bool {
+        ObjectIdentifier(engine as AnyObject) == ObjectIdentifier(candidate as AnyObject)
     }
 
     var language: String? {
@@ -216,6 +227,7 @@ final class TranscriptionController: @unchecked Sendable {
             state.sessionID = UUID()
             state.pendingTasks[state.sessionID] = []
             state.chunkProcessingTail = nil
+            state.isStopping = false
         }
 
         // Start microphone capture FIRST so we don't lose the beginning
@@ -282,17 +294,35 @@ final class TranscriptionController: @unchecked Sendable {
 
     func stop() {
         DLOG("Transcription stop requested")
-        micCapture.stop()
         screenCapture.stop()
 
-        let sessionID = audioState.withLock { state in
-            state.sessionID
+        let sessionID: UUID? = audioState.withLock { state in
+            guard !state.isStopping else { return nil }
+            state.isStopping = true
+            return state.sessionID
+        }
+        guard let sessionID else {
+            DLOG("Ignoring duplicate transcription stop request")
+            return
         }
 
-        Task { [weak self] in
-            guard let self else { return }
-            await self.cancelPendingChunkTasks(sessionID: sessionID)
-            await self.flushFinalChunk(sessionID: sessionID)
+        // Keep the controller alive through final inference and clipboard delivery.
+        Task { [self] in
+            // Capture the final in-flight microphone buffer without a noticeable delay.
+            try? await Task.sleep(nanoseconds: UInt64(tailDrainMs) * 1_000_000)
+            micCapture.stop()
+
+            await cancelPendingChunkTasks(sessionID: sessionID)
+            await flushFinalChunk(sessionID: sessionID)
+
+            audioState.withLock { state in
+                if state.sessionID == sessionID {
+                    state.isStopping = false
+                }
+            }
+            if let onFinalizationComplete {
+                await onFinalizationComplete()
+            }
         }
 
         print("Transcription stopped")
@@ -326,6 +356,7 @@ final class TranscriptionController: @unchecked Sendable {
             state.fullTranscript.removeAll()
             state.sessionID = UUID()
             state.chunkProcessingTail = nil
+            state.isStopping = false
             return sessionID
         }
     }
@@ -367,8 +398,11 @@ final class TranscriptionController: @unchecked Sendable {
     private func appendSamples(_ samples: [Float]) {
         logAudioDiagnosticsIfNeeded(samples)
 
+        let usesIncrementalChunks = engine.provider.usesIncrementalChunkProcessing
         let (chunkCount, threshold) = audioState.withLock { state -> (Int, Int) in
-            state.audioChunk.append(contentsOf: samples)
+            if usesIncrementalChunks {
+                state.audioChunk.append(contentsOf: samples)
+            }
             state.allAudio.append(contentsOf: samples)
 
             if state.allAudio.count > maxFinalAudioSamples + finalAudioTrimMarginSamples {
@@ -381,8 +415,10 @@ final class TranscriptionController: @unchecked Sendable {
             return (state.audioChunk.count, samplesPerMs * effectiveDuration)
         }
 
-        // Check if we have enough samples for a chunk
-        if chunkCount >= threshold {
+        // FluidAudio's shared Parakeet manager can stall when an incremental
+        // request is cancelled immediately before final inference. Use one
+        // final request for Parakeet; Whisper keeps live incremental updates.
+        if usesIncrementalChunks, chunkCount >= threshold {
             processChunk()
         }
     }
@@ -477,8 +513,7 @@ final class TranscriptionController: @unchecked Sendable {
         }
 
         guard !snapshot.audio.isEmpty else {
-            // Emit final combined transcript
-            emitFinalTranscript(sessionID: sessionID)
+            await emitFinalTranscript(sessionID: sessionID)
             return
         }
 
@@ -488,7 +523,7 @@ final class TranscriptionController: @unchecked Sendable {
 
         if rms < silenceThreshold {
             print("🔇 Skipping silent final audio (RMS: \(String(format: "%.4f", rms)))")
-            emitFinalTranscript(sessionID: sessionID)
+            await emitFinalTranscript(sessionID: sessionID)
             return
         }
 
@@ -515,10 +550,10 @@ final class TranscriptionController: @unchecked Sendable {
             print("ASR final processing failed: \(error.localizedDescription)")
         }
 
-        emitFinalTranscript(sessionID: sessionID)
+        await emitFinalTranscript(sessionID: sessionID)
     }
 
-    private func emitFinalTranscript(sessionID: UUID) {
+    private func emitFinalTranscript(sessionID: UUID) async {
         let combined: String? = audioState.withLock { state in
             guard state.sessionID == sessionID else { return nil }
             let result = state.fullTranscript.joined(separator: " ")
@@ -526,19 +561,24 @@ final class TranscriptionController: @unchecked Sendable {
             return result
         }
 
-        guard let combined = combined else { return }
+        guard let combined else {
+            DLOG("Final transcript discarded because its recording session is no longer current")
+            return
+        }
 
         let cleaned = cleanTranscript(combined)
         if cleaned != combined {
             DLOG("Cleaned final transcript: rawChars=\(combined.count), cleanedChars=\(cleaned.count)")
         }
 
-        if !cleaned.isEmpty {
-            if let onFinal {
-                Task { @MainActor in
-                    onFinal(cleaned)
-                }
-            }
+        guard !cleaned.isEmpty else {
+            DLOG("Final transcription produced no text; clipboard left unchanged")
+            return
+        }
+
+        if let onFinal {
+            // Ensure clipboard propagation completes before a new recording starts.
+            await onFinal(cleaned)
         }
     }
 
