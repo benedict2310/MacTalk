@@ -27,6 +27,14 @@ final class PrivacyLoggingTests: XCTestCase {
         XCTAssertEqual(staticNSLogViolations(in: reconstructedLeak).count, 1)
     }
 
+    func test_whisperBridgeGuardRejectsGenericVariableArgumentsWithCommentBeforeCallArguments() {
+        let blockCommentLeak = #"void log(const char *segment_text) { NSLog/*comment*/(@"Segment: %@", segment_text); }"#
+        let lineCommentLeak = "void log(const char *segment_text) { NSLog//comment\n(@\"Segment: %@\", segment_text); }"
+
+        XCTAssertEqual(staticNSLogViolations(in: blockCommentLeak).count, 1)
+        XCTAssertEqual(staticNSLogViolations(in: lineCommentLeak).count, 1)
+    }
+
     func test_whisperBridgeDoesNotLogTranscriptContent() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let bridgeURL = testsDirectory
@@ -72,10 +80,7 @@ private func staticNSLogViolations(in source: String) -> [String] {
                       (index == source.startIndex || !isIdentifierCharacter(source[source.index(before: index)])) {
                 let nameEnd = source.index(index, offsetBy: 5)
                 if nameEnd == source.endIndex || !isIdentifierCharacter(source[nameEnd]) {
-                    var cursor = nameEnd
-                    while cursor < source.endIndex, source[cursor].isWhitespace {
-                        cursor = source.index(after: cursor)
-                    }
+                    let cursor = skipWhitespaceAndComments(in: source, from: nameEnd)
                     if cursor < source.endIndex, source[cursor] == "(" {
                         if let close = matchingParenthesis(in: source, openingAt: cursor) {
                             let argumentStart = source.index(after: cursor)
@@ -123,6 +128,52 @@ private func staticNSLogViolations(in source: String) -> [String] {
     }
 
     return violations
+}
+
+private func skipWhitespaceAndComments(in source: String, from start: String.Index) -> String.Index {
+    var index = start
+
+    while index < source.endIndex {
+        if source[index].isWhitespace {
+            index = source.index(after: index)
+            continue
+        }
+
+        guard source[index] == "/" else {
+            break
+        }
+
+        let next = source.index(after: index)
+        guard next < source.endIndex else {
+            break
+        }
+
+        if source[next] == "/" {
+            index = source.index(index, offsetBy: 2)
+            while index < source.endIndex, source[index] != "\n" {
+                index = source.index(after: index)
+            }
+            continue
+        }
+
+        guard source[next] == "*" else {
+            break
+        }
+
+        index = source.index(index, offsetBy: 2)
+        while index < source.endIndex {
+            if source[index] == "*" {
+                let afterAsterisk = source.index(after: index)
+                if afterAsterisk < source.endIndex, source[afterAsterisk] == "/" {
+                    index = source.index(after: afterAsterisk)
+                    break
+                }
+            }
+            index = source.index(after: index)
+        }
+    }
+
+    return index
 }
 
 private func matchingParenthesis(in source: String, openingAt opening: String.Index) -> String.Index? {
