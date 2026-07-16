@@ -131,6 +131,61 @@ enum TranscriptCleaner {
     }
 }
 
+/// Capture boundary used by the transcription controller.
+///
+/// Keeping capture lifecycle and callbacks behind this dependency lets callers
+/// provide a different capture implementation without changing session gating.
+protocol TranscriptionCaptureSession: AnyObject {
+    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)? { get set }
+    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)? { get set }
+    var onStreamError: (@Sendable (Error) -> Void)? { get set }
+
+    func startMicrophone() throws
+    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws
+    func stop()
+}
+
+/// Platform capture implementation used by the application.
+final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionCaptureSession {
+    private let micCapture = AudioCapture()
+    private let screenCapture = ScreenAudioCapture()
+
+    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
+    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
+    var onStreamError: (@Sendable (Error) -> Void)?
+
+    func startMicrophone() throws {
+        micCapture.onPCMFloatBuffer = { [weak self] buffer, time in
+            self?.onMicrophoneBuffer?(buffer, time)
+        }
+        try micCapture.start()
+    }
+
+    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws {
+        screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
+            self?.onAppAudioSampleBuffer?(sampleBuffer)
+        }
+        screenCapture.onStreamError = { [weak self] error in
+            self?.onStreamError?(error)
+        }
+
+        if source.isSystemAudio, let display = source.display {
+            try await screenCapture.selectDisplay(display: display)
+        } else if let app = source.app {
+            try await screenCapture.selectApp(app: app)
+        } else {
+            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid audio source"
+            ])
+        }
+    }
+
+    func stop() {
+        micCapture.stop()
+        screenCapture.stop()
+    }
+}
+
 /// Orchestrates audio capture, mixing, and transcription.
 ///
 /// ## Thread Safety
@@ -151,8 +206,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let micCapture = AudioCapture()
-    private let screenCapture = ScreenAudioCapture()
+    private let captureSession: any TranscriptionCaptureSession
     private let mixer: AudioMixer
     private let micStream: AudioMixer.Stream
     private let appStream: AudioMixer.Stream
@@ -212,8 +266,12 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    init(engine: any ASREngine) {
+    init(
+        engine: any ASREngine,
+        captureSession: any TranscriptionCaptureSession = LiveTranscriptionCaptureSession()
+    ) {
         let mixer = AudioMixer()
+        self.captureSession = captureSession
         self.mixer = mixer
         self.micStream = mixer.makeStream()
         self.appStream = mixer.makeStream()
@@ -255,8 +313,7 @@ final class TranscriptionController: @unchecked Sendable {
         // streams. ScreenCaptureKit may still deliver a queued callback after
         // stopCapture has been requested.
         let sessionID = audioSessionGate.begin()
-        micCapture.stop()
-        screenCapture.stop()
+        captureSession.stop()
 
         // Clear previous state
         micStream.reset()
@@ -276,10 +333,10 @@ final class TranscriptionController: @unchecked Sendable {
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
-        micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
+        captureSession.onMicrophoneBuffer = { [weak self] buffer, _ in
             self?.processAudioBuffer(buffer, sessionID: sessionID)
         }
-        try micCapture.start()
+        try captureSession.startMicrophone()
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
@@ -293,7 +350,13 @@ final class TranscriptionController: @unchecked Sendable {
             }
 
             do {
-                try await startAppAudioCapture(source: source, sessionID: sessionID)
+                captureSession.onAppAudioSampleBuffer = { [weak self] sampleBuffer in
+                    self?.processSampleBuffer(sampleBuffer, sessionID: sessionID)
+                }
+                captureSession.onStreamError = { [weak self] error in
+                    self?.handleAppAudioError(error)
+                }
+                try await captureSession.startAppAudio(source: source)
             } catch {
                 await cancelStartAndWait()
                 throw error
@@ -315,37 +378,12 @@ final class TranscriptionController: @unchecked Sendable {
         print("Transcription started in mode: \(mode)")
     }
 
-    private func startAppAudioCapture(
-        source: AppPickerWindowController.AudioSource,
-        sessionID: UUID
-    ) async throws {
-        screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
-            self?.processSampleBuffer(sampleBuffer, sessionID: sessionID)
-        }
-
-        // Install error handler
-        screenCapture.onStreamError = { [weak self] error in
-            self?.handleAppAudioError(error)
-        }
-
-        if source.isSystemAudio, let display = source.display {
-            try await screenCapture.selectDisplay(display: display)
-        } else if let app = source.app {
-            try await screenCapture.selectApp(app: app)
-        } else {
-            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Invalid audio source"
-            ])
-        }
-    }
-
     func stop() {
         DLOG("Transcription stop requested")
         // Gate first: stopCapture is asynchronous and queued callbacks may
         // otherwise append into a stream while it is being finished/reset.
         audioSessionGate.stop()
-        micCapture.stop()
-        screenCapture.stop()
+        captureSession.stop()
         finishAudioStreams()
 
         let sessionID = audioState.withLock { state in
@@ -380,8 +418,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func cancelStartAndReturnSession() -> UUID {
         audioSessionGate.stop()
-        micCapture.stop()
-        screenCapture.stop()
+        captureSession.stop()
 
         return audioState.withLock { state in
             let sessionID = state.sessionID
@@ -393,44 +430,6 @@ final class TranscriptionController: @unchecked Sendable {
             return sessionID
         }
     }
-
-    #if DEBUG
-    // MARK: - Test Lifecycle Hooks
-
-    /// Starts a capture session without touching hardware. This keeps lifecycle
-    /// tests on the same gate, streams, and callback path used by production.
-    internal func beginSessionForTesting() -> UUID {
-        audioSessionGate.stop()
-        let sessionID = audioSessionGate.begin()
-        micStream.reset()
-        appStream.reset()
-        audioState.withLock { state in
-            state.audioChunk.removeAll()
-            state.allAudio.removeAll()
-            state.sessionID = sessionID
-        }
-        return sessionID
-    }
-
-    /// Stops the controller through the production stop path while allowing
-    /// tests to avoid microphone and ScreenCaptureKit setup.
-    internal func stopSessionForTesting() {
-        stop()
-    }
-
-    internal func deliverAppSampleBufferForTesting(
-        _ sampleBuffer: CMSampleBuffer,
-        sessionID: UUID
-    ) -> Int? {
-        processSampleBuffer(sampleBuffer, sessionID: sessionID)
-    }
-
-    internal var bufferedAudioSampleCountForTesting: Int {
-        audioState.withLock { state in
-            state.audioChunk.count
-        }
-    }
-    #endif
 
     // MARK: - Audio Processing
 
@@ -693,7 +692,7 @@ final class TranscriptionController: @unchecked Sendable {
         print("Falling back to microphone-only mode")
 
         // Stop app audio capture
-        screenCapture.stop()
+        captureSession.stop()
 
         // Update mode
         audioState.withLock { state in

@@ -7,6 +7,7 @@
 //
 
 import XCTest
+import os
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 @testable import MacTalk
@@ -79,22 +80,32 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(appStream.finish()).isEmpty)
     }
 
-    func test_controllerRejectsOldAppCallbackAfterStopAndRestart() throws {
-        let controller = TranscriptionController(engine: LifecycleTestEngine())
-        let firstSession = controller.beginSessionForTesting()
-        controller.stopSessionForTesting()
-        let secondSession = controller.beginSessionForTesting()
-        let sampleBuffer = try makeAppSampleBuffer(frameCount: 4_800)
+    func test_controllerRejectsOldAppCallbackAfterStopAndRestart() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let engine = LifecycleTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "deterministic test source",
+            icon: nil
+        )
+        let sampleBuffer = try makeAppSampleBuffer(frameCount: 24_000)
 
-        let oldResult = controller.deliverAppSampleBufferForTesting(sampleBuffer, sessionID: firstSession)
-        let countAfterOldCallback = controller.bufferedAudioSampleCountForTesting
-        let newResult = controller.deliverAppSampleBufferForTesting(sampleBuffer, sessionID: secondSession)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        controller.stop()
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
 
-        XCTAssertNil(oldResult)
-        XCTAssertEqual(countAfterOldCallback, 0)
-        XCTAssertNotNil(newResult)
-        XCTAssertGreaterThan(newResult ?? 0, 0)
-        XCTAssertEqual(controller.bufferedAudioSampleCountForTesting, newResult)
+        XCTAssertEqual(captureSession.appCallbacks.count, 2)
+        captureSession.appCallbacks[0](sampleBuffer)
+        captureSession.appCallbacks[1](sampleBuffer)
+        controller.stop()
+
+        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
 
     private func makeAppSampleBuffer(frameCount: Int) throws -> CMSampleBuffer {
@@ -172,12 +183,41 @@ final class TranscriptionControllerTests: XCTestCase {
     }
 }
 
+private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionCaptureSession {
+    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
+    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
+    var onStreamError: (@Sendable (Error) -> Void)?
+    private(set) var appCallbacks: [(@Sendable (CMSampleBuffer) -> Void)] = []
+
+    func startMicrophone() throws {}
+
+    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws {
+        guard let onAppAudioSampleBuffer else {
+            XCTFail("Controller must install the app-audio callback before starting capture")
+            return
+        }
+        appCallbacks.append(onAppAudioSampleBuffer)
+    }
+
+    func stop() {}
+}
+
 private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {
     let provider: ASRProvider = .whisper
+    private let finalizedFrameCountsLock = OSAllocatedUnfairLock(initialState: [Int]())
+
+    var finalizedFrameCounts: [Int] {
+        finalizedFrameCountsLock.withLock { $0 }
+    }
 
     func prepare() async throws {}
     func reset() async {}
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? { nil }
-    func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? { nil }
+    func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
+        finalizedFrameCountsLock.withLock { counts in
+            counts.append(Int(buffer.frameLength))
+        }
+        return nil
+    }
     func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {}
 }
