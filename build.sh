@@ -16,6 +16,9 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
 source "$PROJECT_DIR/scripts/build_helpers.sh"
+# Keep local builds on the same authoritative release metadata as archives.
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/scripts/release-version.env"
 
 CONFIGURATION="Release"
 SCHEME="MacTalk"
@@ -63,6 +66,8 @@ case "${1:-build}" in
       CODE_SIGN_STYLE=Manual \
       CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
       DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+      MARKETING_VERSION="$MACTALK_MARKETING_VERSION" \
+      CURRENT_PROJECT_VERSION="$MACTALK_BUILD_NUMBER" \
       build 2>&1 | tee "$BUILD_LOG"
     BUILD_STATUS=${PIPESTATUS[0]}
     set -e

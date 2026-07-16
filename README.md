@@ -64,7 +64,7 @@ The current signed release is notarized, launches correctly on macOS 26.2+, and 
 
 ### Download Release
 
-1. Download `MacTalk-1.1.3.dmg` from [Releases](https://github.com/benedict2310/MacTalk/releases)
+1. Download the versioned `MacTalk-<version>.dmg` from [Releases](https://github.com/benedict2310/MacTalk/releases)
 2. Open the DMG and drag `MacTalk.app` to your Applications folder
 3. Right-click and select "Open" the first time you launch it
 4. Grant permissions when prompted:
@@ -75,7 +75,7 @@ The current signed release is notarized, launches correctly on macOS 26.2+, and 
 
 ### Build from Source
 
-See [docs/development/SETUP.md](docs/development/SETUP.md) for build instructions.
+See [docs/development/SETUP.md](docs/development/SETUP.md) for build instructions. Maintainers should follow the [reproducible archive/notarization release workflow](docs/deployment/RELEASE_WORKFLOW.md) for signed DMGs.
 
 ---
 

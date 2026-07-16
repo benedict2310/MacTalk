@@ -127,7 +127,9 @@ if actual != approved:
     raise SystemExit(f'signed entitlements are not the exact approved allowlist: {actual!r}')
 PY
 
-if spctl_output="$(spctl --assess --type execute --verbose=4 "$APP_PATH" 2>&1)"; then
+if [[ "${VERIFY_SIGNING_SKIP_GATEKEEPER:-0}" == 1 ]]; then
+    echo "⏭️  Gatekeeper assessment deferred until notarization and stapling"
+elif spctl_output="$(spctl --assess --type execute --verbose=4 "$APP_PATH" 2>&1)"; then
     :
 elif grep -qi 'Unnotarized Developer ID' <<< "$spctl_output"; then
     echo "⚠️  Gatekeeper rejected this valid Developer ID app as Unnotarized Developer ID; notarize and staple it before distribution." >&2
@@ -136,4 +138,4 @@ else
     fail_signature "Gatekeeper rejected the signed app: $spctl_output"
 fi
 
-echo "✅ signing verified: Developer ID, Team ID $EXPECTED_TEAM, hardened runtime, nested dylibs, entitlements, strict codesign, and spctl"
+echo "✅ signing verified: Developer ID, Team ID $EXPECTED_TEAM, hardened runtime, nested dylibs, entitlements, strict codesign"
