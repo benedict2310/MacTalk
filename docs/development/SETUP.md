@@ -31,8 +31,11 @@
 ### Software Requirements
 - **macOS:** 14.0 (Sonoma) or later
   - For development, 15.0 (Sequoia) recommended
-- **Xcode:** 15.0 or later
+- **Xcode:** 26.0.1 (Build 17A400) or later
+  - The project targets macOS 26.0 and requires the matching SDK.
   - Command Line Tools installed
+- **XcodeGen:** 2.44.1
+  - The checked-in `MacTalk.xcodeproj` is generated from `project.yml`; use this version to avoid generated-project drift.
 - **Git:** 2.30 or later
 - **CMake:** 3.20 or later (for whisper.cpp)
 
@@ -69,7 +72,8 @@ brew install cmake
 
 ```bash
 # Check versions
-xcodebuild -version         # Should be 15.0+
+xcodebuild -version         # Should be Xcode 26.0.1 / Build 17A400+
+xcodegen version            # Should be 2.44.1
 cmake --version             # Should be 3.20+
 git --version               # Should be 2.30+
 sw_vers                     # Check macOS version
@@ -108,6 +112,17 @@ cd ../..
 ---
 
 ## Dependency Installation
+
+### FluidAudio (via Swift Package Manager)
+
+FluidAudio is pinned to exact release `0.15.5` in `project.yml`. The canonical
+resolution is committed at
+`MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+Resolve without changing the pin:
+
+```bash
+xcodebuild -resolvePackageDependencies -project MacTalk.xcodeproj -scheme MacTalk
+```
 
 ### whisper.cpp (via git submodule)
 

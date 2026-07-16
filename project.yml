@@ -11,9 +11,10 @@ settings:
   MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 packages:
+  # Pin the API-compatible release used by the verified build.
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
-    from: 0.7.11
+    exactVersion: 0.15.5
 
 targets:
   MacTalk:

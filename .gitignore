@@ -63,7 +63,13 @@ xcuserdata/
 .build/
 Packages/
 Package.pins
+# The canonical Xcode project SwiftPM resolution is tracked below.
 Package.resolved
+!MacTalk.xcodeproj/project.xcworkspace/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+MacTalk.xcodeproj/project.xcworkspace/contents.xcworkspacedata
 # Note: We track MacTalk.xcodeproj since it's our main project
 # *.xcodeproj/
 
