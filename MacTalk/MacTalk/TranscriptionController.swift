@@ -142,6 +142,9 @@ protocol TranscriptionCaptureSession: AnyObject {
 
     func startMicrophone() throws
     func startAppAudio(source: AppPickerWindowController.AudioSource) async throws
+    /// Stops only the app/system-audio stream, preserving microphone capture.
+    func stopAppAudio()
+    /// Stops every active capture source.
     func stop()
 }
 
@@ -180,9 +183,13 @@ final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionC
         }
     }
 
+    func stopAppAudio() {
+        screenCapture.stop()
+    }
+
     func stop() {
         micCapture.stop()
-        screenCapture.stop()
+        stopAppAudio()
     }
 }
 
@@ -691,8 +698,9 @@ final class TranscriptionController: @unchecked Sendable {
     private func fallbackToMicOnly() {
         print("Falling back to microphone-only mode")
 
-        // Stop app audio capture
-        captureSession.stop()
+        // Stop only app audio capture. Microphone capture must continue so the
+        // fallback preserves an uninterrupted mic-only recording.
+        captureSession.stopAppAudio()
 
         // Update mode
         audioState.withLock { state in

@@ -108,6 +108,32 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
 
+    func test_appAudioFailureFallsBackToMicOnlyWithoutStoppingMicrophone() async throws {
+        let captureSession = LifecycleCaptureSession()
+        let controller = TranscriptionController(
+            engine: LifecycleTestEngine(),
+            captureSession: captureSession
+        )
+        let fallback = expectation(description: "controller falls back to mic-only")
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "deterministic test source",
+            icon: nil
+        )
+
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let stopCountBeforeFailure = captureSession.stopCount
+        captureSession.triggerAppAudioError()
+        await fulfillment(of: [fallback], timeout: 1)
+
+        XCTAssertEqual(captureSession.microphoneStartCount, 1)
+        XCTAssertEqual(captureSession.stopCount, stopCountBeforeFailure)
+        XCTAssertEqual(captureSession.stopAppAudioCount, 1)
+        XCTAssertNotNil(captureSession.onMicrophoneBuffer)
+    }
+
     private func makeAppSampleBuffer(frameCount: Int) throws -> CMSampleBuffer {
         var asbd = AudioStreamBasicDescription(
             mSampleRate: 16_000,
@@ -188,8 +214,13 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
     var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
     var onStreamError: (@Sendable (Error) -> Void)?
     private(set) var appCallbacks: [(@Sendable (CMSampleBuffer) -> Void)] = []
+    private(set) var microphoneStartCount = 0
+    private(set) var stopCount = 0
+    private(set) var stopAppAudioCount = 0
 
-    func startMicrophone() throws {}
+    func startMicrophone() throws {
+        microphoneStartCount += 1
+    }
 
     func startAppAudio(source: AppPickerWindowController.AudioSource) async throws {
         guard let onAppAudioSampleBuffer else {
@@ -199,7 +230,17 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
         appCallbacks.append(onAppAudioSampleBuffer)
     }
 
-    func stop() {}
+    func stop() {
+        stopCount += 1
+    }
+
+    func stopAppAudio() {
+        stopAppAudioCount += 1
+    }
+
+    func triggerAppAudioError() {
+        onStreamError?(NSError(domain: "LifecycleCaptureSession", code: 1))
+    }
 }
 
 private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {
