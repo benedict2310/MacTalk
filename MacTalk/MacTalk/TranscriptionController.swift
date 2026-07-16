@@ -394,6 +394,44 @@ final class TranscriptionController: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    // MARK: - Test Lifecycle Hooks
+
+    /// Starts a capture session without touching hardware. This keeps lifecycle
+    /// tests on the same gate, streams, and callback path used by production.
+    internal func beginSessionForTesting() -> UUID {
+        audioSessionGate.stop()
+        let sessionID = audioSessionGate.begin()
+        micStream.reset()
+        appStream.reset()
+        audioState.withLock { state in
+            state.audioChunk.removeAll()
+            state.allAudio.removeAll()
+            state.sessionID = sessionID
+        }
+        return sessionID
+    }
+
+    /// Stops the controller through the production stop path while allowing
+    /// tests to avoid microphone and ScreenCaptureKit setup.
+    internal func stopSessionForTesting() {
+        stop()
+    }
+
+    internal func deliverAppSampleBufferForTesting(
+        _ sampleBuffer: CMSampleBuffer,
+        sessionID: UUID
+    ) -> Int? {
+        processSampleBuffer(sampleBuffer, sessionID: sessionID)
+    }
+
+    internal var bufferedAudioSampleCountForTesting: Int {
+        audioState.withLock { state in
+            state.audioChunk.count
+        }
+    }
+    #endif
+
     // MARK: - Audio Processing
 
     private func finishAudioStreams() {
@@ -424,12 +462,13 @@ final class TranscriptionController: @unchecked Sendable {
         appendSamples(samples, sessionID: sessionID)
     }
 
-    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, sessionID: UUID) {
+    @discardableResult
+    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, sessionID: UUID) -> Int? {
         let samples: [Float]? = audioSessionGate.withAcceptedSession(sessionID) {
             mixer.convertSampleBuffer(sampleBuffer, using: appStream)
         } ?? nil
         guard let samples else {
-            return
+            return nil
         }
 
         // Update app audio level
@@ -441,6 +480,7 @@ final class TranscriptionController: @unchecked Sendable {
         }
 
         appendSamples(samples, sessionID: sessionID)
+        return samples.count
     }
 
     private func appendSamples(_ samples: [Float], sessionID: UUID? = nil) {
