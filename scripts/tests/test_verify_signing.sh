@@ -4,16 +4,19 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 python3 - <<'PY'
+import plistlib
 from pathlib import Path
 project = Path('project.yml').read_text()
-entitlements = Path('MacTalk/MacTalk/MacTalk.entitlements').read_text()
+entitlements_path = Path('MacTalk/MacTalk/MacTalk.entitlements')
+entitlements = plistlib.load(entitlements_path.open('rb'))
 assert 'ENABLE_HARDENED_RUNTIME: YES' in project, 'hardened runtime is not enabled in project.yml'
 assert 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO' in project, 'debug base entitlements must not be injected into releases'
 assert 'ENABLE_HARDENED_RUNTIME = YES' in Path('MacTalk.xcodeproj/project.pbxproj').read_text(), 'generated project is stale'
-for forbidden in ('com.apple.security.cs.allow-jit', 'com.apple.security.cs.allow-unsigned-executable-memory', 'com.apple.security.device.camera'):
-    assert forbidden not in entitlements, f'unjustified entitlement remains: {forbidden}'
-for required in ('com.apple.security.device.audio-input', 'com.apple.security.automation.apple-events', 'com.apple.security.cs.disable-library-validation'):
-    assert required in entitlements, f'required entitlement missing: {required}'
+expected = {
+    'com.apple.security.device.audio-input': True,
+    'com.apple.security.automation.apple-events': True,
+}
+assert entitlements == expected, f'release entitlements changed: {entitlements!r}'
 PY
 
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-signing.XXXXXX")"
@@ -36,9 +39,13 @@ if [[ " $* " == *" --entitlements :- "* ]]; then
     cat >&2 <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>
 PLIST
+  elif [[ "${FAKE_DANGEROUS_EXTRA_ENTITLEMENT:-0}" == 1 ]]; then
+    cat >&2 <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/><key>com.apple.security.automation.apple-events</key><true/><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+PLIST
   else
     cat >&2 <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/><key>com.apple.security.automation.apple-events</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/><key>com.apple.security.automation.apple-events</key><true/></dict></plist>
 PLIST
   fi
   exit 0
@@ -71,6 +78,10 @@ if [[ "${FAKE_GATEKEEPER_REJECT:-0}" == 1 ]]; then
   echo 'source=Unnotarized Developer ID' >&2
   exit 1
 fi
+if [[ "${FAKE_GATEKEEPER_GENERIC:-0}" == 1 ]]; then
+  echo 'source=Unknown; origin=Malware' >&2
+  exit 1
+fi
 echo 'accepted' >&2
 FAKE_SPCTL
 chmod +x "$fixture/bin/spctl"
@@ -99,7 +110,9 @@ FAKE_TEAM_ID=TEAM123 FAKE_NESTED_TEAM=OTHERTEAM run_expect 3 scripts/verify-sign
 FAKE_TEAM_ID=TEAM123 FAKE_NO_RUNTIME=1 run_expect 3 scripts/verify-signing.sh "$app"
 FAKE_TEAM_ID=TEAM123 FAKE_MISSING_ENTITLEMENT=1 run_expect 3 scripts/verify-signing.sh "$app"
 FAKE_MISSING_ENTITLEMENT=0 FAKE_UNSIGNED=1 run_expect 3 scripts/verify-signing.sh "$app"
-FAKE_UNSIGNED=0 FAKE_NO_CREDENTIALS=1 run_expect 2 scripts/verify-signing.sh "$app"
+FAKE_UNSIGNED=0 FAKE_DANGEROUS_EXTRA_ENTITLEMENT=1 run_expect 3 scripts/verify-signing.sh "$app"
+FAKE_DANGEROUS_EXTRA_ENTITLEMENT=0 FAKE_NO_CREDENTIALS=1 run_expect 2 scripts/verify-signing.sh "$app"
 FAKE_NO_CREDENTIALS=0 FAKE_GATEKEEPER_REJECT=1 run_expect 4 scripts/verify-signing.sh "$app"
+FAKE_GATEKEEPER_REJECT=0 FAKE_GATEKEEPER_GENERIC=1 run_expect 3 scripts/verify-signing.sh "$app"
 
 echo 'verify-signing fixture tests passed'

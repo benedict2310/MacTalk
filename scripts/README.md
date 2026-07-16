@@ -7,10 +7,12 @@ This directory contains build automation scripts for MacTalk.
 ### verify-signing.sh
 
 Verifies a Developer ID signed `MacTalk.app`: Team ID and certificate
-consistency across nested dylibs, hardened-runtime flags, release entitlements,
-`codesign --verify --deep --strict`, and `spctl`. Exit status 2 means the
-Developer ID credentials are unavailable, 3 means the bundle is unsigned or
-invalid, and 4 means Gatekeeper rejected a valid but not-yet-notarized app.
+consistency across nested dylibs, hardened-runtime flags, the exact approved
+release entitlements, `codesign --verify --deep --strict`, and `spctl`. Exit
+status 2 means the Developer ID credentials are unavailable, 3 means the
+bundle is unsigned or invalid (including a non-notarization Gatekeeper
+rejection), and 4 means Gatekeeper identified a valid Developer ID app as
+Unnotarized Developer ID.
 
 ```bash
 SIGNING_IDENTITY='Developer ID Application: Name (TEAM_ID)' \

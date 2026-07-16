@@ -10,14 +10,5 @@
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
 
-	<!--
-	     Whisper's CMake-built dylibs and FluidAudio's package binaries are
-	     nested code signed as part of the app build. Keep this exception until
-	     every shipped binary is signed by the same Team ID and can be validated
-	     without it; allow-jit and unsigned-executable-memory are not needed by
-	     the Metal or Parakeet paths and are intentionally absent.
-	-->
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
 </dict>
 </plist>

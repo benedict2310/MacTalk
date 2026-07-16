@@ -6,7 +6,7 @@
 #   2  signing credentials are unavailable (the bundle is signed, but the
 #      requested identity is not present in the keychain)
 #   3  unsigned or invalid signature/policy
-#   4  signature is valid but Gatekeeper rejected the unnotarized bundle
+#   4  signature is valid but Gatekeeper rejected it as Unnotarized Developer ID
 #  64  usage or missing input
 set -euo pipefail
 
@@ -116,28 +116,24 @@ if start < 0:
 if start < 0:
     raise SystemExit('codesign did not return a plist')
 actual = plistlib.loads(actual_text[start:].encode())
-expected = plistlib.load(open(sys.argv[2], 'rb'))
-required = (
-    'com.apple.security.device.audio-input',
-    'com.apple.security.automation.apple-events',
-    'com.apple.security.cs.disable-library-validation',
-)
-for key in required:
-    if actual.get(key) is not True or expected.get(key) is not True:
-        raise SystemExit(f'missing required entitlement: {key}')
-for key in (
-    'com.apple.security.cs.allow-jit',
-    'com.apple.security.cs.allow-unsigned-executable-memory',
-    'com.apple.security.device.camera',
-    'com.apple.security.get-task-allow',
-):
-    if key in actual or key in expected:
-        raise SystemExit(f'unapproved entitlement: {key}')
+source = plistlib.load(open(sys.argv[2], 'rb'))
+approved = {
+    'com.apple.security.device.audio-input': True,
+    'com.apple.security.automation.apple-events': True,
+}
+if source != approved:
+    raise SystemExit(f'source entitlements are not the exact approved allowlist: {source!r}')
+if actual != approved:
+    raise SystemExit(f'signed entitlements are not the exact approved allowlist: {actual!r}')
 PY
 
-if ! spctl --assess --type execute --verbose=4 "$APP_PATH"; then
-    echo "⚠️  Gatekeeper rejected this signed app (expected before notarization/stapling)." >&2
+if spctl_output="$(spctl --assess --type execute --verbose=4 "$APP_PATH" 2>&1)"; then
+    :
+elif grep -qi 'Unnotarized Developer ID' <<< "$spctl_output"; then
+    echo "⚠️  Gatekeeper rejected this valid Developer ID app as Unnotarized Developer ID; notarize and staple it before distribution." >&2
     exit 4
+else
+    fail_signature "Gatekeeper rejected the signed app: $spctl_output"
 fi
 
 echo "✅ signing verified: Developer ID, Team ID $EXPECTED_TEAM, hardened runtime, nested dylibs, entitlements, strict codesign, and spctl"

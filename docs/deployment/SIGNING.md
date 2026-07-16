@@ -1,19 +1,17 @@
 # MacTalk signing and Gatekeeper
 
 MacTalk uses the hardened runtime (`ENABLE_HARDENED_RUNTIME: YES`) for every
-configuration. The app currently needs only these entitlements:
+configuration. The release entitlement allowlist is exact and contains only:
 
-- `com.apple.security.device.audio-input` for `AVAudioEngine` microphone input.
-- `com.apple.security.automation.apple-events` for the user-requested
+- `com.apple.security.device.audio-input` (`true`) for `AVAudioEngine`
+  microphone input.
+- `com.apple.security.automation.apple-events` (`true`) for the user-requested
   accessibility/Apple Events auto-paste path.
-- `com.apple.security.cs.disable-library-validation` while Whisper's
-  CMake-built dylibs and FluidAudio package binaries are independently built
-  and then re-signed into the app. This exception must be removed once every
-  shipped binary is signed and validated under the app's Team ID.
 
-The Metal and Parakeet paths do **not** have evidence requiring JIT or
-unsigned-executable-memory exceptions; those entitlements are intentionally
-absent.
+The Metal, Whisper, and Parakeet paths run with library validation enabled and
+have no evidence requiring JIT, unsigned-executable-memory, or other
+entitlements. The verifier rejects any source or signed entitlement outside
+this allowlist (and rejects incorrect values).
 
 ## Local development
 
@@ -43,11 +41,12 @@ SIGNING_TEAM_ID='TEAM_ID' scripts/verify-signing.sh \
 ```
 
 `verify-signing.sh` checks the Developer ID authority and Team ID for the app
-and every nested Whisper/ggml dylib, hardened-runtime flags, required
+and every nested Whisper/ggml dylib, hardened-runtime flags, exact approved
 entitlements, `codesign --verify --deep --strict`, and `spctl`. Exit status 2
 means signing credentials are unavailable; status 3 means an unsigned or
-invalid bundle; status 4 means the signature is valid but Gatekeeper rejected
-it.
+invalid bundle (including a non-notarization Gatekeeper rejection); status 4
+means Gatekeeper identified a valid Developer ID app as **Unnotarized Developer
+ID**.
 
 ## Notarization prerequisites
 
