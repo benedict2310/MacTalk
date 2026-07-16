@@ -60,12 +60,8 @@ final class ModelManager {
     ///   - spec: The model specification to ensure is available
     ///   - completion: Called with the model URL on success, or error on failure
     func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
-        // Check if model already exists
-        if ModelStore.exists(spec) {
-            completion(.success(ModelStore.path(for: spec)))
-            return
-        }
-
+        // ModelDownloader validates cached files before reporting success.
+        // Keeping that check in one boundary prevents bypasses here.
         // Prevent concurrent downloads
         if isDownloading {
             if currentDownloadSpec?.id == spec.id {

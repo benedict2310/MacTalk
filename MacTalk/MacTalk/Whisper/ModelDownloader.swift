@@ -49,6 +49,7 @@ final class ModelDownloader: NSObject, @unchecked Sendable {
     private var currentURLIndex = 0
     private var spec: ModelSpec!
     private var resumeURL: URL!
+    private var resumeMetadataURL: URL!
     private var tempFileURL: URL?
 
     /// State callback - always dispatched to main actor
@@ -73,9 +74,26 @@ final class ModelDownloader: NSObject, @unchecked Sendable {
     func start(spec: ModelSpec) {
         self.spec = spec
         self.resumeURL = ModelStore.downloadsDir.appendingPathComponent("\(spec.id).resume")
+        self.resumeMetadataURL = ModelStore.downloadsDir.appendingPathComponent("\(spec.id).resume.url")
+
+        guard ModelIntegrityVerifier.isValidDigest(spec.sha256) else {
+            notifyState(.failed(ErrorType.badChecksum))
+            return
+        }
 
         if ModelStore.exists(spec) {
-            notifyState(.done(ModelStore.path(for: spec)))
+            let cachedURL = ModelStore.path(for: spec)
+            Task.detached(priority: .utility) { [weak self] in
+                do {
+                    try ModelIntegrityVerifier.validate(source: cachedURL, spec: spec)
+                    self?.notifyState(.done(cachedURL))
+                } catch {
+                    // Never load a corrupt or unverifiable cache entry.
+                    try? FileManager.default.removeItem(at: cachedURL)
+                    self?.currentURLIndex = 0
+                    self?.kick()
+                }
+            }
             return
         }
 
@@ -101,9 +119,17 @@ final class ModelDownloader: NSObject, @unchecked Sendable {
 
         let url = spec.urls[currentURLIndex]
 
-        if let resumeData = try? Data(contentsOf: resumeURL) {
+        let resumeMatchesURL: Bool = {
+            guard let data = try? Data(contentsOf: resumeMetadataURL),
+                  let savedURL = String(data: data, encoding: .utf8) else { return false }
+            return savedURL == url.absoluteString
+        }()
+
+        if resumeMatchesURL, let resumeData = try? Data(contentsOf: resumeURL) {
             task = session.downloadTask(withResumeData: resumeData)
         } else {
+            try? FileManager.default.removeItem(at: resumeURL)
+            try? FileManager.default.removeItem(at: resumeMetadataURL)
             var req = URLRequest(url: url)
             req.setValue("MacTalk/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
             task = session.downloadTask(with: req)
@@ -118,6 +144,7 @@ final class ModelDownloader: NSObject, @unchecked Sendable {
         if currentURLIndex < spec.urls.count {
             // Clear resume data when switching mirrors since it contains the old URL
             try? FileManager.default.removeItem(at: resumeURL)
+            try? FileManager.default.removeItem(at: resumeMetadataURL)
             kick()
         } else {
             notifyState(.failed(ErrorType.network(err)))
@@ -131,36 +158,14 @@ final class ModelDownloader: NSObject, @unchecked Sendable {
             guard let self = self else { return }
 
             do {
-                // Optional size sanity-check (very lenient - 10% tolerance or 10MB)
-                // This catches obviously wrong files while allowing for approximate sizes
-                if self.spec.sizeBytes > 0 {
-                    let attr = try FileManager.default.attributesOfItem(atPath: tempURL.path)
-                    if let sz = (attr[.size] as? NSNumber)?.int64Value {
-                        let tolerance = max(self.spec.sizeBytes / 10, 10_000_000) // 10% or 10MB
-                        if abs(sz - self.spec.sizeBytes) > tolerance {
-                            throw ErrorType.badChecksum
-                        }
-                    }
-                }
-
-                // SHA-256 verification (skip if checksum not provided)
-                if !self.spec.sha256.isEmpty && self.spec.sha256.count == 64 {
-                    let hash = try SHA256Streamer.hashFile(at: tempURL)
-                    guard hash == self.spec.sha256 else {
-                        throw ErrorType.badChecksum
-                    }
-                }
-
-                // Atomic move into place
                 let dest = ModelStore.path(for: self.spec)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.moveItem(at: tempURL, to: dest)
+                try ModelIntegrityVerifier.verifyAndMove(source: tempURL, destination: dest, spec: self.spec)
                 try? FileManager.default.removeItem(at: self.resumeURL)
-
+                try? FileManager.default.removeItem(at: self.resumeMetadataURL)
                 self.notifyState(.done(dest))
             } catch {
+                // verifyAndMove removes failed temporary files and leaves any
+                // existing destination untouched.
                 self.notifyState(.failed(error))
             }
         }
@@ -197,6 +202,10 @@ extension ModelDownloader: URLSessionDownloadDelegate {
         if let urlError = error as? URLError,
            let resumeData = urlError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
             try? resumeData.write(to: resumeURL)
+            if let currentURL = task.originalRequest?.url?.absoluteString,
+               let data = currentURL.data(using: .utf8) {
+                try? data.write(to: resumeMetadataURL, options: .atomic)
+            }
         }
 
         tryNextMirror(error)

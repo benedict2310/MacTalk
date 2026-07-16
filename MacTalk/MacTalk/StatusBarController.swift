@@ -587,14 +587,30 @@ final class StatusBarController {
     }
 
     private func prepareWhisperModelWithAutoDownload(spec: ModelSpec) {
-        // Check if model already exists
+        // Cached files are untrusted input too. Validate before loading the
+        // native whisper.cpp model; a corrupt cache must not be used.
         if ModelStore.exists(spec) {
-            // Model exists - load it directly
             let url = ModelStore.path(for: spec)
-            if provider == .whisper {
-                engine = NativeWhisperEngine(modelURL: url)
+            Task { [weak self] in
+                let isValid = await Task.detached(priority: .utility) {
+                    (try? ModelIntegrityVerifier.validate(source: url, spec: spec)) != nil
+                }.value
+                guard let self else { return }
+                if isValid {
+                    guard self.provider == .whisper else { return }
+                    self.engine = NativeWhisperEngine(modelURL: url)
+                    self.setStartItemsEnabled(true)
+                } else {
+                    // Missing/malformed catalog metadata is an external
+                    // release blocker, not evidence that the user's cache is
+                    // corrupt. Never delete an unverifiable file solely due
+                    // to absent provenance.
+                    if ModelIntegrityVerifier.isValidDigest(spec.sha256) {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    self.showError("Model integrity metadata is unavailable; this model cannot be loaded safely.")
+                }
             }
-            setStartItemsEnabled(true)
             return
         }
 

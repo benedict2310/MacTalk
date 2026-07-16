@@ -15,15 +15,14 @@ struct ModelSpec: Codable, Identifiable, Hashable {
 enum ModelCatalog {
     /// Bundled model catalog with HuggingFace URLs
     ///
-    /// Note: SHA-256 checksums are currently empty to allow downloads to succeed.
-    /// The whisper.cpp repository only publishes SHA-1 hashes, not SHA-256.
-    /// For enhanced security, compute and add SHA-256 checksums manually.
-    /// When sha256 is empty, only file size validation is performed.
+    /// SHA-256 checksums are intentionally not guessed. The upstream
+    /// whisper.cpp catalog does not provide trusted SHA-256 provenance for
+    /// these artifacts, so the downloader fails closed until maintainers add
+    /// independently verified digests for each entry.
     ///
-    /// To add checksums:
-    /// 1. Download a model from HuggingFace
-    /// 2. Run: shasum -a 256 <model-file>
-    /// 3. Update the sha256 field below
+    /// Digest population is an external release task: obtain each approved
+    /// artifact through a controlled process, record its provenance, calculate
+    /// the full-file SHA-256, and review the resulting catalog diff.
     static func bundled() -> [ModelSpec] {
         return [
             ModelSpec(
