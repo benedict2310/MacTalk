@@ -13,10 +13,13 @@ postbuild = Path('scripts/post-build-sign.sh').read_text()
 workflow = Path('.github/workflows/release.yml').read_text()
 fixture = Path('scripts/tests/test_release_workflow.sh').read_text()
 assert '^[0-9]+\\.[0-9]+\\.[0-9]+$' in common, 'version grammar is not exact X.Y.Z'
-for needle in ('release_preflight', 'persist-credentials: false', 'fetch-depth: 0', 'rm -rf "$WHISPER_ROOT/build"', '--timestamp', 'release_verify_metadata'):
+for needle in ('release_preflight', 'persist-credentials: false', 'fetch-depth: 0', 'rm -rf "$WHISPER_ROOT/build"', '--timestamp', 'release_verify_metadata', 'ditto -c -k --sequesterRsrc', 'release_verify_handoff', 'release_write_state', 'RELEASE_EXPECTED_COMMIT'):
     assert needle in (common + archive + notarize + postbuild + workflow), f'missing hardening gate: {needle}'
 assert 'v1.1.3 is immutable' in common
 assert 'permissions: {}' in workflow and 'contents: write' in workflow
+assert workflow.count('environment: release') >= 4, 'privileged jobs are not bound to release environment'
+assert 'needs.preflight.outputs.source_commit' in workflow, 'preflight commit is not propagated'
+assert 'refs/tags/$RELEASE_TAG^{}' in workflow, 'publish does not compare the peeled remote tag'
 assert re.search(r'uses: actions/checkout@[0-9a-f]{40}', workflow)
 assert not re.search(r'uses: actions/(checkout|upload-artifact|download-artifact)@v[0-9]', workflow)
 assert 'concurrency:' in workflow and 'gh release create' in workflow and '--draft' in workflow

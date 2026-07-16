@@ -24,6 +24,7 @@ jobs:
     name: Verify immutable tagged source
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release
     permissions:
       contents: read
     steps:
@@ -35,16 +36,31 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Validate source before secrets
-        run: RELEASE_TAG="$RELEASE_TAG" bash scripts/release-preflight.sh
+        id: source
+        run: |
+          set -euo pipefail
+          output="$(RELEASE_TAG="$RELEASE_TAG" bash scripts/release-preflight.sh)"
+          printf '%s\n' "$output"
+          commit="$(awk -F= '$1 == "source_commit" { print $2 }' <<< "$output")"
+          tag="$(head -n 1 <<< "$output")"
+          test -n "$commit" -a "$tag" = "$RELEASE_TAG"
+          printf 'source_commit=%s\nrelease_tag=%s\n' "$commit" "$tag" >> "$GITHUB_OUTPUT"
+    outputs:
+      source_commit: ${{ steps.source.outputs.source_commit }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
 
   build:
     name: Fresh archive and verify
     needs: preflight
     runs-on: macos-15
+    environment: release
     timeout-minutes: 45
     permissions:
       contents: read
     env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
       MACTALK_CODE_SIGN_IDENTITY: ${{ vars.MACTALK_CODE_SIGN_IDENTITY }}
       MACTALK_DEVELOPMENT_TEAM: ${{ vars.MACTALK_DEVELOPMENT_TEAM }}
       MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
@@ -52,12 +68,16 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ needs.preflight.outputs.release_tag }}
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate source before signing secrets
-        run: RELEASE_TAG="$RELEASE_TAG" bash scripts/release-preflight.sh
+      - name: Validate propagated preflight commit
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="$RELEASE_TAG" RELEASE_EXPECTED_TAG="${{ needs.preflight.outputs.release_tag }}" RELEASE_EXPECTED_COMMIT="${{ needs.preflight.outputs.source_commit }}" bash scripts/release-preflight.sh
+          test "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_commit }}"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "${{ needs.preflight.outputs.source_commit }}"
       - name: Install XcodeGen
         run: |
           XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
@@ -91,11 +111,13 @@ jobs:
           MACTALK_CODE_SIGN_IDENTITY: ${{ vars.MACTALK_CODE_SIGN_IDENTITY }}
           MACTALK_DEVELOPMENT_TEAM: ${{ vars.MACTALK_DEVELOPMENT_TEAM }}
         run: bash scripts/verify-release.sh --output-dir "$RUNNER_TEMP/mactalk-release"
-      - name: Upload verified archive
+      - name: Upload verified archive handoff
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: mactalk-verified-archive
-          path: ${{ runner.temp }}/mactalk-release
+          path: |
+            ${{ runner.temp }}/mactalk-release/MacTalk-release-handoff.zip
+            ${{ runner.temp }}/mactalk-release/MacTalk-release-handoff.zip.sha256
           if-no-files-found: error
       - name: Remove signing keychain and certificate
         if: always()
@@ -105,12 +127,16 @@ jobs:
 
   notarize:
     name: Notarize and verify artifact
-    needs: build
+    needs: [preflight, build]
     runs-on: macos-15
+    environment: release
     timeout-minutes: 45
     permissions:
       contents: read
     env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
       MACTALK_CODE_SIGN_IDENTITY: ${{ vars.MACTALK_CODE_SIGN_IDENTITY }}
       MACTALK_DEVELOPMENT_TEAM: ${{ vars.MACTALK_DEVELOPMENT_TEAM }}
       MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
@@ -118,17 +144,29 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ needs.preflight.outputs.release_tag }}
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate source before notarization secrets
-        run: RELEASE_TAG="$RELEASE_TAG" bash scripts/release-preflight.sh
-      - name: Download verified archive
+      - name: Validate propagated preflight commit
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="$RELEASE_TAG" RELEASE_EXPECTED_TAG="$RELEASE_EXPECTED_TAG" RELEASE_EXPECTED_COMMIT="$RELEASE_EXPECTED_COMMIT" bash scripts/release-preflight.sh
+          test "$(git rev-parse HEAD)" = "$RELEASE_EXPECTED_COMMIT"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_EXPECTED_COMMIT"
+      - name: Download verified archive handoff
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: mactalk-verified-archive
-          path: ${{ runner.temp }}/mactalk-release
+          path: ${{ runner.temp }}/mactalk-handoff
+      - name: Extract and strictly reverify handoff
+        run: |
+          set -euo pipefail
+          source scripts/release-common.sh
+          mkdir -p "$RUNNER_TEMP/mactalk-release"
+          release_extract_handoff "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip" "$RUNNER_TEMP/mactalk-handoff/MacTalk-release-handoff.zip.sha256" "$RUNNER_TEMP/mactalk-release"
+          bash scripts/verify-release.sh --output-dir "$RUNNER_TEMP/mactalk-release"
+          spctl --assess --type execute --verbose=4 "$RUNNER_TEMP/mactalk-release/MacTalk.xcarchive/Products/Applications/MacTalk.app"
       - name: Import signing certificate for DMG timestamp
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.MACTALK_CERTIFICATE_P12_BASE64 }}
@@ -150,15 +188,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.MACTALK_APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.MACTALK_APPLE_APP_SPECIFIC_PASSWORD }}
         run: bash scripts/notarize-release.sh --output-dir "$RUNNER_TEMP/mactalk-release"
-      - name: Upload notarized artifact and manifest
+      - name: Upload notarized publish handoff
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: mactalk-notarized-release
           path: |
-            ${{ runner.temp }}/mactalk-release/MacTalk-*.dmg
-            ${{ runner.temp }}/mactalk-release/MacTalk-*-manifest.txt
-            ${{ runner.temp }}/mactalk-release/release-provenance.env
-            ${{ runner.temp }}/mactalk-release/release-provenance.env.sha256
+            ${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip
+            ${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip.sha256
           if-no-files-found: error
       - name: Remove signing keychain and certificate
         if: always()
@@ -168,17 +204,41 @@ jobs:
 
   publish:
     name: Draft, upload, checksum verify, publish
-    needs: notarize
-    runs-on: ubuntu-24.04
+    needs: [preflight, notarize]
+    runs-on: macos-15
+    environment: release
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
     steps:
-      - name: Download notarized artifact
+      - name: Checkout exact release tag for publish binding
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+        with:
+          ref: ${{ needs.preflight.outputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert publish tag is the preflight commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_EXPECTED_COMMIT"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_EXPECTED_COMMIT"
+      - name: Download notarized publish handoff
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: mactalk-notarized-release
-          path: release
+          path: handoff
+      - name: Extract and verify publish handoff
+        run: |
+          set -euo pipefail
+          source scripts/release-common.sh
+          mkdir -p release
+          release_extract_handoff "$PWD/handoff/MacTalk-publish-handoff.zip" "$PWD/handoff/MacTalk-publish-handoff.zip.sha256" "$PWD/release"
+          manifest="$(find release -name 'MacTalk-*-manifest.txt' -print -quit)"
+          test "$(awk -F= '$1 == "commit" { print $2 }' "$manifest")" = "$RELEASE_EXPECTED_COMMIT"
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -189,15 +249,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release/MacTalk-*.dmg release/MacTalk-*-manifest.txt --clobber
-      - name: Verify uploaded checksum before publishing
+      - name: Verify uploaded checksum and remote peeled tag before publishing
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           dmg="$(find release -name 'MacTalk-*.dmg' -print -quit)"
-          expected="$(awk -F= '$1 == "sha256" { print $2 }' release/MacTalk-*-manifest.txt)"
-          actual="$(sha256sum "$dmg" | awk '{print $1}')"
-          test -n "$expected" -a "$expected" = "$actual"
+          manifest="$(find release -name 'MacTalk-*-manifest.txt' -print -quit)"
+          expected="$(awk -F= '$1 == "sha256" { print $2 }' "$manifest")"
+          manifest_commit="$(awk -F= '$1 == "commit" { print $2 }' "$manifest")"
+          actual="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+          test -n "$expected" -a "$expected" = "$actual" -a "$manifest_commit" = "$RELEASE_EXPECTED_COMMIT"
+          remote_tag_commit="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          test -n "$remote_tag_commit" -a "$remote_tag_commit" = "$manifest_commit" -a "$remote_tag_commit" = "$RELEASE_EXPECTED_COMMIT"
           remote="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "'"$(basename "$dmg")"'") | .digest')"
           test "$remote" = "sha256:$expected"
       - name: Publish verified draft

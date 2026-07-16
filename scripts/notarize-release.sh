@@ -14,7 +14,9 @@ while [[ $# -gt 0 ]]; do
 done
 # No Apple credential is read until the detached/tagged source and verified
 # provenance handoff have passed.
-release_verify_source_identity "$OUTPUT_DIR"
+release_verify_source_identity "$OUTPUT_DIR" verified
+release_verify_state "$OUTPUT_DIR" verified
+release_verify_handoff "$OUTPUT_DIR/MacTalk-release-handoff.zip" "$OUTPUT_DIR/MacTalk-release-handoff.zip.sha256"
 require_release_env MACTALK_CODE_SIGN_IDENTITY MACTALK_DEVELOPMENT_TEAM
 if [[ -n "${MACTALK_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
     NOTARY_ARGS=(--keychain-profile "$MACTALK_NOTARY_KEYCHAIN_PROFILE")
@@ -40,6 +42,7 @@ APP_PATH="$ARCHIVE_PATH/Products/Applications/MacTalk.app"
     exit 1
 }
 release_verify_artifact_digests "$OUTPUT_DIR" "$ARCHIVE_PATH" "$APP_PATH"
+release_verify_bundle_identity "$APP_PATH"
 
 phase='DMG creation'
 DMG_PATH="$OUTPUT_DIR/MacTalk-$MACTALK_MARKETING_VERSION.dmg"
@@ -60,8 +63,9 @@ spctl --assess --type execute --verbose=4 "$APP_PATH"
 
 phase='provenance metadata'
 release_write_metadata "$OUTPUT_DIR" notarized "$ARCHIVE_PATH" "$APP_PATH" "$DMG_PATH"
-release_verify_metadata "$OUTPUT_DIR"
+release_verify_metadata "$OUTPUT_DIR" notarized
 release_verify_artifact_digests "$OUTPUT_DIR" "$ARCHIVE_PATH" "$APP_PATH" "$DMG_PATH"
+release_write_state "$OUTPUT_DIR" notarized "$DMG_PATH"
 
 phase='SHA-256 manifest'
 MANIFEST_PATH="$OUTPUT_DIR/MacTalk-$MACTALK_MARKETING_VERSION-manifest.txt"
@@ -78,6 +82,27 @@ build=$MACTALK_BUILD_NUMBER
 commit=$CAPTURED_COMMIT
 sha256=$DMG_SHA256
 EOF_MANIFEST
-printf '%s\n' "$MANIFEST_PATH" > "$(release_state "$OUTPUT_DIR" complete)"
+release_write_metadata "$OUTPUT_DIR" complete "$ARCHIVE_PATH" "$APP_PATH" "$DMG_PATH"
+release_verify_metadata "$OUTPUT_DIR" complete
+release_verify_artifact_digests "$OUTPUT_DIR" "$ARCHIVE_PATH" "$APP_PATH" "$DMG_PATH"
+release_write_state "$OUTPUT_DIR" complete "$MANIFEST_PATH"
+# Publish receives one metadata-bearing ditto archive, never a directory tree.
+release_create_publish_handoff() {
+    local output_dir="$1" archive hash stage item source
+    archive="$output_dir/MacTalk-publish-handoff.zip"
+    hash="$archive.sha256"
+    require_release_command ditto
+    rm -f "$archive" "$hash"
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-publish.XXXXXX")"
+    trap 'rm -rf "$stage"' RETURN
+    for source in "$output_dir"/MacTalk.xcarchive "$output_dir"/MacTalk-*.dmg "$output_dir"/MacTalk-*-manifest.txt "$output_dir"/release-provenance.env "$output_dir"/release-provenance.env.sha256 "$output_dir"/.release-state-complete; do
+        [[ -e "$source" ]] || { echo "publish handoff input is missing: $source" >&2; return 65; }
+        item="${source##*/}"
+        ditto "$source" "$stage/$item"
+    done
+    ditto -c -k --sequesterRsrc "$stage/." "$archive"
+    printf '%s  %s\n' "$(release_sha256 "$archive")" "$(basename "$archive")" > "$hash"
+}
+release_create_publish_handoff "$OUTPUT_DIR"
 echo "release complete: $DMG_PATH"
 echo "manifest: $MANIFEST_PATH"

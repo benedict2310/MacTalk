@@ -63,8 +63,13 @@ bash scripts/notarize-release.sh --output-dir release
 
 The scripts enforce archive, signing verification, DMG creation, notarization
 submit/wait, stapling, post-staple Gatekeeper assessment, and finally the
-SHA-256 manifest. State markers prevent a later phase from running early. If a
-phase fails, its artifacts remain in the output directory; correct the
+SHA-256 manifest. The build-to-notarize and notarize-to-publish handoffs are
+single non-hidden `ditto -c -k --sequesterRsrc` archives with SHA-256 sidecars;
+receivers verify the digest, extract with `ditto`, and repeat signature, team,
+entitlement, secure-timestamp, and launchability checks. State markers bind
+phase, provenance digest, and source commit and prevent a later phase from
+running early. If a phase fails, its artifacts remain in the output directory;
+correct the
 external failure and rerun that phase rather than deleting the archive.
 
 The generated manifest records the app version, build number, source commit,
@@ -75,6 +80,15 @@ cat release/MacTalk-*-manifest.txt
 ```
 
 ## GitHub Actions
+
+Every signing, notarization, and publish job is bound to the GitHub Environment
+named exactly `release`. Repository administrators must create that environment,
+configure required reviewers, and configure protected-tag rules that forbid
+force-pushes and deletion for `v*.*.*`. Until those settings exist GitHub will
+fail the workflow (or hold it awaiting reviewer approval); a green job without
+those controls is not an authorized release. The workflow carries the
+secret-free preflight's exact peeled commit through every checkout and compares
+it again before publish.
 
 `.github/workflows/release.yml` runs for a `v*.*.*` tag or manual dispatch of
 a newly created immutable tag. Checkout uses the explicit tag with

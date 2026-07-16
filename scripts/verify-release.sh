@@ -13,7 +13,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 # Re-check source and the tamper-evident handoff before using signing tools.
-release_verify_source_identity "$OUTPUT_DIR"
+release_verify_source_identity "$OUTPUT_DIR" archive
+release_verify_state "$OUTPUT_DIR" archive
 require_release_env MACTALK_CODE_SIGN_IDENTITY MACTALK_DEVELOPMENT_TEAM
 require_release_command codesign security spctl python3
 ARCHIVE_PATH="$OUTPUT_DIR/MacTalk.xcarchive"
@@ -44,15 +45,8 @@ while IFS= read -r library; do
     release_require_timestamp "$library"
 done < <(find "$APP_PATH/Contents/Frameworks" -type f -name '*.dylib' -print)
 
-python3 - "$APP_PATH/Contents/Info.plist" "$MACTALK_MARKETING_VERSION" "$MACTALK_BUILD_NUMBER" <<'PY'
-import plistlib
-import sys
-plist = plistlib.load(open(sys.argv[1], 'rb'))
-if plist.get('CFBundleShortVersionString') != sys.argv[2]:
-    raise SystemExit('archive marketing version does not match release-version.env')
-if plist.get('CFBundleVersion') != sys.argv[3]:
-    raise SystemExit('archive build number does not match release-version.env')
-PY
+release_verify_bundle_identity "$APP_PATH"
 release_write_metadata "$OUTPUT_DIR" verified "$ARCHIVE_PATH" "$APP_PATH"
-printf '%s\n' "$APP_PATH" > "$(release_state "$OUTPUT_DIR" verified)"
+release_write_state "$OUTPUT_DIR" verified "$APP_PATH"
+release_create_handoff "$OUTPUT_DIR"
 echo "archive verification complete"

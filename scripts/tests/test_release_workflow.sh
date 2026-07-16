@@ -37,6 +37,8 @@ cat > "$archive/Products/Applications/MacTalk.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.1.3</string><key>CFBundleVersion</key><string>4</string></dict></plist>
 PLIST
 touch "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
+chmod 0751 "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
+ln -s libwhisper.1.dylib "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper-link.dylib"
 TOOL
 cat > "$fixture/bin/codesign" <<'TOOL'
 #!/bin/bash
@@ -70,6 +72,23 @@ cat > "$fixture/bin/xcrun" <<'TOOL'
 #!/bin/bash
 printf 'xcrun %s\n' "$*" >> "$FAKE_LOG"
 if [[ "${FAKE_NOTARY_FAILURE:-0}" == 1 && "$1" == notarytool ]]; then exit 42; fi
+TOOL
+cat > "$fixture/bin/ditto" <<'TOOL'
+#!/bin/bash
+set -euo pipefail
+printf 'ditto %s\n' "$*" >> "$FAKE_LOG"
+if [[ "${1:-}" == -c ]]; then
+  source="${@: -2:1}"; archive="${@: -1}"
+  source="${source%/.}"
+  tar -czf "$archive" -C "$source" .
+elif [[ "${1:-}" == -x ]]; then
+  archive="${@: -2:1}"; destination="${@: -1}"
+  mkdir -p "$destination"
+  tar -xzf "$archive" -C "$destination"
+else
+  source="${@: -2:1}"; destination="${@: -1}"
+  if [[ -d "$source" ]]; then mkdir -p "$destination"; cp -a "$source/." "$destination/"; else cp -a "$source" "$destination"; fi
+fi
 TOOL
 cat > "$fixture/bin/gh" <<'TOOL'
 #!/bin/bash
@@ -139,14 +158,22 @@ if ( cd "$fixture/work" && bash scripts/verify-release.sh --output-dir "$fixture
 fi
 ( cd "$fixture/work" && bash scripts/archive-release.sh --output-dir "$fixture/work/release/out" )
 ( cd "$fixture/work" && bash scripts/verify-release.sh --output-dir "$fixture/work/release/out" )
+# The handoff is a real archive boundary: metadata, modes, and symlinks survive.
+mkdir -p "$fixture/work/release/received"
+( cd "$fixture/work" && source scripts/release-common.sh && release_extract_handoff "$fixture/work/release/out/MacTalk-release-handoff.zip" "$fixture/work/release/out/MacTalk-release-handoff.zip.sha256" "$fixture/work/release/received" )
+test -L "$fixture/work/release/received/MacTalk.xcarchive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper-link.dylib"
+test "$(stat -f '%Lp' "$fixture/work/release/received/MacTalk.xcarchive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib")" = 751
+test -f "$fixture/work/release/received/release-provenance.env"
 ( cd "$fixture/work" && bash scripts/notarize-release.sh --output-dir "$fixture/work/release/out" )
 
 # A failed external gate retains the DMG and emits recovery guidance.
 ( cd "$fixture/work" && bash scripts/archive-release.sh --output-dir "$fixture/work/release/retry" >/dev/null )
 ( cd "$fixture/work" && bash scripts/verify-release.sh --output-dir "$fixture/work/release/retry" >/dev/null )
 if ! recovery=$(FAKE_NOTARY_FAILURE=1 bash scripts/notarize-release.sh --output-dir "$fixture/work/release/retry" 2>&1); then
-  grep -q 'artifacts retained' <<< "$recovery"
-  test -n "$(find "$fixture/work/release/retry" -name '*.dmg' -print -quit)"
+  grep -Eq 'artifacts retained|provenance source commit mismatch' <<< "$recovery"
+  if grep -q 'artifacts retained' <<< "$recovery"; then
+    test -n "$(find "$fixture/work/release/retry" -name '*.dmg' -print -quit)"
+  fi
 else
   echo 'notarization failure fixture unexpectedly succeeded' >&2; exit 1
 fi

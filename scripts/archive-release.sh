@@ -13,12 +13,15 @@ while [[ $# -gt 0 ]]; do
         *) echo "usage: $0 [--output-dir PATH]" >&2; exit 64 ;;
     esac
 done
+# Never let a retry reuse a prior archive, provenance marker, DMG, or handoff.
+# Clear only release-owned paths; unrelated caller files are left untouched.
+mkdir -p "$OUTPUT_DIR"
+release_clear_downstream_state "$OUTPUT_DIR"
 # Source provenance is checked before importing or consuming any Apple secret.
 phase='preflight'
 release_preflight >/dev/null
 require_release_env MACTALK_CODE_SIGN_IDENTITY MACTALK_DEVELOPMENT_TEAM
 require_release_command xcodebuild
-mkdir -p "$OUTPUT_DIR"
 on_error() {
     local status=$?
     echo "archive failed during $phase (artifacts retained in $OUTPUT_DIR); rerun archive-release.sh after correcting the external error" >&2
@@ -63,6 +66,6 @@ xcodebuild archive \
 APP_PATH="$ARCHIVE_PATH/Products/Applications/MacTalk.app"
 [[ -d "$APP_PATH" ]] || { echo "archive did not contain MacTalk.app: $APP_PATH" >&2; exit 1; }
 release_write_metadata "$OUTPUT_DIR" archive "$ARCHIVE_PATH" "$APP_PATH"
-printf '%s\n' "$APP_PATH" > "$(release_state "$OUTPUT_DIR" archive)"
+release_write_state "$OUTPUT_DIR" archive "$APP_PATH"
 printf 'archive=%s\nversion=%s\nbuild=%s\n' "$ARCHIVE_PATH" "$MACTALK_MARKETING_VERSION" "$MACTALK_BUILD_NUMBER" > "$(release_state "$OUTPUT_DIR" archive-metadata)"
 echo "archive complete: $ARCHIVE_PATH"
