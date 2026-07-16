@@ -213,12 +213,18 @@ extension CMSampleBuffer {
         let bytesPerSample = MemoryLayout<Float>.size
         let isInterleaved = streamDescription.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
         let bytesPerFrame = isInterleaved ? bytesPerSample * channelCount : bytesPerSample
+        let framesPerPacket = UInt64(streamDescription.mFramesPerPacket)
+        let bytesPerPacket = UInt64(bytesPerFrame) * framesPerPacket
 
         // The source data must describe packed Float32 PCM. Reject layouts whose
         // stride does not match the layout flags instead of copying one channel
-        // and silently corrupting stereo audio.
-        guard streamDescription.mBytesPerFrame == UInt32(bytesPerFrame),
-              streamDescription.mBytesPerPacket == UInt32(bytesPerFrame),
+        // and silently corrupting stereo audio. Packet metadata is validated too,
+        // so a malformed or unsupported layout cannot make us reinterpret bytes
+        // as a different number of channels or frames.
+        guard streamDescription.mFramesPerPacket > 0,
+              bytesPerPacket <= UInt64(UInt32.max),
+              streamDescription.mBytesPerFrame == UInt32(bytesPerFrame),
+              streamDescription.mBytesPerPacket == UInt32(bytesPerPacket),
               let dataLength = Int(exactly: CMBlockBufferGetDataLength(blockBuffer)),
               dataLength % (bytesPerSample * channelCount) == 0 else {
             return nil

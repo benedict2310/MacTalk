@@ -219,14 +219,19 @@ final class AudioMixerTests: XCTestCase {
 
     func test_interleavedStereoFloat32SampleBufferDownmixesBothChannels() throws {
         let sampleBuffer = try makeFloat32SampleBuffer(
-            channels: [[0.1, 0.2, 0.3, 0.4], [0.9, 0.8, 0.7, 0.6]],
+            channels: [[0.1, 0.2, 0.3, 0.4], [0.5, 0.4, 0.3, 0.2]],
             interleaved: true
         )
+        let pcmBuffer = try XCTUnwrap(sampleBuffer.makePCMBuffer())
+        let channelData = try XCTUnwrap(pcmBuffer.floatChannelData)
+        XCTAssertEqual(pcmBuffer.format.channelCount, 2)
+        XCTAssertEqual(channelData[0][0], 0.1, accuracy: 0.0001)
+        XCTAssertEqual(channelData[1][0], 0.5, accuracy: 0.0001)
 
         let samples = try XCTUnwrap(AudioMixer().convertSampleBuffer(sampleBuffer))
 
         XCTAssertEqual(samples.count, 4)
-        for (actual, expected) in zip(samples, [0.5, 0.5, 0.5, 0.5]) {
+        for (actual, expected) in zip(samples, [0.3, 0.3, 0.3, 0.3]) {
             XCTAssertEqual(Double(actual), Double(expected), accuracy: 0.0001)
         }
     }
