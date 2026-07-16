@@ -86,6 +86,31 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(appStream.finish()).isEmpty)
     }
 
+    func test_controllerUsesOneImmutableSettingsSnapshotForSession() async throws {
+        let defaults = UserDefaults(suiteName: "TranscriptionControllerSettingsSnapshotTests")!
+        defaults.removePersistentDomain(forName: "TranscriptionControllerSettingsSnapshotTests")
+        defer { defaults.removePersistentDomain(forName: "TranscriptionControllerSettingsSnapshotTests") }
+
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+        settings.setLanguage(nil)
+        let snapshot = settings.snapshotAtRecordingStart().withCaptureMode(.micOnly)
+        let captureSession = LifecycleCaptureSession()
+        let controller = TranscriptionController(
+            engine: LifecycleTestEngine(),
+            captureSession: captureSession,
+            settings: settings
+        )
+
+        try await controller.start(mode: .micPlusAppAudio, settingsSnapshot: snapshot)
+        settings.setLanguage("de")
+        settings.setCaptureMode(.micPlusAppAudio)
+
+        XCTAssertNil(controller.language)
+        XCTAssertEqual(captureSession.microphoneCallbacks.count, 1)
+        XCTAssertEqual(captureSession.appCallbacks.count, 0)
+        controller.stop()
+    }
+
     func test_controllerRejectsOldAppCallbackAfterStopAndRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()

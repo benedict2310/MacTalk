@@ -78,6 +78,19 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(snapshot.whisperModel?.provider, .whisper)
     }
 
+    func test_autoDetectIsDistinctFromEnglishAndPersists() {
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+        settings.setLanguage(nil)
+
+        XCTAssertNil(settings.snapshot.language)
+        XCTAssertEqual(defaults.string(forKey: "language"), "auto")
+
+        let reloaded = AppSettings.makeForTesting(defaults: defaults)
+        XCTAssertNil(reloaded.snapshot.language)
+        reloaded.setLanguage("en")
+        XCTAssertEqual(reloaded.snapshot.language, "en")
+    }
+
     func test_snapshotAtRecordingStartIsStableWhenSettingsChange() {
         let settings = AppSettings.makeForTesting(defaults: defaults)
         let recordingSnapshot = settings.snapshotAtRecordingStart()

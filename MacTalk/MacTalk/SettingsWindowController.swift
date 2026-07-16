@@ -65,13 +65,15 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private nonisolated(unsafe) var tokens: [NSObjectProtocol] = []
-    private let settingsStore = AppSettings.shared
+    private let settingsStore: AppSettings
 
-    init() {
+    init(settingsStore: AppSettings = .shared) {
+        self.settingsStore = settingsStore
         let d = UserDefaults.standard
         showInDock = d.bool(forKey: "showInDock")
-        showNotifications = d.bool(forKey: "showNotifications")
-        let storedAutoPaste = d.bool(forKey: "autoPaste")
+        let settingsSnapshot = settingsStore.snapshot
+        showNotifications = settingsSnapshot.showNotifications
+        let storedAutoPaste = settingsSnapshot.autoPaste
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
         if storedAutoPaste && !accessibilityTrusted {
             DLOG("[Settings] Stored auto-paste preference is on, but current process is not Accessibility-trusted; showing toggle off")
@@ -80,12 +82,11 @@ final class SettingsViewModel: ObservableObject {
             storedPreference: storedAutoPaste,
             accessibilityTrusted: accessibilityTrusted
         )
-        let snapshot = settingsStore.snapshot
+        let snapshot = settingsSnapshot
         defaultModeIndex = snapshot.captureMode == .micPlusAppAudio ? 1 : 0
         providerIndex = ASRProvider.allCases.firstIndex(of: snapshot.provider) ?? 0
         modelIndex = ModelCatalog.bundled().firstIndex { $0.id == snapshot.whisperModelID } ?? 4
-        let languages = ["en", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
-        languageIndex = languages.firstIndex(of: snapshot.language) ?? 1
+        languageIndex = AppSettings.languageOptions.firstIndex(where: { $0 == snapshot.language }) ?? 1
 
         startMicOnlyShortcut = Self.loadShortcut(forKey: "startMicOnlyShortcut")
         startMicPlusAppShortcut = Self.loadShortcut(forKey: "startMicPlusAppShortcut")
@@ -105,8 +106,6 @@ final class SettingsViewModel: ObservableObject {
     func save() {
         let d = UserDefaults.standard
         d.set(showInDock, forKey: "showInDock")
-        d.set(showNotifications, forKey: "showNotifications")
-        d.set(autoPaste, forKey: "autoPaste")
         settingsStore.setAutoPaste(autoPaste)
         settingsStore.setShowNotifications(showNotifications)
         settingsStore.setCaptureMode(defaultModeIndex == 1 ? .micPlusAppAudio : .micOnly)
@@ -114,11 +113,9 @@ final class SettingsViewModel: ObservableObject {
         if models.indices.contains(modelIndex) {
             settingsStore.setWhisperModelID(models[modelIndex].id)
         }
-        let languages = ["en", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
-        if languages.indices.contains(languageIndex) {
-            settingsStore.setLanguage(languages[languageIndex])
+        if AppSettings.languageOptions.indices.contains(languageIndex) {
+            settingsStore.setLanguage(AppSettings.languageOptions[languageIndex])
         }
-        NotificationCenter.default.post(name: .settingsDidChange, object: settingsStore.snapshot)
     }
 
     func setAutoPasteEnabled(_ enabled: Bool) {
@@ -165,9 +162,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func setProvider(_ idx: Int) {
+        guard ASRProvider.allCases.indices.contains(idx) else { return }
         providerIndex = idx
-        let provider = ASRProvider.allCases[idx]
-        settingsStore.provider = provider
+        settingsStore.provider = ASRProvider.allCases[idx]
         save()
     }
 
@@ -186,7 +183,7 @@ final class SettingsViewModel: ObservableObject {
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
         accessibilityStatus = accessibilityTrusted ? .granted : .notGranted
 
-        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        let storedAutoPaste = settingsStore.snapshot.autoPaste
         if storedAutoPaste && !accessibilityTrusted && autoPaste {
             DLOG("[Settings] Refresh noticed stored auto-paste on but Accessibility untrusted; showing toggle off")
             autoPaste = false
@@ -368,10 +365,7 @@ private struct AdvancedTab: View {
         "medium (1.4 GB, accurate)",
         "large-v3-turbo (2.8 GB, best)"
     ]
-    let languages = [
-        "Auto-detect", "English", "Spanish", "French", "German",
-        "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"
-    ]
+    let languages = AppSettings.languageDisplayNames
 
     var isParakeet: Bool { ASRProvider.allCases[vm.providerIndex] == .parakeet }
 
@@ -493,10 +487,7 @@ private struct LegacySettingsContentView: View {
         "medium (1.4 GB, accurate)",
         "large-v3-turbo (2.8 GB, best)"
     ]
-    private let languages = [
-        "Auto-detect", "English", "Spanish", "French", "German",
-        "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"
-    ]
+    private let languages = AppSettings.languageDisplayNames
 
     var body: some View {
         TabView {

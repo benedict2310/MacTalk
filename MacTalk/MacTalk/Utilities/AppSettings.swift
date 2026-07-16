@@ -16,7 +16,8 @@ enum SettingsCaptureMode: String, CaseIterable, Codable, Sendable {
 struct SettingsSnapshot: Equatable, Sendable {
     var provider: ASRProvider
     var whisperModelID: String
-    var language: String
+    /// A nil language means explicit Auto-detect. A non-nil value is an ISO-639-1 language code.
+    var language: String?
     var captureMode: SettingsCaptureMode
     var showNotifications: Bool
     var autoPaste: Bool
@@ -24,6 +25,12 @@ struct SettingsSnapshot: Equatable, Sendable {
     var whisperModel: ModelSpec? {
         guard provider == .whisper else { return nil }
         return ModelCatalog.findById(whisperModelID)
+    }
+
+    func withCaptureMode(_ mode: SettingsCaptureMode) -> SettingsSnapshot {
+        var copy = self
+        copy.captureMode = mode
+        return copy
     }
 }
 
@@ -75,8 +82,8 @@ final class AppSettings: @unchecked Sendable {
         update { $0.whisperModelID = id }
     }
 
-    func setLanguage(_ language: String) {
-        guard Self.validLanguages.contains(language) else { return }
+    func setLanguage(_ language: String?) {
+        guard language == nil || Self.validLanguages.contains(language!) else { return }
         update { $0.language = language }
     }
 
@@ -124,9 +131,15 @@ final class AppSettings: @unchecked Sendable {
     private static func loadSnapshot(from defaults: UserDefaults) -> SettingsSnapshot {
         let provider = ASRProvider(rawValue: defaults.string(forKey: providerKey) ?? "") ?? .whisper
         let modelID = validModelID(defaults.string(forKey: whisperModelIDKey))
-        let language = validLanguages.contains(defaults.string(forKey: languageKey) ?? "")
-            ? defaults.string(forKey: languageKey)!
-            : defaultLanguage
+        let storedLanguage = defaults.string(forKey: languageKey)
+        let language: String?
+        if storedLanguage == "auto" {
+            language = nil
+        } else if let storedLanguage, validLanguages.contains(storedLanguage) {
+            language = storedLanguage
+        } else {
+            language = defaultLanguage
+        }
         let mode = SettingsCaptureMode(rawValue: defaults.string(forKey: captureModeKey) ?? "") ?? .micOnly
         let showNotifications = defaults.object(forKey: showNotificationsKey) == nil
             ? true : defaults.bool(forKey: showNotificationsKey)
@@ -143,7 +156,7 @@ final class AppSettings: @unchecked Sendable {
     private static func persist(_ snapshot: SettingsSnapshot, to defaults: UserDefaults) {
         defaults.set(snapshot.provider.rawValue, forKey: providerKey)
         defaults.set(snapshot.whisperModelID, forKey: whisperModelIDKey)
-        defaults.set(snapshot.language, forKey: languageKey)
+        defaults.set(snapshot.language ?? "auto", forKey: languageKey)
         defaults.set(snapshot.captureMode.rawValue, forKey: captureModeKey)
         defaults.set(snapshot.showNotifications, forKey: showNotificationsKey)
         defaults.set(snapshot.autoPaste, forKey: autoPasteKey)
@@ -163,10 +176,10 @@ final class AppSettings: @unchecked Sendable {
             defaults.set(modelIDs[safeIndex], forKey: whisperModelIDKey)
         }
         if defaults.string(forKey: languageKey) == nil {
-            let languages = ["en", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
-            let index = defaults.object(forKey: "languageIndex") as? Int ?? 0
-            let safeIndex = index >= 0 && index < languages.count ? index : 0
-            defaults.set(languages[safeIndex], forKey: languageKey)
+            let languages: [String?] = [nil, "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
+            let index = defaults.object(forKey: "languageIndex") as? Int ?? 1
+            let safeIndex = index >= 0 && index < languages.count ? index : 1
+            defaults.set(languages[safeIndex] ?? "auto", forKey: languageKey)
         }
         if defaults.string(forKey: captureModeKey) == nil {
             let index = defaults.object(forKey: "defaultMode") as? Int ?? 0
@@ -179,5 +192,7 @@ final class AppSettings: @unchecked Sendable {
         return id
     }
 
-    private static let validLanguages = ["en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
+    static let languageOptions: [String?] = [nil, "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]
+    static let languageDisplayNames = ["Auto-detect", "English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"]
+    private static let validLanguages = languageOptions.compactMap { $0 }
 }

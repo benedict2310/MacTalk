@@ -50,6 +50,8 @@ final class StatusBarController {
     private var autoPaste = false
     private var showNotifications = true  // Default to true
     private var mode: TranscriptionController.Mode = .micOnly
+    /// Explicit menu/hotkey intent survives settings edits and preparation retries.
+    private var pendingStartMode: TranscriptionController.Mode?
     private var isRecording = false
     private var isFinalizing = false
     private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -359,6 +361,7 @@ final class StatusBarController {
 
     @objc private func startMicOnly() {
         mode = .micOnly
+        pendingStartMode = .micOnly
         withMicrophonePermission { [weak self] in
             guard let self else { return }
             self.captureRecordingTargetApp()
@@ -369,6 +372,7 @@ final class StatusBarController {
     @objc private func startMicPlusApp() {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
+        pendingStartMode = .micPlusAppAudio
 
         withMicrophonePermission { [weak self] in
             guard let self else { return }
@@ -1065,10 +1069,17 @@ final class StatusBarController {
     }
 
     private func startRecording() {
-        startRecording(allowParakeetPrepare: true)
+        startRecording(allowParakeetPrepare: true, requestedMode: nil)
     }
 
-    private func startRecording(allowParakeetPrepare: Bool) {
+    private func startRecording(
+        allowParakeetPrepare: Bool,
+        requestedMode: TranscriptionController.Mode? = nil
+    ) {
+        if let requestedMode {
+            pendingStartMode = requestedMode
+            mode = requestedMode
+        }
         NSLog("🎬 [StatusBar] startRecording() called")
         if recordingTargetApp == nil {
             captureRecordingTargetApp()
@@ -1085,10 +1096,16 @@ final class StatusBarController {
             return
         }
 
-        // Take one authoritative snapshot for this recording session.
-        let settingsSnapshot = AppSettings.shared.snapshotAtRecordingStart()
+        // Take one authoritative snapshot for this recording session. Explicit
+        // menu/hotkey intent overrides the configured default mode, but all
+        // other provider/model/language values come from this one snapshot.
+        let configuredSnapshot = AppSettings.shared.snapshotAtRecordingStart()
+        let requestedMode = pendingStartMode ?? mode
+        let settingsSnapshot = configuredSnapshot.withCaptureMode(
+            requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        )
         provider = settingsSnapshot.provider
-        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        mode = requestedMode
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
 
@@ -1201,7 +1218,8 @@ final class StatusBarController {
                 }
                 try await transcriptionController.start(
                     mode: mode,
-                    audioSource: selectedAudioSource
+                    audioSource: selectedAudioSource,
+                    settingsSnapshot: settingsSnapshot
                 )
                 await MainActor.run {
                     guard startGeneration == self.startGeneration else {
@@ -1213,6 +1231,7 @@ final class StatusBarController {
                     self.startTask = nil
                     self.isStartInFlight = false
                     self.isRecording = true
+                    self.pendingStartMode = nil
                     self.updateMenuBarIcon(recording: true)
                     self.hudController?.setAppMeterVisible(self.mode == .micPlusAppAudio)
                     self.hudController?.showWindow(nil)

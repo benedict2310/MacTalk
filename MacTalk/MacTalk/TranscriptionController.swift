@@ -329,14 +329,29 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Control
 
-    func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
-        DLOG("Transcription start requested: mode=\(mode)")
+    func start(
+        mode: Mode,
+        audioSource: AppPickerWindowController.AudioSource? = nil,
+        settingsSnapshot: SettingsSnapshot? = nil
+    ) async throws {
+        // A supplied snapshot is the complete recording contract. Keep the
+        // legacy mode parameter for callers that have not migrated yet, but do
+        // not let it override an immutable session snapshot.
+        let recordingSettings = settingsSnapshot ?? settingsStore.snapshotAtRecordingStart()
+        let recordingMode: Mode = settingsSnapshot.map {
+            $0.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        } ?? mode
+        DLOG("Transcription start requested: mode=\(recordingMode)")
 
         // Invalidate callbacks from any previous capture before resetting the
         // streams. ScreenCaptureKit may still deliver a queued callback after
         // stopCapture has been requested.
         let sessionID = audioSessionGate.begin()
-        let settingsSnapshot = settingsStore.snapshotAtRecordingStart()
+        if settingsSnapshot != nil, recordingSettings.provider != engine.provider {
+            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Settings provider does not match the selected transcription engine"
+            ])
+        }
         captureSession.stop()
         appAudioGate.stop()
 
@@ -347,12 +362,12 @@ final class TranscriptionController: @unchecked Sendable {
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
             state.fullTranscript.removeAll()
-            state.currentMode = mode
+            state.currentMode = recordingMode
             state.isFirstChunk = true
             state.lastUIUpdateTime = 0
             state.lastDiagnosticsLogTime = 0
             state.sessionID = sessionID
-            state.language = settingsSnapshot.language
+            state.language = recordingSettings.language
             state.pendingTasks[sessionID] = []
             state.chunkProcessingTail = nil
             state.isStopping = false
@@ -367,7 +382,7 @@ final class TranscriptionController: @unchecked Sendable {
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
         // Set up app audio capture if needed (also starts immediately)
-        if case .micPlusAppAudio = mode {
+        if case .micPlusAppAudio = recordingMode {
             guard let source = audioSource else {
                 await cancelStartAndWait()
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
@@ -413,8 +428,8 @@ final class TranscriptionController: @unchecked Sendable {
             throw error
         }
 
-        DLOG("Engine prepared/reset; transcription fully started in mode=\(mode)")
-        print("Transcription started in mode: \(mode)")
+        DLOG("Engine prepared/reset; transcription fully started in mode=\(recordingMode)")
+        print("Transcription started in mode: \(recordingMode)")
     }
 
     func stop() {
