@@ -40,15 +40,6 @@ final class AudioSessionGate: @unchecked Sendable {
         return activeSession == session
     }
 
-    /// Runs a conversion only while the session is accepted. Holding the gate
-    /// across the conversion makes stop/restart wait for an in-flight callback
-    /// before the stream is finished or reset.
-    func withAcceptedSession<T>(_ session: UUID, _ operation: () -> T) -> T? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard activeSession == session else { return nil }
-        return operation()
-    }
 }
 
 enum TranscriptCleaner {
@@ -138,7 +129,7 @@ enum TranscriptCleaner {
 protocol TranscriptionCaptureSession: AnyObject {
     func startMicrophone(
         sessionID: UUID,
-        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+        callback: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
     ) throws
     func startAppAudio(
         sessionID: UUID,
@@ -159,7 +150,7 @@ final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionC
 
     func startMicrophone(
         sessionID: UUID,
-        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+        callback: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
     ) throws {
         try micCapture.start(sessionID: sessionID, onPCMFloatBuffer: callback)
     }
@@ -360,8 +351,8 @@ final class TranscriptionController: @unchecked Sendable {
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
-        try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, buffer, _ in
-            self?.processAudioBuffer(buffer, sessionID: callbackSessionID)
+        try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, frame in
+            self?.processAudioFrame(frame, sessionID: callbackSessionID)
         }
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
@@ -384,13 +375,10 @@ final class TranscriptionController: @unchecked Sendable {
                     },
                     errorCallback: { [weak self] callbackSessionID, error in
                         guard let self else { return }
-                        // Validate and mutate while holding the same session gate.
-                        // A stop/restart cannot slip between acceptance and the
-                        // fallback mode mutation, so stale ScreenCaptureKit
-                        // errors cannot affect the restarted session.
-                        self.audioSessionGate.withAcceptedSession(callbackSessionID) {
-                            self.handleAppAudioError(error)
-                        }
+                        // Validate before fallback. Capture shutdown and state
+                        // mutation must never occur under the gate lock.
+                        guard self.audioSessionGate.accepts(callbackSessionID) else { return }
+                        self.handleAppAudioError(error, sessionID: callbackSessionID)
                     }
                 )
             } catch {
@@ -416,12 +404,9 @@ final class TranscriptionController: @unchecked Sendable {
 
     func stop() {
         DLOG("Transcription stop requested")
-        // Gate first: capture shutdown is asynchronous and queued callbacks may
-        // otherwise append into a stream while it is being finished/reset.
+        // Invalidate callbacks and mark the state before capture shutdown.
+        // Queued work can then never append after final stream draining begins.
         audioSessionGate.stop()
-        captureSession.stop()
-        finishAudioStreams()
-
         let sessionID: UUID? = audioState.withLock { state in
             guard !state.isStopping else { return nil }
             state.isStopping = true
@@ -431,7 +416,8 @@ final class TranscriptionController: @unchecked Sendable {
             DLOG("Ignoring duplicate transcription stop request")
             return
         }
-
+        captureSession.stop()
+        finishAudioStreams()
         // Keep the controller alive through final inference and clipboard delivery.
         Task { [self] in
             // Capture the final in-flight microphone buffer without a noticeable delay.
@@ -490,17 +476,17 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func finishAudioStreams() {
         if let samples = micStream.finish(), !samples.isEmpty {
-            appendSamples(samples)
+            appendSamples(samples, allowStopping: true)
         }
         if let samples = appStream.finish(), !samples.isEmpty {
-            appendSamples(samples)
+            appendSamples(samples, allowStopping: true)
         }
     }
 
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, sessionID: UUID) {
-        let samples: [Float]? = audioSessionGate.withAcceptedSession(sessionID) {
-            micStream.convert(buffer: buffer)
-        } ?? nil
+    private func processAudioFrame(_ frame: AudioCaptureFrame, sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
+        let samples = micStream.convert(samples: frame.samples, sampleRate: frame.sampleRate)
+        guard audioSessionGate.accepts(sessionID) else { return }
         guard let samples else {
             return
         }
@@ -518,9 +504,9 @@ final class TranscriptionController: @unchecked Sendable {
 
     @discardableResult
     private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, sessionID: UUID) -> Int? {
-        let samples: [Float]? = audioSessionGate.withAcceptedSession(sessionID) {
-            mixer.convertSampleBuffer(sampleBuffer, using: appStream)
-        } ?? nil
+        guard audioSessionGate.accepts(sessionID) else { return nil }
+        let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
+        guard audioSessionGate.accepts(sessionID) else { return nil }
         guard let samples else {
             return nil
         }
@@ -537,12 +523,18 @@ final class TranscriptionController: @unchecked Sendable {
         return samples.count
     }
 
-    private func appendSamples(_ samples: [Float], sessionID: UUID? = nil) {
+    private func appendSamples(
+        _ samples: [Float],
+        sessionID: UUID? = nil,
+        allowStopping: Bool = false
+    ) {
         logAudioDiagnosticsIfNeeded(samples)
 
         let usesIncrementalChunks = engine.provider.usesIncrementalChunkProcessing
         let (chunkCount, threshold) = audioState.withLock { state -> (Int, Int) in
-            if let sessionID, !audioSessionGate.accepts(sessionID) {
+            // Session validation uses the state snapshot while its lock is held;
+            // never acquire the session gate while holding audioState.
+            if let sessionID, state.sessionID != sessionID || (state.isStopping && !allowStopping) {
                 return (state.audioChunk.count, Int.max)
             }
             if usesIncrementalChunks {
@@ -735,7 +727,8 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Edge Case Handling
 
-    private func handleAppAudioError(_ error: Error) {
+    private func handleAppAudioError(_ error: Error, sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
         DebugLogger.shared.log(.error(description: error.localizedDescription))
 
         // Notify that app audio was lost
@@ -749,18 +742,22 @@ final class TranscriptionController: @unchecked Sendable {
         // Retrying a stopped ScreenCaptureKit stream is unreliable and complex,
         // so we gracefully degrade to mic-only to maintain recording continuity
         print("📉 Falling back to microphone-only mode due to app audio failure")
-        fallbackToMicOnly()
+        fallbackToMicOnly(sessionID: sessionID)
     }
 
-    private func fallbackToMicOnly() {
+    private func fallbackToMicOnly(sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
         print("Falling back to microphone-only mode")
 
         // Stop only app audio capture. Microphone capture must continue so the
         // fallback preserves an uninterrupted mic-only recording.
         captureSession.stopAppAudio()
 
-        // Update mode
+        // Re-check after capture shutdown; callbacks may have restarted a
+        // session while ScreenCaptureKit was stopping.
+        guard audioSessionGate.accepts(sessionID) else { return }
         audioState.withLock { state in
+            guard state.sessionID == sessionID else { return }
             state.currentMode = .micOnly
         }
 

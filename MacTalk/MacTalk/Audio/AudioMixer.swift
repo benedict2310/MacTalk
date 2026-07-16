@@ -60,7 +60,28 @@ final class AudioMixer: Sendable {
         func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
             lock.lock()
             defer { lock.unlock() }
+            return convertLocked(buffer: buffer)
+        }
 
+        /// Converts owned mono samples after the capture handoff. Buffer
+        /// creation occurs on the worker, never on the audio render thread.
+        func convert(samples: [Float], sampleRate: Double) -> [Float]? {
+            guard !samples.isEmpty,
+                  let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                              sampleRate: sampleRate,
+                                              channels: 1,
+                                              interleaved: false),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                                frameCapacity: AVAudioFrameCount(samples.count)),
+                  let destination = buffer.floatChannelData?[0] else { return [] }
+            buffer.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { source in
+                destination.update(from: source.baseAddress!, count: samples.count)
+            }
+            return convert(buffer: buffer)
+        }
+
+        private func convertLocked(buffer: AVAudioPCMBuffer) -> [Float]? {
             guard buffer.frameLength > 0 else { return [] }
             guard let inputBuffer = AudioMixer.makeMonoBuffer(from: buffer) else { return nil }
 
@@ -74,11 +95,7 @@ final class AudioMixer: Sendable {
             }
 
             guard let converter else { return nil }
-            return AudioMixer.convert(
-                inputBuffer: inputBuffer,
-                converter: converter,
-                endOfStream: false
-            )
+            return AudioMixer.convert(inputBuffer: inputBuffer, converter: converter, endOfStream: false)
         }
 
         /// Drains converter latency at the end of this source sequence.

@@ -74,13 +74,11 @@ final class TranscriptionControllerTests: XCTestCase {
 
         gate.stop()
         let secondSession = gate.begin()
-        let lateResult: [Float]? = gate.withAcceptedSession(firstSession) {
-            appStream.convert(buffer: makeConstantPCMBuffer(
-                sampleRate: 48_000,
-                channels: 1,
-                frameCount: 4_800
-            ))
-        } ?? nil
+        let lateResult: [Float]? = gate.accepts(firstSession) ? appStream.convert(buffer: makeConstantPCMBuffer(
+            sampleRate: 48_000,
+            channels: 1,
+            frameCount: 4_800
+        )) : nil
 
         XCTAssertFalse(gate.accepts(firstSession))
         XCTAssertTrue(gate.accepts(secondSession))
@@ -128,11 +126,10 @@ final class TranscriptionControllerTests: XCTestCase {
         try await controller.start(mode: .micOnly)
         let newCallback = captureSession.microphoneCallbacks[1]
         let newSessionID = captureSession.microphoneSessionIDs[1]
-        let buffer = makeConstantPCMBuffer(sampleRate: 16_000, channels: 1, frameCount: 1_600)
-        let time = AVAudioTime(hostTime: 0, sampleTime: 0, atRate: 16_000)
+        let frame = AudioCaptureFrame(samples: [Float](repeating: 0.2, count: 1_600), sampleRate: 16_000)
 
-        oldCallback(oldSessionID, buffer, time)
-        newCallback(newSessionID, buffer, time)
+        oldCallback(oldSessionID, frame)
+        newCallback(newSessionID, frame)
         controller.stop()
 
         for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
@@ -319,7 +316,7 @@ final class TranscriptionControllerTests: XCTestCase {
 }
 
 private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionCaptureSession {
-    private(set) var microphoneCallbacks: [(@Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void)] = []
+    private(set) var microphoneCallbacks: [(@Sendable (UUID, AudioCaptureFrame) -> Void)] = []
     private(set) var appCallbacks: [(@Sendable (UUID, CMSampleBuffer) -> Void)] = []
     private(set) var errorCallbacks: [(@Sendable (UUID, Error) -> Void)] = []
     private(set) var sessionIDs: [UUID] = []
@@ -331,7 +328,7 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
 
     func startMicrophone(
         sessionID: UUID,
-        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+        callback: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
     ) throws {
         microphoneStartCount += 1
         sessionIDs.append(sessionID)

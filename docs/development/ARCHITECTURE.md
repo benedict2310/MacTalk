@@ -347,6 +347,10 @@ class OutputManager {
 
 ## Audio Pipeline
 
+### Microphone callback ownership and threading
+
+`AudioCapture` uses a bounded single-producer/single-consumer handoff. The AVAudioEngine tap copies float samples into one of eight preallocated 2048-frame slots, downmixing channels in place. The render callback never allocates, locks, queues AVAudioPCMBuffer/AVAudioTime, or invokes application code. A full queue drops the newest buffer and increments a diagnostic counter. A serial user-initiated worker copies each occupied slot into an owned `AudioCaptureFrame` and invokes the session callback only after the tap has returned. Session IDs are validated by `TranscriptionController` before and after conversion, so queued work from a stopped session cannot mutate a restarted recording.
+
 ### Audio Format Specifications
 
 **Input Formats (Variable):**
