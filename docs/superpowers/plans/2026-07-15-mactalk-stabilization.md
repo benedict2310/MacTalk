@@ -20,6 +20,7 @@
    ```
 4. `project.yml` is authoritative. Regenerate `MacTalk.xcodeproj` after any change to it.
 5. Each task is: implementation worker → specification review → code-quality review → TODO evidence update.
+6. Unit and CI tests never download transcription models or access model-provider networks. Use fake engines/stores by default; a separately opt-in integration smoke test may reuse exactly one pre-provisioned local model and must skip with a prerequisite message when it is unavailable.
 
 ## Dependency order
 
