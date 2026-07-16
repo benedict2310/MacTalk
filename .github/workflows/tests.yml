@@ -35,6 +35,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Verify reproducible project generation
+        run: bash scripts/tests/test_reproducible_project_generation.sh
+
       - name: Remove old project file
         run: rm -rf MacTalk.xcodeproj
 
