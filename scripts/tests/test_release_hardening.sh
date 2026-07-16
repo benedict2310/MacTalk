@@ -22,6 +22,11 @@ assert 'needs.preflight.outputs.source_commit' in workflow, 'preflight commit is
 assert 'release_verify_remote_tag "$RELEASE_TAG" "$RELEASE_EXPECTED_COMMIT"' in workflow, 'publish does not securely verify remote tag refs'
 assert 'peeled_ref="${direct_ref}^{}"' in common, 'remote tag verifier lacks peeled annotated support'
 assert 'received' in workflow and 'reverify-handoff.sh' in workflow, 'consumer handoff is not isolated in received'
+publish_handoff_dir = '${{ runner.temp }}/mactalk-release/received'
+assert f'{publish_handoff_dir}/MacTalk-publish-handoff.zip' in workflow, 'publish handoff upload does not use the received directory'
+assert f'{publish_handoff_dir}/MacTalk-publish-handoff.zip.sha256' in workflow, 'publish handoff sidecar upload does not use the received directory'
+assert '${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip' not in workflow, 'publish handoff upload regressed to the parent directory'
+assert '${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip.sha256' not in workflow, 'publish handoff sidecar upload regressed to the parent directory'
 assert re.search(r'uses: actions/checkout@[0-9a-f]{40}', workflow)
 assert not re.search(r'uses: actions/(checkout|upload-artifact|download-artifact)@v[0-9]', workflow)
 assert 'concurrency:' in workflow and 'gh release create' in workflow and '--draft' in workflow

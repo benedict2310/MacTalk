@@ -198,8 +198,8 @@ jobs:
         with:
           name: mactalk-notarized-release
           path: |
-            ${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip
-            ${{ runner.temp }}/mactalk-release/MacTalk-publish-handoff.zip.sha256
+            ${{ runner.temp }}/mactalk-release/received/MacTalk-publish-handoff.zip
+            ${{ runner.temp }}/mactalk-release/received/MacTalk-publish-handoff.zip.sha256
           if-no-files-found: error
       - name: Remove signing keychain and certificate
         if: always()
