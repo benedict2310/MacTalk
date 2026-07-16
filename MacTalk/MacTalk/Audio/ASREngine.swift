@@ -20,6 +20,18 @@ enum ASRProvider: String, CaseIterable, Sendable {
             return "Parakeet"
         }
     }
+
+    /// Parakeet's shared FluidAudio manager must not receive an incremental
+    /// inference and final inference at the same time. Cancelling an in-flight
+    /// incremental request can leave finalization waiting indefinitely.
+    var usesIncrementalChunkProcessing: Bool {
+        switch self {
+        case .whisper:
+            return true
+        case .parakeet:
+            return false
+        }
+    }
 }
 
 struct ASRWord: Sendable, Equatable {
