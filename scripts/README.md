@@ -4,6 +4,19 @@ This directory contains build automation scripts for MacTalk.
 
 ## Scripts
 
+### verify-signing.sh
+
+Verifies a Developer ID signed `MacTalk.app`: Team ID and certificate
+consistency across nested dylibs, hardened-runtime flags, release entitlements,
+`codesign --verify --deep --strict`, and `spctl`. Exit status 2 means the
+Developer ID credentials are unavailable, 3 means the bundle is unsigned or
+invalid, and 4 means Gatekeeper rejected a valid but not-yet-notarized app.
+
+```bash
+SIGNING_IDENTITY='Developer ID Application: Name (TEAM_ID)' \
+SIGNING_TEAM_ID='TEAM_ID' scripts/verify-signing.sh /path/to/MacTalk.app
+```
+
 ### post-build-sign.sh
 
 **Purpose:** Automatically re-signs all whisper.cpp dylibs and the app bundle after Xcode's build phase.

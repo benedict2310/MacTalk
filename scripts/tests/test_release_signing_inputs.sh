@@ -21,8 +21,6 @@ required_entitlements = [
     'com.apple.security.device.audio-input',
     'com.apple.security.automation.apple-events',
     'com.apple.security.cs.disable-library-validation',
-    'com.apple.security.cs.allow-jit',
-    'com.apple.security.cs.allow-unsigned-executable-memory',
 ]
 missing_entitlements = [item for item in required_entitlements if item not in entitlements]
 if missing_entitlements:

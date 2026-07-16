@@ -53,6 +53,8 @@ case "${1:-build}" in
 
   build|run)
     echo -e "${BLUE}📦 Building MacTalk (${CONFIGURATION})...${NC}"
+    BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/mactalk-build.XXXXXX")"
+    set +e
     xcodebuild -project MacTalk.xcodeproj \
       -scheme "$SCHEME" \
       -configuration "$CONFIGURATION" \
@@ -61,9 +63,13 @@ case "${1:-build}" in
       CODE_SIGN_STYLE=Manual \
       CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
       DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-      build | grep -E "(BUILD|Re-sign|Signed:|error:)" || true
-
+      build 2>&1 | tee "$BUILD_LOG"
     BUILD_STATUS=${PIPESTATUS[0]}
+    set -e
+
+    if [ $BUILD_STATUS -ne 0 ]; then
+      echo -e "${YELLOW}❌ Build failed; log: ${BUILD_LOG}${NC}" >&2
+    fi
 
     if [ $BUILD_STATUS -eq 0 ]; then
       echo -e "${GREEN}✅ Build succeeded${NC}"
