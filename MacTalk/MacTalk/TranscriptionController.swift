@@ -419,7 +419,6 @@ final class TranscriptionController: @unchecked Sendable {
         Task { [self] in
             // Capture the final in-flight microphone buffer without a noticeable delay.
             try? await Task.sleep(nanoseconds: UInt64(tailDrainMs) * 1_000_000)
-            micCapture.stop()
 
             await cancelPendingChunkTasks(sessionID: sessionID)
             await flushFinalChunk(sessionID: sessionID)

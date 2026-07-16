@@ -20,6 +20,10 @@ source "$PROJECT_DIR/scripts/build_helpers.sh"
 CONFIGURATION="Release"
 SCHEME="MacTalk"
 ARCH="arm64"
+# Release builds require a signing identity with a private key. Override these
+# for another team/identity without editing the script.
+CODE_SIGN_IDENTITY="${MACTALK_CODE_SIGN_IDENTITY:-Developer ID Application: Benedict Evert (9SXL4GJ4TZ)}"
+DEVELOPMENT_TEAM="${MACTALK_DEVELOPMENT_TEAM:-9SXL4GJ4TZ}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -54,6 +58,9 @@ case "${1:-build}" in
       -configuration "$CONFIGURATION" \
       -arch "$ARCH" \
       ONLY_ACTIVE_ARCH=YES \
+      CODE_SIGN_STYLE=Manual \
+      CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+      DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
       build | grep -E "(BUILD|Re-sign|Signed:|error:)" || true
 
     BUILD_STATUS=${PIPESTATUS[0]}
