@@ -13,7 +13,7 @@ import AppKit
 @MainActor
 final class ModelManager {
     static let shared = ModelManager()
-    private let downloader = ModelDownloader()
+    private let downloader: ModelDownloader
 
     /// Legacy compatibility - points to ModelStore directory
     nonisolated static let modelsDirectory: URL = ModelStore.modelsDir
@@ -25,7 +25,10 @@ final class ModelManager {
     private var isDownloading = false
     private var currentDownloadSpec: ModelSpec?
 
-    private init() {
+    /// The downloader seam lets tests provide temporary roots and a fake
+    /// URLSession/task factory without touching the user's model store.
+    init(downloader: ModelDownloader = ModelDownloader()) {
+        self.downloader = downloader
         // Set up the downloader state forwarding
         downloader.onState = { [weak self] state in
             // Forward state updates on main actor

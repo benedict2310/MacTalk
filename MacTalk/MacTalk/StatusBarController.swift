@@ -607,15 +607,9 @@ final class StatusBarController {
         if let spec = ModelCatalog.findByFilename(currentWhisperModelName) {
             prepareWhisperModelWithAutoDownload(spec: spec)
         } else {
-            // Fallback to legacy behavior for models not in catalog
-            let modelURL = ModelManager.ensureModelDownloaded(name: currentWhisperModelName)
-            guard FileManager.default.fileExists(atPath: modelURL.path) else {
-                showModelMissingAlert(modelName: currentWhisperModelName, path: modelURL.path)
-                return
-            }
-            if provider == .whisper, let loadedEngine = NativeWhisperEngine(modelURL: modelURL) {
-                adoptLoadedEngine(loadedEngine, selection: engineSelection(for: AppSettings.shared.snapshot))
-            }
+            // Only catalog entries carry immutable provenance. Never fall back
+            // to an existence-only legacy path for native model loading.
+            showError("The selected Whisper model has no verified integrity metadata.")
         }
     }
 

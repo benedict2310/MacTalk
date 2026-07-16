@@ -15,14 +15,10 @@ enum ModelIntegrityVerifier {
                 throw ModelDownloader.ErrorType.badChecksum
             }
 
-            if spec.sizeBytes > 0 {
-                // Catalog sizes are rounded display/provider metadata. Retain the
-                // existing 10%/10 MB sanity tolerance while the cryptographic
-                // digest remains the authoritative identity check.
-                let tolerance = max(spec.sizeBytes / 10, 10_000_000)
-                guard abs(size - spec.sizeBytes) <= tolerance else {
-                    throw ModelDownloader.ErrorType.badChecksum
-                }
+            // Size is part of the immutable artifact identity. Never accept a
+            // rounded/provider size or an existence-only cache entry.
+            guard size == spec.sizeBytes else {
+                throw ModelDownloader.ErrorType.badChecksum
             }
 
             let actualDigest = try SHA256Streamer.hashFile(at: source)
