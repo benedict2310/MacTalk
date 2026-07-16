@@ -55,4 +55,25 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(TranscriptCleaner.clean(""), "")
         XCTAssertEqual(TranscriptCleaner.clean("   \n\t"), "")
     }
+
+    func test_stoppedSessionRejectsLateAppCallbackBeforeConversion() throws {
+        let gate = AudioSessionGate()
+        let firstSession = gate.begin()
+        let appStream = AudioMixer().makeStream()
+
+        gate.stop()
+        let secondSession = gate.begin()
+        let lateResult: [Float]? = gate.withAcceptedSession(firstSession) {
+            appStream.convert(buffer: makeConstantPCMBuffer(
+                sampleRate: 48_000,
+                channels: 1,
+                frameCount: 4_800
+            ))
+        } ?? nil
+
+        XCTAssertFalse(gate.accepts(firstSession))
+        XCTAssertTrue(gate.accepts(secondSession))
+        XCTAssertNil(lateResult)
+        XCTAssertTrue(try XCTUnwrap(appStream.finish()).isEmpty)
+    }
 }

@@ -11,6 +11,46 @@ import Foundation
 import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
 import os
 
+/// Identifies the currently accepted audio-capture session.
+///
+/// Capture callbacks can arrive after ScreenCaptureKit has been asked to stop.
+/// The gate is checked before conversion and again before appending converted
+/// samples so a stopped or replaced session cannot mutate a new stream.
+final class AudioSessionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeSession: UUID?
+
+    func begin() -> UUID {
+        let session = UUID()
+        lock.lock()
+        activeSession = session
+        lock.unlock()
+        return session
+    }
+
+    func stop() {
+        lock.lock()
+        activeSession = nil
+        lock.unlock()
+    }
+
+    func accepts(_ session: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeSession == session
+    }
+
+    /// Runs a conversion only while the session is accepted. Holding the gate
+    /// across the conversion makes stop/restart wait for an in-flight callback
+    /// before the stream is finished or reset.
+    func withAcceptedSession<T>(_ session: UUID, _ operation: () -> T) -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeSession == session else { return nil }
+        return operation()
+    }
+}
+
 enum TranscriptCleaner {
     private static let leadingArtifactCharacters = CharacterSet(charactersIn: ".,;:!?…·-–—")
     private static let fillerPattern = #"\b(?:um+|uh+|erm+|er+|hmm+|hm+)\b[,;:]*"#
@@ -118,6 +158,7 @@ final class TranscriptionController: @unchecked Sendable {
     private let appStream: AudioMixer.Stream
     private let engine: any ASREngine
     private let levelMonitor = MultiChannelLevelMonitor()
+    private let audioSessionGate = AudioSessionGate()
 
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
@@ -210,6 +251,13 @@ final class TranscriptionController: @unchecked Sendable {
     func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
         DLOG("Transcription start requested: mode=\(mode)")
 
+        // Invalidate callbacks from any previous capture before resetting the
+        // streams. ScreenCaptureKit may still deliver a queued callback after
+        // stopCapture has been requested.
+        let sessionID = audioSessionGate.begin()
+        micCapture.stop()
+        screenCapture.stop()
+
         // Clear previous state
         micStream.reset()
         appStream.reset()
@@ -221,15 +269,15 @@ final class TranscriptionController: @unchecked Sendable {
             state.isFirstChunk = true
             state.lastUIUpdateTime = 0
             state.lastDiagnosticsLogTime = 0
-            state.sessionID = UUID()
-            state.pendingTasks[state.sessionID] = []
+            state.sessionID = sessionID
+            state.pendingTasks[sessionID] = []
             state.chunkProcessingTail = nil
         }
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
         micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
-            self?.processAudioBuffer(buffer)
+            self?.processAudioBuffer(buffer, sessionID: sessionID)
         }
         try micCapture.start()
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
@@ -245,7 +293,7 @@ final class TranscriptionController: @unchecked Sendable {
             }
 
             do {
-                try await startAppAudioCapture(source: source)
+                try await startAppAudioCapture(source: source, sessionID: sessionID)
             } catch {
                 await cancelStartAndWait()
                 throw error
@@ -267,9 +315,12 @@ final class TranscriptionController: @unchecked Sendable {
         print("Transcription started in mode: \(mode)")
     }
 
-    private func startAppAudioCapture(source: AppPickerWindowController.AudioSource) async throws {
+    private func startAppAudioCapture(
+        source: AppPickerWindowController.AudioSource,
+        sessionID: UUID
+    ) async throws {
         screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
-            self?.processSampleBuffer(sampleBuffer)
+            self?.processSampleBuffer(sampleBuffer, sessionID: sessionID)
         }
 
         // Install error handler
@@ -290,6 +341,9 @@ final class TranscriptionController: @unchecked Sendable {
 
     func stop() {
         DLOG("Transcription stop requested")
+        // Gate first: stopCapture is asynchronous and queued callbacks may
+        // otherwise append into a stream while it is being finished/reset.
+        audioSessionGate.stop()
         micCapture.stop()
         screenCapture.stop()
         finishAudioStreams()
@@ -325,6 +379,7 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func cancelStartAndReturnSession() -> UUID {
+        audioSessionGate.stop()
         micCapture.stop()
         screenCapture.stop()
 
@@ -350,8 +405,11 @@ final class TranscriptionController: @unchecked Sendable {
         }
     }
 
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let samples = micStream.convert(buffer: buffer) else {
+    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, sessionID: UUID) {
+        let samples: [Float]? = audioSessionGate.withAcceptedSession(sessionID) {
+            micStream.convert(buffer: buffer)
+        } ?? nil
+        guard let samples else {
             return
         }
 
@@ -363,11 +421,14 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples)
+        appendSamples(samples, sessionID: sessionID)
     }
 
-    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream) else {
+    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, sessionID: UUID) {
+        let samples: [Float]? = audioSessionGate.withAcceptedSession(sessionID) {
+            mixer.convertSampleBuffer(sampleBuffer, using: appStream)
+        } ?? nil
+        guard let samples else {
             return
         }
 
@@ -379,13 +440,16 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples)
+        appendSamples(samples, sessionID: sessionID)
     }
 
-    private func appendSamples(_ samples: [Float]) {
+    private func appendSamples(_ samples: [Float], sessionID: UUID? = nil) {
         logAudioDiagnosticsIfNeeded(samples)
 
         let (chunkCount, threshold) = audioState.withLock { state -> (Int, Int) in
+            if let sessionID, !audioSessionGate.accepts(sessionID) {
+                return (state.audioChunk.count, Int.max)
+            }
             state.audioChunk.append(contentsOf: samples)
             state.allAudio.append(contentsOf: samples)
 

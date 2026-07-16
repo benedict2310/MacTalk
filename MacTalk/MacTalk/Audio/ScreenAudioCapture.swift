@@ -22,6 +22,7 @@
 /// (.global(qos: .userInitiated)), not a real-time thread. It is safe to
 /// perform async operations in the handler.
 final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
+    private let streamLock = NSLock()
     private var stream: SCStream?
 
     /// Callback invoked with each audio sample buffer from the captured source.
@@ -90,7 +91,9 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unc
         config.queueDepth = 8
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        self.stream = stream
+        streamLock.withLock {
+            self.stream = stream
+        }
 
         try stream.addStreamOutput(
             self,
@@ -102,13 +105,24 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unc
     }
 
     func stop() {
-        // Capture stream locally to avoid retaining self in async task
-        guard let stream = stream else { return }
+        // Invalidate the stream synchronously. ScreenCaptureKit may deliver
+        // already-queued callbacks after stopCapture is requested; the stream
+        // identity check below rejects those callbacks.
+        streamLock.lock()
+        let stream = self.stream
         self.stream = nil
+        streamLock.unlock()
 
+        guard let stream else { return }
         Task {
             try? await stream.stopCapture()
         }
+    }
+
+    private func isCurrentStream(_ callbackStream: SCStream) -> Bool {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return stream === callbackStream
     }
 
     // MARK: - SCStreamOutput
@@ -118,13 +132,14 @@ final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unc
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .audio else { return }
+        guard outputType == .audio, isCurrentStream(stream) else { return }
         onAudioSampleBuffer?(sampleBuffer)
     }
 
     // MARK: - SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        guard isCurrentStream(stream) else { return }
         DebugLogger.shared.log(.error(description: error.localizedDescription))
         onStreamError?(error)
     }
