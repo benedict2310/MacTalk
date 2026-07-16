@@ -105,8 +105,8 @@ final class TranscriptionControllerTests: XCTestCase {
         try await controller.start(mode: .micPlusAppAudio, audioSource: source)
 
         XCTAssertEqual(captureSession.appCallbacks.count, 2)
-        captureSession.appCallbacks[0](sampleBuffer)
-        captureSession.appCallbacks[1](sampleBuffer)
+        captureSession.appCallbacks[0](captureSession.sessionIDs[1], sampleBuffer)
+        captureSession.appCallbacks[1](captureSession.sessionIDs[3], sampleBuffer)
         controller.stop()
 
         for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
@@ -139,7 +139,7 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(captureSession.microphoneStartCount, 1)
         XCTAssertEqual(captureSession.stopCount, stopCountBeforeFailure)
         XCTAssertEqual(captureSession.stopAppAudioCount, 1)
-        XCTAssertNotNil(captureSession.onMicrophoneBuffer)
+        XCTAssertEqual(captureSession.microphoneCallbacks.count, 1)
     }
 
     private func makeAppSampleBuffer(frameCount: Int) throws -> CMSampleBuffer {
@@ -218,24 +218,32 @@ final class TranscriptionControllerTests: XCTestCase {
 }
 
 private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionCaptureSession {
-    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
-    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
-    var onStreamError: (@Sendable (Error) -> Void)?
-    private(set) var appCallbacks: [(@Sendable (CMSampleBuffer) -> Void)] = []
+    private(set) var microphoneCallbacks: [(@Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void)] = []
+    private(set) var appCallbacks: [(@Sendable (UUID, CMSampleBuffer) -> Void)] = []
+    private(set) var errorCallbacks: [(@Sendable (UUID, Error) -> Void)] = []
+    private(set) var sessionIDs: [UUID] = []
     private(set) var microphoneStartCount = 0
     private(set) var stopCount = 0
     private(set) var stopAppAudioCount = 0
 
-    func startMicrophone() throws {
+    func startMicrophone(
+        sessionID: UUID,
+        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+    ) throws {
         microphoneStartCount += 1
+        sessionIDs.append(sessionID)
+        microphoneCallbacks.append(callback)
     }
 
-    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws {
-        guard let onAppAudioSampleBuffer else {
-            XCTFail("Controller must install the app-audio callback before starting capture")
-            return
-        }
-        appCallbacks.append(onAppAudioSampleBuffer)
+    func startAppAudio(
+        sessionID: UUID,
+        source: AppPickerWindowController.AudioSource,
+        callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        errorCallback: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
+        sessionIDs.append(sessionID)
+        appCallbacks.append(callback)
+        errorCallbacks.append(errorCallback)
     }
 
     func stop() {
@@ -246,8 +254,10 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
         stopAppAudioCount += 1
     }
 
-    func triggerAppAudioError() {
-        onStreamError?(NSError(domain: "LifecycleCaptureSession", code: 1))
+    func triggerAppAudioError(at index: Int = -1) {
+        let callbackIndex = index >= 0 ? index : errorCallbacks.count - 1
+        guard errorCallbacks.indices.contains(callbackIndex) else { return }
+        errorCallbacks[callbackIndex](sessionIDs[callbackIndex], NSError(domain: "LifecycleCaptureSession", code: 1))
     }
 }
 

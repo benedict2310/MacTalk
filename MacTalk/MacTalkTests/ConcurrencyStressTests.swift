@@ -79,38 +79,4 @@ final class ConcurrencyStressTests: XCTestCase {
         XCTAssertEqual(appCount, 50)
     }
 
-    func test_audioCaptureCallbackAssignmentIsRaceFree() async {
-        let capture = AudioCapture()
-        let assignments = TestCounter()
-
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<100 {
-                group.addTask {
-                    capture.onPCMFloatBuffer = { _, _ in }
-                    await assignments.increment()
-                }
-            }
-        }
-
-        let assignmentCount = await assignments.getCount()
-        XCTAssertEqual(assignmentCount, 100)
-    }
-
-    func test_screenAudioCaptureCallbackAssignmentIsRaceFree() async {
-        let capture = ScreenAudioCapture()
-        let assignments = TestCounter()
-
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<100 {
-                group.addTask {
-                    capture.onAudioSampleBuffer = { _ in }
-                    capture.onStreamError = { _ in }
-                    await assignments.increment()
-                }
-            }
-        }
-
-        let assignmentCount = await assignments.getCount()
-        XCTAssertEqual(assignmentCount, 100)
-    }
 }

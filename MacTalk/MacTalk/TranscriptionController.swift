@@ -136,12 +136,16 @@ enum TranscriptCleaner {
 /// Keeping capture lifecycle and callbacks behind this dependency lets callers
 /// provide a different capture implementation without changing session gating.
 protocol TranscriptionCaptureSession: AnyObject {
-    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)? { get set }
-    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)? { get set }
-    var onStreamError: (@Sendable (Error) -> Void)? { get set }
-
-    func startMicrophone() throws
-    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws
+    func startMicrophone(
+        sessionID: UUID,
+        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+    ) throws
+    func startAppAudio(
+        sessionID: UUID,
+        source: AppPickerWindowController.AudioSource,
+        callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        errorCallback: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws
     /// Stops only the app/system-audio stream, preserving microphone capture.
     func stopAppAudio()
     /// Stops every active capture source.
@@ -153,29 +157,33 @@ final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionC
     private let micCapture = AudioCapture()
     private let screenCapture = ScreenAudioCapture()
 
-    var onMicrophoneBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
-    var onAppAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
-    var onStreamError: (@Sendable (Error) -> Void)?
-
-    func startMicrophone() throws {
-        micCapture.onPCMFloatBuffer = { [weak self] buffer, time in
-            self?.onMicrophoneBuffer?(buffer, time)
-        }
-        try micCapture.start()
+    func startMicrophone(
+        sessionID: UUID,
+        callback: @escaping @Sendable (UUID, AVAudioPCMBuffer, AVAudioTime) -> Void
+    ) throws {
+        try micCapture.start(sessionID: sessionID, onPCMFloatBuffer: callback)
     }
 
-    func startAppAudio(source: AppPickerWindowController.AudioSource) async throws {
-        screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
-            self?.onAppAudioSampleBuffer?(sampleBuffer)
-        }
-        screenCapture.onStreamError = { [weak self] error in
-            self?.onStreamError?(error)
-        }
-
+    func startAppAudio(
+        sessionID: UUID,
+        source: AppPickerWindowController.AudioSource,
+        callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        errorCallback: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
         if source.isSystemAudio, let display = source.display {
-            try await screenCapture.selectDisplay(display: display)
+            try await screenCapture.selectDisplay(
+                display: display,
+                sessionID: sessionID,
+                onAudioSampleBuffer: callback,
+                onStreamError: errorCallback
+            )
         } else if let app = source.app {
-            try await screenCapture.selectApp(app: app)
+            try await screenCapture.selectApp(
+                app: app,
+                sessionID: sessionID,
+                onAudioSampleBuffer: callback,
+                onStreamError: errorCallback
+            )
         } else {
             throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Invalid audio source"
@@ -352,10 +360,9 @@ final class TranscriptionController: @unchecked Sendable {
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
-        captureSession.onMicrophoneBuffer = { [weak self] buffer, _ in
-            self?.processAudioBuffer(buffer, sessionID: sessionID)
+        try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, buffer, _ in
+            self?.processAudioBuffer(buffer, sessionID: callbackSessionID)
         }
-        try captureSession.startMicrophone()
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
@@ -369,13 +376,17 @@ final class TranscriptionController: @unchecked Sendable {
             }
 
             do {
-                captureSession.onAppAudioSampleBuffer = { [weak self] sampleBuffer in
-                    self?.processSampleBuffer(sampleBuffer, sessionID: sessionID)
-                }
-                captureSession.onStreamError = { [weak self] error in
-                    self?.handleAppAudioError(error)
-                }
-                try await captureSession.startAppAudio(source: source)
+                try await captureSession.startAppAudio(
+                    sessionID: sessionID,
+                    source: source,
+                    callback: { [weak self] callbackSessionID, sampleBuffer in
+                        self?.processSampleBuffer(sampleBuffer, sessionID: callbackSessionID)
+                    },
+                    errorCallback: { [weak self] callbackSessionID, error in
+                        guard self?.audioSessionGate.accepts(callbackSessionID) == true else { return }
+                        self?.handleAppAudioError(error)
+                    }
+                )
             } catch {
                 await cancelStartAndWait()
                 throw error
