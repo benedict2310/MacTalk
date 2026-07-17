@@ -82,7 +82,10 @@ struct AudioCompositionConfiguration: Sendable, Equatable {
 
 struct AudioCompositionMetrics: Sendable, Equatable {
     var lateFramesDropped = 0
+    var bufferedOverlapFramesDropped = 0
     var preAnchorFramesDropped = 0
+    var invalidMicrophoneTimestamps = 0
+    var invalidApplicationTimestamps = 0
     var discontinuitiesElided = 0
     var nonFiniteSamplesReplaced = 0
     var clippedSamples = 0
@@ -141,16 +144,43 @@ struct AudioTimelineComposer: Sendable {
                 return []
             }
             epoch = chunk.start
-            place(chunk)
             let pending = preAnchorApplication
             preAnchorApplication.removeAll(keepingCapacity: true)
             preAnchorFrames = 0
             for queued in pending { place(queued) }
-        } else {
-            place(chunk)
         }
 
-        let output = renderThroughSafeWatermark()
+        // Process packets in bounded slices. This lets a second source make
+        // progress even when the first source filled the horizon, while each
+        // insertion and each returned emission remains bounded.
+        let sliceSize = max(1, min(configuration.maximumZeroFillFrames, configuration.maximumBufferedFrames))
+        let originalFrame = chunk.start.frameOffset(from: epoch!, sampleRate: configuration.sampleRate)
+        var output: [Float] = []
+        var offset = 0
+        while offset < chunk.samples.count {
+            let count = min(sliceSize, chunk.samples.count - offset)
+            let sliceStart = offset == 0
+                ? chunk.start
+                : AudioHostTimestamp(nanoseconds: frameTimestamp(originalFrame + offset, epoch: epoch!))
+            let slice = TimedAudioChunk(
+                source: chunk.source,
+                start: sliceStart,
+                samples: Array(chunk.samples[offset..<(offset + count)])
+            )
+            place(slice)
+            let remaining = configuration.maximumBufferedFrames - output.count
+            if remaining > 0 {
+                output.append(contentsOf: renderThroughSafeWatermark().prefix(remaining))
+            }
+            offset += count
+            if output.count >= configuration.maximumBufferedFrames {
+                // The caller must receive a bounded batch. Remaining packet
+                // data is outside this bounded synchronous handoff and is
+                // deliberately dropped rather than materialized.
+                _metrics.lateFramesDropped += chunk.samples.count - offset
+                break
+            }
+        }
         enforceBufferBound()
         return output
     }
@@ -203,8 +233,22 @@ struct AudioTimelineComposer: Sendable {
         preAnchorFrames = 0
     }
 
+    mutating func recordInvalidTimestamp(sessionID: UUID, source: AudioCompositionSource) {
+        guard self.sessionID == sessionID else { return }
+        switch source {
+        case .microphone:
+            _metrics.invalidMicrophoneTimestamps += 1
+        case .application:
+            _metrics.invalidApplicationTimestamps += 1
+        }
+    }
+
     private mutating func bufferPreAnchor(_ chunk: TimedAudioChunk) {
-        let available = configuration.maximumZeroFillFrames - preAnchorFrames
+        // The zero-fill limit is a timeline-gap policy, not the capacity of
+        // the pre-anchor queue. Keeping those limits separate is important:
+        // a valid application callback may be larger than 250 ms and must not
+        // become schedule-dependent merely because it arrived before mic.
+        let available = configuration.maximumBufferedFrames - preAnchorFrames
         guard available > 0 else {
             _metrics.preAnchorFramesDropped += chunk.samples.count
             return
@@ -226,13 +270,16 @@ struct AudioTimelineComposer: Sendable {
         guard let epoch else { return }
         let source = chunk.source
         var state = sources[source] ?? SourceState()
-        var start = chunk.start.frameOffset(from: epoch, sampleRate: configuration.sampleRate)
+        var originalStart = chunk.start.frameOffset(from: epoch, sampleRate: configuration.sampleRate)
         if let expected = state.expectedNextStart,
-           abs(start - expected) <= configuration.timestampSnapFrames {
-            start = expected
+           abs(originalStart - expected) <= configuration.timestampSnapFrames {
+            originalStart = expected
         }
 
-        let originalStart = start
+        let end = originalStart + chunk.samples.count
+        state.latestObservedEnd = max(state.latestObservedEnd ?? Int.min, end)
+
+        var start = originalStart
         if start < outputCursor {
             let dropped = min(chunk.samples.count, outputCursor - start)
             _metrics.lateFramesDropped += dropped
@@ -247,23 +294,36 @@ struct AudioTimelineComposer: Sendable {
             _metrics.discontinuitiesElided += skipped
         }
 
+        // Never materialize more than the configured horizon. A callback can
+        // contain an arbitrarily large packet; retaining only this bounded
+        // window is equivalent to trimming a packet before insertion.
         let retainedStart = max(start, outputCursor)
+        let retainedEnd = min(end, outputCursor + configuration.maximumBufferedFrames)
         let offset = max(0, retainedStart - originalStart)
-        guard offset < chunk.samples.count else {
-            state.latestObservedEnd = max(state.latestObservedEnd ?? Int.min, originalStart + chunk.samples.count)
-            state.expectedNextStart = originalStart + chunk.samples.count
+        guard offset < chunk.samples.count, retainedStart < retainedEnd else {
+            // This callback was wholly late or outside the bounded horizon.
+            // It may inform the watermark, but it must not rewind sequencing.
+            if let expected = state.expectedNextStart {
+                state.expectedNextStart = max(expected, end)
+            } else {
+                state.expectedNextStart = end
+            }
+            state.hasInput = true
             sources[source] = state
             return
         }
-        let end = originalStart + chunk.samples.count
-        state.latestObservedEnd = max(state.latestObservedEnd ?? Int.min, end)
-        state.latestPlacedEnd = max(state.latestPlacedEnd ?? Int.min, end)
-        state.expectedNextStart = end
-        state.hasInput = true
 
-        for index in offset..<chunk.samples.count {
+        var placedEnd = state.latestPlacedEnd ?? Int.min
+        state.hasInput = true
+        for index in offset..<min(chunk.samples.count, offset + retainedEnd - retainedStart) {
             let frame = originalStart + index
-            guard frame >= outputCursor else { continue }
+            guard frame >= outputCursor, frame < retainedEnd else { continue }
+            // A late callback may overlap data which is still buffered. The
+            // first accepted callback wins; never overwrite buffered samples.
+            if state.samples[frame] != nil {
+                _metrics.bufferedOverlapFramesDropped += 1
+                continue
+            }
             var value = chunk.samples[index]
             if !value.isFinite {
                 value = 0
@@ -273,7 +333,15 @@ struct AudioTimelineComposer: Sendable {
                 _metrics.clippedSamples += 1
             }
             state.samples[frame] = value
+            placedEnd = max(placedEnd, frame + 1)
         }
+        if placedEnd != Int.min {
+            state.latestPlacedEnd = max(state.latestPlacedEnd ?? Int.min, placedEnd)
+        }
+        // A duplicate/backward callback must never move the expected timeline
+        // backwards. This is also what prevents a later callback from being
+        // snapped into and overwriting an already accepted interval.
+        state.expectedNextStart = max(state.expectedNextStart ?? Int.min, end)
         sources[source] = state
     }
 
@@ -284,21 +352,31 @@ struct AudioTimelineComposer: Sendable {
         case .microphoneOnly:
             end = sources[.microphone]?.latestPlacedEnd ?? outputCursor
         case .microphoneAndApplication:
-            let latest = max(
-                sources[.microphone]?.latestObservedEnd ?? 0,
-                sources[.application]?.latestObservedEnd ?? 0
+            // Both source watermarks are required. Using the global maximum
+            // treats a source which has not produced a callback as absent and
+            // makes a 5,000-frame callback render differently depending on
+            // which source callback happens to run first. The minimum of the
+            // independent observed ends gives each source its full 250 ms
+            // lateness window and is invariant under callback permutation.
+            guard let mic = sources[.microphone], mic.hasInput,
+                  let app = sources[.application], app.hasInput,
+                  let micEnd = mic.latestObservedEnd,
+                  let appEnd = app.latestObservedEnd else { return [] }
+            end = max(
+                outputCursor,
+                min(micEnd, appEnd) - configuration.maximumLatenessFrames
             )
-            let virtual = max(outputCursor, latest - configuration.maximumLatenessFrames)
-            let micSafe = max(sources[.microphone]?.latestPlacedEnd ?? 0, virtual)
-            let appSafe = max(sources[.application]?.latestPlacedEnd ?? 0, virtual)
-            end = min(micSafe, appSafe)
         }
         return render(until: end)
     }
 
     private mutating func render(until end: Int) -> [Float] {
         guard end > outputCursor else { return [] }
-        let count = end - outputCursor
+        // Keep every output allocation bounded, including finish/fallback
+        // drains after an oversized callback.
+        let boundedEnd = min(end, outputCursor + configuration.maximumBufferedFrames)
+        let count = boundedEnd - outputCursor
+        guard count > 0 else { return [] }
         var output = [Float](repeating: 0, count: count)
         for index in 0..<count {
             let frame = outputCursor + index
@@ -322,29 +400,24 @@ struct AudioTimelineComposer: Sendable {
         }
         for source in [AudioCompositionSource.microphone, .application] {
             if var state = sources[source] {
-                state.samples = state.samples.filter { $0.key >= end }
+                state.samples = state.samples.filter { $0.key >= boundedEnd }
                 sources[source] = state
             }
         }
-        outputCursor = end
+        outputCursor = boundedEnd
         return output
     }
 
     private mutating func enforceBufferBound() {
-        guard bufferedFrameCount > configuration.maximumBufferedFrames else { return }
-        // Keep the timeline bounded even when a source sends an unusually large
-        // chunk. Rendering is deliberately not forced here because this method
-        // has no emission channel; normal watermark and finish paths perform the
-        // actual output. The oldest unrendered samples are the least useful
-        // under the documented bounded-lateness policy.
-        let excess = bufferedFrameCount - configuration.maximumBufferedFrames
-        var remaining = excess
-        for source in [AudioCompositionSource.microphone, .application] where remaining > 0 {
-            guard var state = sources[source] else { continue }
-            let keys = state.samples.keys.sorted()
-            for key in keys where remaining > 0 {
+        // Each source owns an independent bounded timeline window. A dual
+        // stream must not evict one source merely because the other callback
+        // arrived first; watermark rendering releases both windows together.
+        for source in [AudioCompositionSource.microphone, .application] {
+            guard var state = sources[source],
+                  state.samples.count > configuration.maximumBufferedFrames else { continue }
+            let excess = state.samples.count - configuration.maximumBufferedFrames
+            for key in state.samples.keys.sorted().prefix(excess) {
                 state.samples.removeValue(forKey: key)
-                remaining -= 1
             }
             sources[source] = state
         }
@@ -430,6 +503,10 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
 
     func cancel(sessionID: UUID) {
         queue.sync { composer.cancel(sessionID: sessionID) }
+    }
+
+    func recordInvalidTimestamp(sessionID: UUID, source: AudioCompositionSource) {
+        queue.sync { composer.recordInvalidTimestamp(sessionID: sessionID, source: source) }
     }
 
     var metrics: AudioCompositionMetrics {

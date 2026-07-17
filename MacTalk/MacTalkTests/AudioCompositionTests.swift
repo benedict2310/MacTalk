@@ -44,6 +44,16 @@ final class AudioCompositionTests: XCTestCase {
         XCTAssertEqual(compose(first), compose(second))
     }
 
+    func test_arbitraryFiveThousandFrameCallbacksAreOrderIndependent() {
+        let mic = chunk(.microphone, frame: 0, values: [Float](repeating: 0.2, count: 5_000))
+        let app = chunk(.application, frame: 0, values: [Float](repeating: 0.6, count: 5_000))
+        let micFirst = compose([mic, app])
+        let appFirst = compose([app, mic])
+        XCTAssertEqual(micFirst, appFirst)
+        XCTAssertEqual(micFirst.count, 5_000)
+        XCTAssertEqual(micFirst[2_500], 0.4, accuracy: 0.0001)
+    }
+
     func test_appBeforeFirstMicIsBufferedAndMicDefinesFrameZero() {
         let session = UUID()
         var composer = AudioTimelineComposer()
@@ -55,11 +65,14 @@ final class AudioCompositionTests: XCTestCase {
     }
 
     func test_knownTimestampOffsetPlacesImpulsesAtExpectedFrames() {
+        var microphone = [Float](repeating: 0, count: 201)
+        microphone[100] = 1
         let output = compose([
-            chunk(.microphone, frame: 0, values: [Float](repeating: 0, count: 200)),
+            chunk(.microphone, frame: 0, values: microphone),
             chunk(.application, frame: 800, values: [1])
         ])
         XCTAssertEqual(output.count, 801)
+        XCTAssertEqual(output[100], 1, accuracy: 0.0001)
         XCTAssertEqual(output[800], 1, accuracy: 0.0001)
     }
 
@@ -69,6 +82,17 @@ final class AudioCompositionTests: XCTestCase {
             chunk(.application, frame: 0, values: [Float](repeating: 1, count: 100))
         ])
         XCTAssertEqual(output.max(), 1)
+        XCTAssertEqual(output.min(), 1)
+        XCTAssertTrue(output.allSatisfy(\.isFinite))
+    }
+
+    func test_twoNegativeFullScaleSourcesReachNegativeMinimumWithoutClipping() {
+        let output = compose([
+            chunk(.microphone, frame: 0, values: [Float](repeating: -1, count: 100)),
+            chunk(.application, frame: 0, values: [Float](repeating: -1, count: 100))
+        ])
+        XCTAssertEqual(output.min(), -1)
+        XCTAssertEqual(output.max(), -1)
         XCTAssertTrue(output.allSatisfy(\.isFinite))
     }
 
@@ -233,8 +257,48 @@ final class AudioCompositionTests: XCTestCase {
         let session = UUID()
         var composer = AudioTimelineComposer()
         composer.reset(sessionID: session, mode: .microphoneAndApplication)
-        _ = composer.ingest(sessionID: session, chunk: chunk(.application, frame: 0, values: [Float](repeating: 0.1, count: 10_000)))
-        XCTAssertEqual(composer.metrics.preAnchorFramesDropped, 6_000)
+        _ = composer.ingest(sessionID: session, chunk: chunk(.application, frame: 0, values: [Float](repeating: 0.1, count: 20_000)))
+        XCTAssertEqual(composer.metrics.preAnchorFramesDropped, 4_000)
+    }
+
+    func test_bufferedOverlapKeepsFirstAcceptedSamplesAndDoesNotRewindExpectedStart() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        var output = composer.ingest(sessionID: session, chunk: chunk(.microphone, frame: 0, values: [Float](repeating: 0.2, count: 8_000)))
+        output += composer.ingest(sessionID: session, chunk: chunk(.application, frame: 0, values: [Float](repeating: 0.4, count: 8_000)))
+        output += composer.ingest(sessionID: session, chunk: chunk(.microphone, frame: 5_000, values: [Float](repeating: 0.8, count: 1_000)))
+        output += composer.finish(sessionID: session)
+        XCTAssertEqual(output.count, 8_000)
+        XCTAssertEqual(output[5_500], 0.3, accuracy: 0.0001)
+        XCTAssertGreaterThan(composer.metrics.bufferedOverlapFramesDropped, 0)
+    }
+
+    func test_oversizedChunkNeverExceedsInsertionOrEmissionBound() {
+        let session = UUID()
+        let configuration = AudioCompositionConfiguration(
+            maximumLatenessFrames: 64,
+            maximumBufferedFrames: 256,
+            maximumZeroFillFrames: 64
+        )
+        var composer = AudioTimelineComposer(configuration: configuration)
+        composer.reset(sessionID: session, mode: .microphoneOnly)
+        let output = composer.ingest(
+            sessionID: session,
+            chunk: chunk(.microphone, frame: 0, values: [Float](repeating: 0.25, count: 100_000))
+        )
+        XCTAssertLessThanOrEqual(output.count, 256)
+        XCTAssertLessThanOrEqual(composer.bufferedFrameCount, 256)
+    }
+
+    func test_invalidTimestampMetricsAreExplicitPerSource() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        composer.recordInvalidTimestamp(sessionID: session, source: .microphone)
+        composer.recordInvalidTimestamp(sessionID: session, source: .application)
+        XCTAssertEqual(composer.metrics.invalidMicrophoneTimestamps, 1)
+        XCTAssertEqual(composer.metrics.invalidApplicationTimestamps, 1)
     }
 }
 

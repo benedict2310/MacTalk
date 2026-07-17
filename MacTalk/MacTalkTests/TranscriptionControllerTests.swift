@@ -7,6 +7,7 @@
 //
 
 import XCTest
+import AudioToolbox
 import os
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
@@ -246,7 +247,7 @@ final class TranscriptionControllerTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(engine.finalizedFrameCounts, [96_000])
+        XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
 
     func test_appCallbackQueuedAfterFallbackIsRejectedBeforeConversion() async throws {
@@ -279,6 +280,132 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.finalizedFrameCounts, [])
     }
 
+    func test_controllerCountsInvalidMicrophoneAndApplicationTimestamps() async throws {
+        let capture = LifecycleCaptureSession()
+        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture)
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
+            samples: [0.2], sampleRate: 16_000, firstSampleHostTime: 0
+        ))
+        capture.appCallbacks[0](capture.appSessionIDs[0], try makeAppSampleBuffer(
+            frameCount: 1, presentationTimeStamp: .invalid
+        ))
+        XCTAssertEqual(controller.audioCompositionMetrics.invalidMicrophoneTimestamps, 1)
+        XCTAssertEqual(controller.audioCompositionMetrics.invalidApplicationTimestamps, 1)
+        controller.stop()
+    }
+
+    func test_controllerComposesSimultaneousSecondWaveformsExactly() async throws {
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        let micSamples = [Float](repeating: 0.2, count: 16_000)
+        let appSamples = [Float](repeating: 0.6, count: 16_000)
+        var waveforms: [[Float]] = []
+
+        for appFirst in [false, true] {
+            let capture = LifecycleCaptureSession()
+            let engine = WaveformTestEngine()
+            let controller = TranscriptionController(engine: engine, captureSession: capture)
+            try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+            let hostTime = AudioConvertNanosToHostTime(1_000_000_000)
+            let pts = CMTime(value: Int64(AudioConvertHostTimeToNanos(hostTime)), timescale: 1_000_000_000)
+            let mic = AudioCaptureFrame(samples: micSamples, sampleRate: 16_000, firstSampleHostTime: hostTime)
+            let app = try makeAppSampleBuffer(
+                frameCount: appSamples.count,
+                samples: appSamples,
+                presentationTimeStamp: pts
+            )
+            if appFirst {
+                capture.appCallbacks[0](capture.appSessionIDs[0], app)
+                capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], mic)
+            } else {
+                capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], mic)
+                capture.appCallbacks[0](capture.appSessionIDs[0], app)
+            }
+            controller.stop()
+            try await waitForFinalized(engine)
+            waveforms.append(try XCTUnwrap(engine.finalizedSamples))
+        }
+
+        XCTAssertEqual(waveforms[0], waveforms[1])
+        XCTAssertEqual(waveforms[0].count, 16_000)
+        XCTAssertTrue(waveforms[0].allSatisfy { abs($0 - 0.4) < 0.0001 })
+    }
+
+    func test_controllerSignalsMicReadinessBeforeApplicationAudioArrives() async throws {
+        let capture = LifecycleCaptureSession()
+        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture)
+        let ready = expectation(description: "mic ready")
+        controller.onMicrophoneReady = { ready.fulfill() }
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let hostTime = AudioConvertNanosToHostTime(1_000_000_000)
+        capture.microphoneCallbacks[0](
+            capture.microphoneSessionIDs[0],
+            AudioCaptureFrame(samples: [0.2, 0.2], sampleRate: 16_000, firstSampleHostTime: hostTime)
+        )
+        await fulfillment(of: [ready], timeout: 1)
+        controller.stop()
+    }
+
+    func test_controllerFallbackPreservesMicWaveformContinuity() async throws {
+        let capture = LifecycleCaptureSession()
+        let engine = WaveformTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        let fallback = expectation(description: "fallback")
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let firstNanos: UInt64 = 1_000_000_000
+        let firstHost = AudioConvertNanosToHostTime(firstNanos)
+        let firstPTS = CMTime(value: Int64(AudioConvertHostTimeToNanos(firstHost)), timescale: 1_000_000_000)
+        capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
+            samples: [Float](repeating: 0.2, count: 16_000), sampleRate: 16_000, firstSampleHostTime: firstHost
+        ))
+        capture.appCallbacks[0](capture.appSessionIDs[0], try makeAppSampleBuffer(
+            frameCount: 16_000,
+            samples: [Float](repeating: 0.6, count: 16_000),
+            presentationTimeStamp: firstPTS
+        ))
+        capture.triggerAppAudioError()
+        await fulfillment(of: [fallback], timeout: 1)
+        let secondHost = AudioConvertNanosToHostTime(firstNanos + 1_000_000_000)
+        capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
+            samples: [Float](repeating: 0.2, count: 16_000), sampleRate: 16_000, firstSampleHostTime: secondHost
+        ))
+        controller.stop()
+        try await waitForFinalized(engine)
+        let waveform = try XCTUnwrap(engine.finalizedSamples)
+
+        XCTAssertEqual(waveform.count, 32_000)
+        XCTAssertTrue(waveform.prefix(16_000).allSatisfy { abs($0 - 0.4) < 0.0001 })
+        XCTAssertTrue(waveform.suffix(16_000).allSatisfy { abs($0 - 0.2) < 0.0001 })
+    }
+
+    func test_controllerDrainsConverterTailIntoExactFinalWaveform() async throws {
+        let capture = LifecycleCaptureSession()
+        let engine = WaveformTestEngine()
+        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        try await controller.start(mode: .micOnly)
+        let host = AudioConvertNanosToHostTime(1_000_000_000)
+        capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 160), sampleRate: 16_000, firstSampleHostTime: host
+        ))
+        controller.stop()
+        try await waitForFinalized(engine)
+        let waveform = try XCTUnwrap(engine.finalizedSamples)
+        XCTAssertEqual(waveform.count, 160)
+        XCTAssertTrue(waveform.allSatisfy { abs($0 - 0.25) < 0.0001 })
+    }
+
+    private func waitForFinalized(_ engine: WaveformTestEngine) async throws {
+        for _ in 0..<200 {
+            if engine.finalizedSamples != nil { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("timed out waiting for final waveform")
+    }
+
     func test_appAudioFailureFallsBackToMicOnlyWithoutStoppingMicrophone() async throws {
         let captureSession = LifecycleCaptureSession()
         let controller = TranscriptionController(
@@ -305,9 +432,14 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(captureSession.microphoneCallbacks.count, 1)
     }
 
-    private func makeAppSampleBuffer(frameCount: Int) throws -> CMSampleBuffer {
+    private func makeAppSampleBuffer(
+        frameCount: Int,
+        sampleRate: Double = 16_000,
+        samples: [Float]? = nil,
+        presentationTimeStamp: CMTime = .zero
+    ) throws -> CMSampleBuffer {
         var asbd = AudioStreamBasicDescription(
-            mSampleRate: 16_000,
+            mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
             mBytesPerPacket: 4,
@@ -332,8 +464,8 @@ final class TranscriptionControllerTests: XCTestCase {
         }
 
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: 16_000),
-            presentationTimeStamp: .zero,
+            duration: CMTime(value: 1, timescale: Int32(sampleRate)),
+            presentationTimeStamp: presentationTimeStamp,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -355,7 +487,8 @@ final class TranscriptionControllerTests: XCTestCase {
         }
 
         let sampleByteCount = frameCount * MemoryLayout<Float>.size
-        var samples = [Float](repeating: 0.25, count: frameCount)
+        var samples = samples ?? [Float](repeating: 0.25, count: frameCount)
+        XCTAssertEqual(samples.count, frameCount)
         let audioBufferList = AudioBufferList.allocate(maximumBuffers: 1)
         defer { audioBufferList.unsafeMutablePointer.deallocate() }
         let setStatus = samples.withUnsafeMutableBufferPointer { samplesBuffer in
@@ -426,6 +559,26 @@ private final class LifecycleCaptureSession: @unchecked Sendable, TranscriptionC
         guard errorCallbacks.indices.contains(callbackIndex) else { return }
         errorCallbacks[callbackIndex](sessionIDs[callbackIndex], NSError(domain: "LifecycleCaptureSession", code: 1))
     }
+}
+
+private final class WaveformTestEngine: @unchecked Sendable, ASREngine {
+    let provider: ASRProvider = .whisper
+    private let lock = OSAllocatedUnfairLock(initialState: Optional<[Float]>.none)
+
+    var finalizedSamples: [Float]? {
+        lock.withLock { $0 }
+    }
+
+    func prepare() async throws {}
+    func reset() async {}
+    func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? { nil }
+    func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
+        guard let channel = buffer.floatChannelData?[0] else { return nil }
+        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        lock.withLock { $0 = samples }
+        return nil
+    }
+    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {}
 }
 
 private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {

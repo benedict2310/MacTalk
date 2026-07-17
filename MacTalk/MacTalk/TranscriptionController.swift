@@ -331,6 +331,10 @@ final class TranscriptionController: @unchecked Sendable {
         engine.provider
     }
 
+    var audioCompositionMetrics: AudioCompositionMetrics {
+        compositionPipeline.metrics
+    }
+
     func isUsingEngine(_ candidate: any ASREngine) -> Bool {
         ObjectIdentifier(engine as AnyObject) == ObjectIdentifier(candidate as AnyObject)
     }
@@ -556,11 +560,17 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func processAudioFrame(_ frame: AudioCaptureFrame, sessionID: UUID) {
-        guard audioSessionGate.accepts(sessionID), frame.firstSampleHostTime != 0 else { return }
+        guard audioSessionGate.accepts(sessionID) else { return }
+        guard let timestampNanos = UInt64ToHostNanoseconds(frame.firstSampleHostTime) else {
+            compositionPipeline.recordInvalidTimestamp(
+                sessionID: sessionID,
+                source: .microphone
+            )
+            return
+        }
         let samples = micStream.convert(samples: frame.samples, sampleRate: frame.sampleRate)
         guard audioSessionGate.accepts(sessionID) else { return }
-        guard let samples,
-              let timestampNanos = UInt64ToHostNanoseconds(frame.firstSampleHostTime) else {
+        guard let samples else {
             return
         }
 
@@ -589,11 +599,18 @@ final class TranscriptionController: @unchecked Sendable {
         appGeneration: UUID
     ) -> Int? {
         // ScreenCaptureKit can deliver queued callbacks after stopAppAudio().
-        // Reject them before touching the app stream converter.
-        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration),
-              let timestamp = AudioHostTimestamp(
-                presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-              ) else {
+        // Reject them before touching the app stream converter. Invalid PTS is
+        // a rejected callback too, but is counted for diagnostics.
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+            return nil
+        }
+        guard let timestamp = AudioHostTimestamp(
+            presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        ) else {
+            compositionPipeline.recordInvalidTimestamp(
+                sessionID: sessionID,
+                source: .application
+            )
             return nil
         }
         let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
@@ -849,13 +866,11 @@ final class TranscriptionController: @unchecked Sendable {
         // The microphone remains active, preserving an uninterrupted fallback.
         appAudioGate.stop()
         captureSession.stopAppAudio()
-        if let samples = appStream.finish(), !samples.isEmpty {
-            compositionPipeline.ingestTail(
-                sessionID: sessionID,
-                source: .application,
-                samples: samples
-            )
-        }
+        // The application source is already being retired. Its converter tail
+        // must be drained to reset converter state, but cannot extend the
+        // fallback timeline beyond the last application frame; doing so would
+        // introduce a zero gap before the next microphone callback.
+        _ = appStream.finish()
         compositionPipeline.deactivateApplication(sessionID: sessionID)
 
         // Re-check after capture shutdown; callbacks may have restarted a
