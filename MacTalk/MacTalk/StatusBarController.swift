@@ -502,8 +502,7 @@ final class StatusBarController {
         guard provider != newProvider else { return }
 
         if newProvider == .parakeet, promptForDownload {
-            let downloader = ParakeetModelDownloader()
-            if !downloader.modelsAvailable() {
+            if !ParakeetModelDownloader.modelsAvailable() {
                 showParakeetDownloadConfirmation { [weak self] approved in
                     guard let self = self else { return }
                     if approved {
@@ -807,7 +806,7 @@ final class StatusBarController {
             guard let spec = ModelCatalog.findById(selection.modelID) else { return false }
             return ModelStore.exists(spec)
         case .parakeet:
-            return ParakeetModelDownloader().modelsAvailable()
+            return ParakeetModelDownloader.modelsAvailable()
         }
     }
 
@@ -824,8 +823,7 @@ final class StatusBarController {
         case .whisper:
             prepareWhisperModel()
         case .parakeet:
-            let downloader = ParakeetModelDownloader()
-            guard downloader.modelsAvailable() else { return }
+            guard ParakeetModelDownloader.modelsAvailable() else { return }
             await prepareParakeetEngine()
         }
     }
@@ -1214,7 +1212,7 @@ final class StatusBarController {
             }
         }
 
-        let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader().modelsAvailable() : false
+        let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader.modelsAvailable() : false
         if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
             let immediateEngine = parakeetEngine ?? ParakeetEngine()
             parakeetEngine = immediateEngine

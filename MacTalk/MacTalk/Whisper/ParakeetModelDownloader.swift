@@ -7,6 +7,43 @@
 
 import Foundation
 import FluidAudio
+import Darwin
+
+private actor ParakeetStoreCoordinator {
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !held {
+            held = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.resume()
+        } else {
+            held = false
+        }
+    }
+}
+
+private enum ParakeetStoreCoordinators {
+    static let lock = NSLock()
+    nonisolated(unsafe) static var values: [String: ParakeetStoreCoordinator] = [:]
+
+    static func coordinator(for root: URL) -> ParakeetStoreCoordinator {
+        let key = root.standardizedFileURL.path
+        lock.lock(); defer { lock.unlock() }
+        if let value = values[key] { return value }
+        let value = ParakeetStoreCoordinator()
+        values[key] = value
+        return value
+    }
+}
 
 struct ParakeetManifestEntry: Codable, Hashable, Sendable {
     let path: String
@@ -114,7 +151,10 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
-        cleanupStaleArtifacts()
+        // Initializers are also used by menu availability checks. They may
+        // recover an interrupted activation, but must never remove another
+        // instance's live staging tree.
+        recoverInterruptedActivation()
     }
 
     static var modelsDirectory: URL {
@@ -125,12 +165,21 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     static var repoDirectory: URL { modelsDirectory.appendingPathComponent(folderName, isDirectory: true) }
 
     func modelsAvailable() -> Bool {
+        Self.modelsAvailable(at: root)
+    }
+
+    /// Side-effect-free availability for status/menu paths. Do not construct a
+    /// downloader merely to answer whether a verified cache exists.
+    static func modelsAvailable(at root: URL = modelsDirectory) -> Bool {
+        let directory = root.appendingPathComponent(folderName, isDirectory: true)
+        guard let raw = try? Data(contentsOf: directory.appendingPathComponent(".mactalk-manifest.json")),
+              let identity = try? JSONDecoder().decode(ManifestIdentity.self, from: raw),
+              identity.repository == repository, identity.revision == revision,
+              identity.files == manifest else { return false }
         do {
-            try validateActive()
+            try validateSet(at: directory)
             return true
-        } catch {
-            return false
-        }
+        } catch { return false }
     }
 
     @discardableResult
@@ -160,11 +209,26 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     private func performDownload(generation: Int) async throws -> URL {
-        let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        var activated = false
-        defer { if !activated { try? FileManager.default.removeItem(at: staging) } }
+        let coordinator = ParakeetStoreCoordinators.coordinator(for: root)
+        await coordinator.acquire()
         do {
+            // The lock makes this cleanup safe: no live in-process staging tree
+            // can be mistaken for stale work. It also lets a later process
+            // reclaim abandoned trees left by a crash.
+            cleanupStaleArtifacts()
+            if modelsAvailable() {
+                notifyState(.done(repoDirectory))
+                await coordinator.release()
+                return repoDirectory
+            }
+            let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            let lease = staging.appendingPathComponent(".lease")
+            try Data(ProcessInfo.processInfo.processIdentifier.description.utf8).write(to: lease, options: .atomic)
+            var activated = false
+            defer { if !activated { try? FileManager.default.removeItem(at: staging) } }
+            defer { try? FileManager.default.removeItem(at: lease) }
+            do {
             notifyState(.running(progress: 0, fileIndex: 0, fileCount: Self.manifest.count, currentFile: nil))
             for (index, entry) in Self.manifest.enumerated() {
                 try check(generation)
@@ -178,8 +242,10 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 } else {
                     (temporary, response) = try await session.download(for: request)
                 }
-                try check(generation)
+                // The temporary URL is owned by this downloader immediately;
+                // cleanup must cover cancellation and response validation too.
                 defer { try? FileManager.default.removeItem(at: temporary) }
+                try check(generation)
                 guard let http = response as? HTTPURLResponse else { throw ErrorType.invalidResponse }
                 switch http.statusCode {
                 case 401, 403: throw ErrorType.unauthorized
@@ -194,20 +260,27 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             }
             try check(generation)
             notifyState(.verifying)
+            try FileManager.default.removeItem(at: lease)
             try validateSet(at: staging)
             try writeManifest(nextTo: staging)
             try check(generation)
             try activate(staging: staging)
             activated = true
             notifyState(.done(repoDirectory))
+            await coordinator.release()
             return repoDirectory
+            } catch {
+                let wasCancelled = Task.isCancelled || self.generation != generation
+                let finalError: Error = wasCancelled ? ErrorType.cancelled : error
+                // cancel() already emitted the terminal state for an invalidated
+                // generation; stale work must not emit a second terminal event.
+                if self.generation == generation { notifyState(.failed(finalError)) }
+                throw finalError
+            }
         } catch {
-            let wasCancelled = Task.isCancelled || self.generation != generation
-            let finalError: Error = wasCancelled ? ErrorType.cancelled : error
-            // cancel() already emitted the terminal state for an invalidated
-            // generation; stale work must not emit a second terminal event.
-            if self.generation == generation { notifyState(.failed(finalError)) }
-            throw finalError
+            // Errors before staging creation still own the coordinator lease.
+            await coordinator.release()
+            throw error
         }
     }
 
@@ -234,44 +307,42 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     private func validateActive() throws {
-        try Self.validateManifest()
-        let sidecar = manifestURL(for: repoDirectory)
-        guard let data = try? Data(contentsOf: sidecar),
-              let identity = try? JSONDecoder().decode(ManifestIdentity.self, from: data),
-              identity.repository == Self.repository, identity.revision == Self.revision,
-              identity.files == Self.manifest else { throw ErrorType.invalidManifest }
-        try validateSet(at: repoDirectory)
+        guard Self.modelsAvailable(at: root) else { throw ErrorType.invalidManifest }
     }
 
-    private func validateSet(at directory: URL) throws {
+    private static func validateSet(at directory: URL) throws {
         var expected = Set<String>()
-        for entry in Self.manifest {
-            let file = try safeURL(entry.path, under: directory)
+        for entry in manifest {
+            let file = directory.appendingPathComponent(entry.path)
+            try validatePath(entry.path)
             expected.insert(entry.path)
-            guard isRegularFile(file), !isSymlink(file) else { throw ErrorType.symlink(entry.path) }
+            guard isRegularFileAt(file), !isSymlinkAt(file) else { throw ErrorType.symlink(entry.path) }
             try verify(source: file, entry: entry)
         }
-        // The identity sidecar is part of the activated tree, but not a model
-        // payload entry. Exact-set validation explicitly accounts for it.
-        expected.insert(manifestFileName)
+        expected.insert(".mactalk-manifest.json")
         guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else { throw ErrorType.invalidManifest }
         for case let file as URL in enumerator {
-            if isSymlink(file) { throw ErrorType.symlink(relative(file, from: directory)) }
+            if isSymlinkAt(file) { throw ErrorType.symlink(file.path) }
             let values = try file.resourceValues(forKeys: [.isDirectoryKey])
             if values.isDirectory == false {
-                let path = relative(file, from: directory)
+                let prefix = directory.standardizedFileURL.path + "/"
+                let path = String(file.standardizedFileURL.path.dropFirst(prefix.count))
                 guard expected.contains(path) else { throw ErrorType.unexpectedFile(path) }
             }
         }
     }
 
-    private func verify(source: URL, entry: ParakeetManifestEntry) throws {
+    private func validateSet(at directory: URL) throws { try Self.validateSet(at: directory) }
+
+    private static func verify(source: URL, entry: ParakeetManifestEntry) throws {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: source.path),
               let size = (attrs[.size] as? NSNumber)?.int64Value, size == entry.size,
               let digest = try? SHA256Streamer.hashFile(at: source), digest == entry.sha256 else {
             throw ErrorType.corruptFile(entry.path)
         }
     }
+
+    private func verify(source: URL, entry: ParakeetManifestEntry) throws { try Self.verify(source: source, entry: entry) }
 
     private struct ManifestIdentity: Codable, Equatable {
         let repository: String
@@ -293,18 +364,24 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         let manager = FileManager.default
         let backup = root.appendingPathComponent(".backup-\(UUID().uuidString)")
         var movedOld = false
+        if manager.fileExists(atPath: repoDirectory.path) {
+            try manager.moveItem(at: repoDirectory, to: backup)
+            movedOld = true
+        }
         do {
-            if manager.fileExists(atPath: repoDirectory.path) {
-                try manager.moveItem(at: repoDirectory, to: backup)
-                movedOld = true
-            }
             try manager.moveItem(at: staging, to: repoDirectory)
-            if movedOld { try? manager.removeItem(at: backup) }
         } catch {
-            try? manager.removeItem(at: repoDirectory)
-            if movedOld { try? manager.moveItem(at: backup, to: repoDirectory) }
+            // The old tree is the rollback boundary. If an activation race
+            // left anything at the active path, remove that failed new tree
+            // and restore the previously verified backup.
+            if movedOld {
+                try? manager.removeItem(at: repoDirectory)
+                try? manager.moveItem(at: backup, to: repoDirectory)
+            }
             throw error
         }
+        // A verified active tree now exists. The backup is no longer needed.
+        if movedOld { try? manager.removeItem(at: backup) }
     }
 
     private func safeURL(_ path: String, under root: URL) throws -> URL {
@@ -323,15 +400,18 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         if components.contains(where: { $0.isEmpty }) { throw ErrorType.pathTraversal(path) }
     }
 
-    private func isRegularFile(_ url: URL) -> Bool {
+    private static func isRegularFileAt(_ url: URL) -> Bool {
         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else { return false }
         return values.isRegularFile == true
     }
 
-    private func isSymlink(_ url: URL) -> Bool {
+    private static func isSymlinkAt(_ url: URL) -> Bool {
         guard let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]) else { return false }
         return values.isSymbolicLink == true
     }
+
+    private func isRegularFile(_ url: URL) -> Bool { Self.isRegularFileAt(url) }
+    private func isSymlink(_ url: URL) -> Bool { Self.isSymlinkAt(url) }
 
     private func relative(_ url: URL, from root: URL) -> String {
         let prefix = root.standardizedFileURL.path + "/"
@@ -349,10 +429,48 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         return request
     }
 
+    private func recoverInterruptedActivation() {
+        guard !FileManager.default.fileExists(atPath: repoDirectory.path),
+              let items = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        let backups = items.filter { $0.lastPathComponent.hasPrefix(".backup-") }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        for backup in backups {
+            do {
+                try Self.validateSet(at: backup)
+                try FileManager.default.moveItem(at: backup, to: repoDirectory)
+                break
+            } catch {
+                try? FileManager.default.removeItem(at: backup)
+            }
+        }
+    }
+
     private func cleanupStaleArtifacts() {
         guard let items = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
-        for item in items where item.lastPathComponent.hasPrefix(".staging-") || item.lastPathComponent.hasPrefix(".backup-") {
+        // This runs only while the per-root coordinator is held. Constructors
+        // intentionally do not call it, so availability checks cannot delete a
+        // transfer owned by another instance. A live lease from another
+        // process is retained; only an owner whose process has disappeared is
+        // reclaimable.
+        for item in items where item.lastPathComponent.hasPrefix(".staging-") {
+            let lease = item.appendingPathComponent(".lease")
+            guard let data = try? Data(contentsOf: lease),
+                  let text = String(data: data, encoding: .utf8),
+                  let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                try? FileManager.default.removeItem(at: item)
+                continue
+            }
+            if pid != ProcessInfo.processInfo.processIdentifier && kill(pid, 0) == 0 {
+                continue
+            }
             try? FileManager.default.removeItem(at: item)
+        }
+        // Never discard a backup while the active tree is absent: it is the
+        // recovery boundary for a crash between the two activation renames.
+        if FileManager.default.fileExists(atPath: repoDirectory.path) {
+            for item in items where item.lastPathComponent.hasPrefix(".backup-") {
+                try? FileManager.default.removeItem(at: item)
+            }
         }
     }
 

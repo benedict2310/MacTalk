@@ -15,7 +15,9 @@ private final class WhisperDownloadDelegate: NSObject, URLSessionDownloadDelegat
                 lock.lock(); continuations[task.taskIdentifier] = continuation; tasks[task.taskIdentifier] = task; lock.unlock()
                 task.resume()
             }
-        }, onCancel: {})
+        }, onCancel: { [weak self] in
+            self?.cancelAll()
+        })
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
@@ -156,8 +158,13 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     func start(spec: ModelSpec) {
+        // URLSession's transfer is owned by this downloader, so replacing an
+        // operation must cancel it rather than merely suppressing its result.
         operation?.cancel()
         generation += 1
+        // Invalidate the old generation before URLSession invokes its
+        // cancellation continuation, preventing stale resume bytes/state.
+        delegate?.cancelAll()
         let currentGeneration = generation
         cancelledGeneration = nil
 
@@ -191,9 +198,9 @@ final class ModelDownloader: @unchecked Sendable {
 
     func cancel() {
         guard operation != nil else { return }
-        delegate?.cancelAll()
         generation += 1
         let cancelled = generation
+        delegate?.cancelAll()
         cancelledGeneration = cancelled
         operation?.cancel()
         operation = nil
@@ -204,57 +211,82 @@ final class ModelDownloader: @unchecked Sendable {
         var lastError: Error?
         for (index, url) in spec.urls.enumerated() {
             guard isCurrent(generation), !Task.isCancelled else { return }
-            do {
-                // Persist the complete identity before starting a transfer. A
-                // future resume may only use state matching every field.
-                saveResumeState(for: spec, mirrorURL: url)
-                let request = authorizedRequest(url: url)
-                let resumeData = loadResumeData(for: spec, mirrorURL: url)
-                let temporaryURL: URL
-                let response: URLResponse
-                if let resumableTaskFactory {
-                    let result = try await resumableTaskFactory(request, resumeData)
-                    temporaryURL = result.0
-                    response = result.1
-                    if let data = result.2 { saveResumeData(data, for: spec, mirrorURL: url) }
-                } else if let taskFactory {
-                    (temporaryURL, response) = try await taskFactory(request)
-                } else if let delegate {
-                    let result = try await delegate.download(using: session, request: request, resumeData: resumeData)
-                    temporaryURL = result.0
-                    response = result.1
-                    if let data = result.2 { saveResumeData(data, for: spec, mirrorURL: url) }
-                } else {
-                    (temporaryURL, response) = try await session.download(for: request)
-                }
-                guard isCurrent(generation), !Task.isCancelled else {
-                    try? FileManager.default.removeItem(at: temporaryURL)
-                    return
-                }
-                guard let http = response as? HTTPURLResponse else {
-                    throw ErrorType.network(URLError(.badServerResponse))
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    throw ErrorType.httpStatus(http.statusCode)
-                }
 
-                notifyState(.verifying, generation: generation)
-                try ModelIntegrityVerifier.verifyAndMove(source: temporaryURL, destination: destination, spec: spec)
-                clearResumeState(for: spec)
-                notifyState(.done(destination), generation: generation)
-                operation = nil
-                return
-            } catch {
-                lastError = error
-                if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-                    saveResumeData(resumeData, for: spec, mirrorURL: url)
-                }
+            // Read and validate the old envelope before writing anything. In
+            // particular, never pair opaque resume bytes with a newly written
+            // identity (the opaque request may still target the old mirror).
+            var resumeData = loadResumeData(for: spec, mirrorURL: url)
+            var retriedWithoutResume = false
+            while true {
                 guard isCurrent(generation), !Task.isCancelled else { return }
-                // Mirror fallback is only allowed while this generation is live.
-                if index + 1 < spec.urls.count {
+                do {
+                    let request = authorizedRequest(url: url)
+                    let temporaryURL: URL
+                    let response: URLResponse
+                    if let resumableTaskFactory {
+                        let result = try await resumableTaskFactory(request, resumeData)
+                        temporaryURL = result.0
+                        response = result.1
+                        if let data = result.2 {
+                            saveResumeData(data, for: spec, mirrorURL: url)
+                        }
+                    } else if let taskFactory {
+                        (temporaryURL, response) = try await taskFactory(request)
+                    } else if let delegate {
+                        let result = try await delegate.download(using: session, request: request, resumeData: resumeData)
+                        temporaryURL = result.0
+                        response = result.1
+                        if let data = result.2 {
+                            saveResumeData(data, for: spec, mirrorURL: url)
+                        }
+                    } else {
+                        (temporaryURL, response) = try await session.download(for: request)
+                    }
+
+                    // URLSession hands ownership of this temporary file to us.
+                    // Install cleanup immediately, before inspecting response or
+                    // generation, so every HTTP/invalid/cancel/error path cleans it.
+                    defer { try? FileManager.default.removeItem(at: temporaryURL) }
+                    guard isCurrent(generation), !Task.isCancelled else { return }
+                    guard let http = response as? HTTPURLResponse else {
+                        throw ErrorType.network(URLError(.badServerResponse))
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        throw ErrorType.httpStatus(http.statusCode)
+                    }
+
+                    notifyState(.verifying, generation: generation)
+                    try ModelIntegrityVerifier.verifyAndMove(source: temporaryURL, destination: destination, spec: spec)
                     clearResumeState(for: spec)
-                    continue
+                    notifyState(.done(destination), generation: generation)
+                    operation = nil
+                    return
+                } catch {
+                    lastError = error
+                    if isCurrent(generation), !Task.isCancelled,
+                       let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                        saveResumeData(data, for: spec, mirrorURL: url)
+                    }
+                    guard isCurrent(generation), !Task.isCancelled else { return }
+
+                    // Resume data is opaque and can be malformed, truncated,
+                    // or internally bound to a retired request. A failed
+                    // resumed transfer gets exactly one clean attempt on this
+                    // same mirror before fallback is considered.
+                    if resumeData != nil, !retriedWithoutResume {
+                        clearResumeState(for: spec)
+                        resumeData = nil
+                        retriedWithoutResume = true
+                        continue
+                    }
+                    break
                 }
+            }
+
+            guard isCurrent(generation), !Task.isCancelled else { return }
+            if index + 1 < spec.urls.count {
+                clearResumeState(for: spec)
+                continue
             }
         }
         guard isCurrent(generation) else { return }
@@ -279,58 +311,59 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
-    private struct ResumeMetadata: Codable {
+    private struct ResumeMetadata: Codable, Equatable {
         let id: String
+        let source: String
         let revision: String
         let digest: String
         let size: Int64
         let mirrorURL: String
     }
 
+    /// Metadata and opaque URLSession bytes are one atomic envelope. Keeping
+    /// them in separate files permits a crash to pair identity A with bytes B.
+    private struct ResumeEnvelope: Codable {
+        let metadata: ResumeMetadata
+        let resumeData: Data
+    }
+
     /// Resume identity is all artifact identity, not merely a filename or URL.
     private func clearResumeState(for spec: ModelSpec) {
         try? FileManager.default.removeItem(at: resumeURL(for: spec))
-        try? FileManager.default.removeItem(at: metadataURL(for: spec))
+        // Remove the pre-envelope sidecar too, so old crash-skewed state can
+        // never be interpreted as current resume state.
+        try? FileManager.default.removeItem(at: downloadsRoot.appendingPathComponent("\(spec.id).resume.json"))
     }
 
     private func resumeURL(for spec: ModelSpec) -> URL {
         downloadsRoot.appendingPathComponent("\(spec.id).resume")
     }
 
-    private func metadataURL(for spec: ModelSpec) -> URL {
-        downloadsRoot.appendingPathComponent("\(spec.id).resume.json")
-    }
-
     private func saveResumeData(_ data: Data, for spec: ModelSpec, mirrorURL: URL) {
-        saveResumeState(for: spec, mirrorURL: mirrorURL)
-        try? data.write(to: resumeURL(for: spec), options: .atomic)
+        let metadata = ResumeMetadata(id: spec.id, source: spec.source, revision: spec.revision,
+                                      digest: spec.sha256, size: spec.sizeBytes,
+                                      mirrorURL: mirrorURL.absoluteString)
+        let envelope = ResumeEnvelope(metadata: metadata, resumeData: data)
+        guard let encoded = try? JSONEncoder().encode(envelope) else { return }
+        // Data.write(.atomic) replaces the single envelope, never exposing a
+        // metadata/bytes pair assembled by two independent writes.
+        try? encoded.write(to: resumeURL(for: spec), options: .atomic)
     }
 
     private func loadResumeData(for spec: ModelSpec, mirrorURL: URL) -> Data? {
-        guard let data = try? Data(contentsOf: resumeURL(for: spec)),
-              let raw = try? Data(contentsOf: metadataURL(for: spec)),
-              let metadata = try? JSONDecoder().decode(ResumeMetadata.self, from: raw),
-              metadata.id == spec.id, metadata.revision == spec.revision,
-              metadata.digest == spec.sha256, metadata.size == spec.sizeBytes,
-              metadata.mirrorURL == mirrorURL.absoluteString else {
-            try? FileManager.default.removeItem(at: resumeURL(for: spec))
-            try? FileManager.default.removeItem(at: metadataURL(for: spec))
+        guard let raw = try? Data(contentsOf: resumeURL(for: spec)),
+              let envelope = try? JSONDecoder().decode(ResumeEnvelope.self, from: raw),
+              envelope.metadata.id == spec.id,
+              envelope.metadata.source == spec.source,
+              envelope.metadata.revision == spec.revision,
+              envelope.metadata.digest == spec.sha256,
+              envelope.metadata.size == spec.sizeBytes,
+              envelope.metadata.mirrorURL == mirrorURL.absoluteString,
+              !envelope.resumeData.isEmpty else {
+            clearResumeState(for: spec)
             return nil
         }
-        return data
-    }
-
-    private func saveResumeState(for spec: ModelSpec, mirrorURL: URL) {
-        let metadata = ResumeMetadata(id: spec.id, revision: spec.revision, digest: spec.sha256,
-                                      size: spec.sizeBytes, mirrorURL: mirrorURL.absoluteString)
-        guard let data = try? JSONEncoder().encode(metadata) else { return }
-        let url = metadataURL(for: spec)
-        let temporary = url.appendingPathExtension("tmp-\(UUID().uuidString)")
-        do {
-            try data.write(to: temporary, options: .atomic)
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-            try FileManager.default.moveItem(at: temporary, to: url)
-        } catch { try? FileManager.default.removeItem(at: temporary) }
+        return envelope.resumeData
     }
 
     static func request(for url: URL, token: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]

@@ -65,11 +65,19 @@ final class ModelIntegrityTests: XCTestCase {
     }
 
     func test_modelDownloaderRejectsMissingDigestBeforeStartingDownload() async {
-        let downloader = ModelDownloader()
-        let expectation = expectation(description: "missing digest rejected")
+        let modelsRoot = directory.appendingPathComponent("models")
+        let downloadsRoot = directory.appendingPathComponent("downloads")
+        let requestStarted = expectation(description: "network must not start")
+        requestStarted.isInverted = true
+        let downloader = ModelDownloader(modelRoot: modelsRoot, downloadsRoot: downloadsRoot,
+                                         taskFactory: { _ in
+            requestStarted.fulfill()
+            throw URLError(.badURL)
+        })
+        let rejected = expectation(description: "missing digest rejected")
         downloader.onState = { state in
             if case .failed(ModelDownloader.ErrorType.badChecksum) = state {
-                expectation.fulfill()
+                rejected.fulfill()
             }
         }
         downloader.start(spec: makeSpec(
@@ -78,7 +86,7 @@ final class ModelIntegrityTests: XCTestCase {
             url: URL(string: "https://example.invalid/never-requested.bin")!
         ))
 
-        await fulfillment(of: [expectation], timeout: 1)
+        await fulfillment(of: [rejected, requestStarted], timeout: 1)
     }
 
     func test_wrongSizeIsRejectedBeforeDestinationReplacement() throws {

@@ -30,6 +30,17 @@ final class NativeWhisperEngineTests: XCTestCase {
         XCTAssertNil(NativeWhisperEngine(modelSpec: fixtureSpec(), modelURL: url))
     }
 
+    func test_nativeBoundaryRejectsSymlinkModel() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("symlink-\(UUID().uuidString)")
+        let target = directory.appendingPathComponent("target.bin")
+        let link = directory.appendingPathComponent("model.bin")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(repeating: 0, count: 1).write(to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try ModelIntegrityVerifier.openValidated(source: link, spec: fixtureSpec()))
+    }
+
     private func fixtureSpec() -> ModelSpec {
         ModelSpec(id: "fixture", displayName: "Fixture", filename: "fixture.bin",
                   sha256: String(repeating: "a", count: 64), sizeBytes: 1,
