@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Darwin
 @preconcurrency import AVFoundation
 
 /// Swift wrapper around whisper.cpp C API for audio transcription.
@@ -32,14 +33,21 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         let processingTime: TimeInterval
     }
 
-    init?(modelURL: URL) {
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            DLOG("Whisper model file is unavailable")
+    /// The catalog specification is mandatory at the native boundary. The
+    /// verifier hashes the same O_NOFOLLOW descriptor that is passed to
+    /// whisper.cpp through /dev/fd, rather than re-opening a mutable path.
+    init?(modelSpec: ModelSpec, modelURL: URL) {
+        let fd: Int32
+        do {
+            fd = try ModelIntegrityVerifier.openValidated(source: modelURL, spec: modelSpec)
+        } catch {
+            DLOG("Whisper model failed native-boundary validation")
             return nil
         }
+        defer { close(fd) }
 
-        let cPath = (modelURL.path as NSString).utf8String
-        guard let path = cPath, let context = wt_whisper_init(path) else {
+        let fdPath = "/dev/fd/\(fd)"
+        guard let context = wt_whisper_init(fdPath) else {
             DLOG("Whisper context initialization failed")
             return nil
         }

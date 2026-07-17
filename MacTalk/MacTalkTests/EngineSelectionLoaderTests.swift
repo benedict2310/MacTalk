@@ -26,7 +26,7 @@ final class EngineSelectionLoaderTests: XCTestCase {
                 throw ModelDownloader.ErrorType.badChecksum
             },
             modelPath: { _ in fixture },
-            whisperEngineFactory: { _ in
+            whisperEngineFactory: { _, _ in
                 probe.engineInitializationCount += 1
                 return UninitializedFakeEngine()
             }
@@ -50,7 +50,7 @@ final class EngineSelectionLoaderTests: XCTestCase {
         let probe = LoaderProbe()
         let loader = DefaultEngineSelectionLoader(
             modelPath: { _ in fixture },
-            whisperEngineFactory: { _ in
+            whisperEngineFactory: { _, _ in
                 probe.engineInitializationCount += 1
                 return UninitializedFakeEngine()
             }

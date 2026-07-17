@@ -2,7 +2,7 @@ import Foundation
 
 struct DefaultEngineSelectionLoader: EngineSelectionLoader {
     typealias IntegrityValidator = @Sendable (URL, ModelSpec) throws -> Void
-    typealias WhisperEngineFactory = @Sendable (URL) -> (any ASREngine)?
+    typealias WhisperEngineFactory = @Sendable (ModelSpec, URL) -> (any ASREngine)?
 
     private let integrityValidator: IntegrityValidator
     private let modelPath: @Sendable (ModelSpec) -> URL
@@ -15,8 +15,8 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
         modelPath: @escaping @Sendable (ModelSpec) -> URL = { spec in
             ModelStore.path(for: spec)
         },
-        whisperEngineFactory: @escaping WhisperEngineFactory = { url in
-            NativeWhisperEngine(modelURL: url)
+        whisperEngineFactory: @escaping WhisperEngineFactory = { spec, url in
+            NativeWhisperEngine(modelSpec: spec, modelURL: url)
         }
     ) {
         self.integrityValidator = integrityValidator
@@ -45,7 +45,7 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
                 ])
             }
 
-            guard let engine = whisperEngineFactory(modelURL) else {
+            guard let engine = whisperEngineFactory(spec, modelURL) else {
                 throw NSError(domain: "MacTalk.EngineSelection", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "The selected Whisper model could not be initialized."
                 ])

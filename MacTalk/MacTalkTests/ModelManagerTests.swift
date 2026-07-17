@@ -18,6 +18,16 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(Set(models.map(\.filename)).count, models.count)
     }
 
+    func test_whisperAuthorizationIsOnlySentToOfficialHTTPSOrigin() {
+        let token = "test-token"
+        let official = ModelDownloader.request(for: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/rev/model.bin")!, token: token)
+        let mirror = ModelDownloader.request(for: URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/rev/model.bin")!, token: token)
+        let redirected = ModelDownloader.request(for: URL(string: "https://evil.example/redirect")!, token: token)
+        XCTAssertEqual(official.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+        XCTAssertNil(mirror.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"))
+    }
+
     func test_everyBundledModelHasDownloadMetadata() {
         for model in ModelCatalog.bundled() {
             XCTAssertGreaterThan(model.sizeBytes, 0, model.id)

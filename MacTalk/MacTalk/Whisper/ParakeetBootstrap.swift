@@ -41,6 +41,9 @@ final class ParakeetBootstrap: @unchecked Sendable {
     private let downloader = ParakeetModelDownloader()
 
     private init() {
+        // FluidAudio must never repair or replace MacTalk's verified tree.
+        // Set this before any AsrModels/ModelHub API can be touched.
+        ModelHub.offlineMode = true
         downloader.onState = { [weak self] state in
             self?.handleDownloadState(state)
         }
@@ -129,7 +132,11 @@ final class ParakeetBootstrap: @unchecked Sendable {
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
 
-        let modelsPath = ParakeetModelDownloader.repoDirectory
+        ModelHub.offlineMode = true
+        // AsrModels receives the parent cache root and derives
+        // Repo.parakeetV3.folderName, which is exactly the downloader's active
+        // directory (parakeet-tdt-0.6b-v3).
+        let modelsPath = downloader.repoDirectory
         let models = try await AsrModels.load(from: modelsPath, configuration: config, version: .v3)
 
         let manager = AsrManager()

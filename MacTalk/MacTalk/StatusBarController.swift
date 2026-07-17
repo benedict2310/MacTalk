@@ -625,7 +625,7 @@ final class StatusBarController {
                 guard let self else { return }
                 if isValid {
                     guard self.provider == .whisper else { return }
-                    if let loadedEngine = NativeWhisperEngine(modelURL: url) {
+                    if let loadedEngine = NativeWhisperEngine(modelSpec: spec, modelURL: url) {
                         self.adoptLoadedEngine(
                             loadedEngine,
                             selection: .whisper(spec)
@@ -686,7 +686,7 @@ final class StatusBarController {
             self?.setStartItemsEnabled(true)
             switch result {
             case .success(let url):
-                if self?.provider == .whisper, let loadedEngine = NativeWhisperEngine(modelURL: url) {
+                if self?.provider == .whisper, let loadedEngine = NativeWhisperEngine(modelSpec: spec, modelURL: url) {
                     self?.adoptLoadedEngine(
                         loadedEngine,
                         selection: .whisper(spec)

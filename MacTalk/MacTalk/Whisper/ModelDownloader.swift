@@ -1,9 +1,83 @@
 import Foundation
 
+private final class WhisperDownloadDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+    private let root: URL
+    private let lock = NSLock()
+    private var continuations: [Int: CheckedContinuation<(URL, URLResponse, Data?), Error>] = [:]
+    private var tasks: [Int: URLSessionDownloadTask] = [:]
+
+    init(root: URL) { self.root = root }
+
+    func download(using session: URLSession, request: URLRequest, resumeData: Data?) async throws -> (URL, URLResponse, Data?) {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse, Data?), Error>) in
+                let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: request)
+                lock.lock(); continuations[task.taskIdentifier] = continuation; tasks[task.taskIdentifier] = task; lock.unlock()
+                task.resume()
+            }
+        }, onCancel: {})
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        let target = root.appendingPathComponent(".resume-result-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: location, to: target)
+            lock.lock(); let continuation = continuations.removeValue(forKey: downloadTask.taskIdentifier); tasks.removeValue(forKey: downloadTask.taskIdentifier); lock.unlock()
+            if let continuation, let response = downloadTask.response { continuation.resume(returning: (target, response, nil)) }
+        } catch {
+            lock.lock(); let continuation = continuations.removeValue(forKey: downloadTask.taskIdentifier); tasks.removeValue(forKey: downloadTask.taskIdentifier); lock.unlock()
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return }
+        lock.lock(); let continuation = continuations.removeValue(forKey: task.taskIdentifier); tasks.removeValue(forKey: task.taskIdentifier); lock.unlock()
+        guard let continuation else { return }
+        let nsError = error as NSError
+        let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData]
+        var info = nsError.userInfo
+        if let resumeData { info[NSURLSessionDownloadTaskResumeData] = resumeData }
+        continuation.resume(throwing: NSError(domain: nsError.domain, code: nsError.code, userInfo: info))
+    }
+
+    func cancelAll() {
+        lock.lock(); let active = Array(tasks.values); lock.unlock()
+        for task in active {
+            task.cancel(byProducingResumeData: { [weak self] data in
+                guard let self else { return }
+                self.lock.lock()
+                let continuation = self.continuations.removeValue(forKey: task.taskIdentifier)
+                self.tasks.removeValue(forKey: task.taskIdentifier)
+                self.lock.unlock()
+                guard let continuation else { return }
+                var info: [String: Any] = [:]
+                if let data { info[NSURLSessionDownloadTaskResumeData] = data }
+                continuation.resume(throwing: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled, userInfo: info))
+            })
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        var safe = request
+        if safe.url?.scheme?.lowercased() != "https" || safe.url?.host != "huggingface.co" {
+            safe.setValue(nil, forHTTPHeaderField: "Authorization")
+        }
+        completionHandler(safe)
+    }
+}
+
 /// Downloader for immutable Whisper artifacts. All cache reads pass through the
 /// same verifier used after a download; a path existing is never success.
 final class ModelDownloader: @unchecked Sendable {
     typealias DownloadTaskFactory = @Sendable (URLRequest) async throws -> (URL, URLResponse)
+    /// Test and production adapters may provide URLSession's actual resumeData.
+    typealias ResumableDownloadTaskFactory = @Sendable (URLRequest, Data?) async throws -> (URL, URLResponse, Data?)
     enum State: Equatable, Sendable {
         case idle
         case running(progress: Double)
@@ -50,6 +124,8 @@ final class ModelDownloader: @unchecked Sendable {
     private let modelRoot: URL
     private let downloadsRoot: URL
     private let taskFactory: DownloadTaskFactory?
+    private let resumableTaskFactory: ResumableDownloadTaskFactory?
+    private let delegate: WhisperDownloadDelegate?
     private var operation: Task<Void, Never>?
     private var generation = 0
     private var cancelledGeneration: Int?
@@ -57,20 +133,25 @@ final class ModelDownloader: @unchecked Sendable {
     /// Roots and URLSession are injectable so tests never touch the user's
     /// model directory or the network. URLSession may use a custom URLProtocol.
     init(session: URLSession? = nil, modelRoot: URL? = nil, downloadsRoot: URL? = nil,
-         taskFactory: DownloadTaskFactory? = nil) {
+         taskFactory: DownloadTaskFactory? = nil,
+         resumableTaskFactory: ResumableDownloadTaskFactory? = nil) {
         self.modelRoot = modelRoot ?? ModelStore.modelsDir
         self.downloadsRoot = downloadsRoot ?? self.modelRoot.appendingPathComponent(".downloads", isDirectory: true)
         self.taskFactory = taskFactory
+        self.resumableTaskFactory = resumableTaskFactory
         try? FileManager.default.createDirectory(at: self.modelRoot, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         if let session {
             self.session = session
+            self.delegate = nil
         } else {
             let configuration = URLSessionConfiguration.default
             configuration.allowsExpensiveNetworkAccess = true
             configuration.waitsForConnectivity = true
             configuration.httpMaximumConnectionsPerHost = 2
-            self.session = URLSession(configuration: configuration)
+            let delegate = WhisperDownloadDelegate(root: self.downloadsRoot)
+            self.delegate = delegate
+            self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         }
     }
 
@@ -110,6 +191,7 @@ final class ModelDownloader: @unchecked Sendable {
 
     func cancel() {
         guard operation != nil else { return }
+        delegate?.cancelAll()
         generation += 1
         let cancelled = generation
         cancelledGeneration = cancelled
@@ -127,10 +209,21 @@ final class ModelDownloader: @unchecked Sendable {
                 // future resume may only use state matching every field.
                 saveResumeState(for: spec, mirrorURL: url)
                 let request = authorizedRequest(url: url)
+                let resumeData = loadResumeData(for: spec, mirrorURL: url)
                 let temporaryURL: URL
                 let response: URLResponse
-                if let taskFactory {
+                if let resumableTaskFactory {
+                    let result = try await resumableTaskFactory(request, resumeData)
+                    temporaryURL = result.0
+                    response = result.1
+                    if let data = result.2 { saveResumeData(data, for: spec, mirrorURL: url) }
+                } else if let taskFactory {
                     (temporaryURL, response) = try await taskFactory(request)
+                } else if let delegate {
+                    let result = try await delegate.download(using: session, request: request, resumeData: resumeData)
+                    temporaryURL = result.0
+                    response = result.1
+                    if let data = result.2 { saveResumeData(data, for: spec, mirrorURL: url) }
                 } else {
                     (temporaryURL, response) = try await session.download(for: request)
                 }
@@ -153,6 +246,9 @@ final class ModelDownloader: @unchecked Sendable {
                 return
             } catch {
                 lastError = error
+                if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                    saveResumeData(resumeData, for: spec, mirrorURL: url)
+                }
                 guard isCurrent(generation), !Task.isCancelled else { return }
                 // Mirror fallback is only allowed while this generation is live.
                 if index + 1 < spec.urls.count {
@@ -205,6 +301,25 @@ final class ModelDownloader: @unchecked Sendable {
         downloadsRoot.appendingPathComponent("\(spec.id).resume.json")
     }
 
+    private func saveResumeData(_ data: Data, for spec: ModelSpec, mirrorURL: URL) {
+        saveResumeState(for: spec, mirrorURL: mirrorURL)
+        try? data.write(to: resumeURL(for: spec), options: .atomic)
+    }
+
+    private func loadResumeData(for spec: ModelSpec, mirrorURL: URL) -> Data? {
+        guard let data = try? Data(contentsOf: resumeURL(for: spec)),
+              let raw = try? Data(contentsOf: metadataURL(for: spec)),
+              let metadata = try? JSONDecoder().decode(ResumeMetadata.self, from: raw),
+              metadata.id == spec.id, metadata.revision == spec.revision,
+              metadata.digest == spec.sha256, metadata.size == spec.sizeBytes,
+              metadata.mirrorURL == mirrorURL.absoluteString else {
+            try? FileManager.default.removeItem(at: resumeURL(for: spec))
+            try? FileManager.default.removeItem(at: metadataURL(for: spec))
+            return nil
+        }
+        return data
+    }
+
     private func saveResumeState(for spec: ModelSpec, mirrorURL: URL) {
         let metadata = ResumeMetadata(id: spec.id, revision: spec.revision, digest: spec.sha256,
                                       size: spec.sizeBytes, mirrorURL: mirrorURL.absoluteString)
@@ -218,14 +333,17 @@ final class ModelDownloader: @unchecked Sendable {
         } catch { try? FileManager.default.removeItem(at: temporary) }
     }
 
-    private func authorizedRequest(url: URL) -> URLRequest {
+    static func request(for url: URL, token: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
+                        ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
+                        ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"]) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("MacTalk/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
-        if let token = ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
-            ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"] {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        guard url.scheme?.lowercased() == "https", url.host == "huggingface.co" else { return request }
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
+    }
+
+    private func authorizedRequest(url: URL) -> URLRequest {
+        Self.request(for: url)
     }
 }

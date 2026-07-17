@@ -99,19 +99,22 @@ final class ParakeetModelDownloader: @unchecked Sendable {
 
     var onState: (@MainActor (State) -> Void)?
     let repoDirectory: URL
+    /// Must stay in lockstep with FluidAudio's Repo.parakeetV3.folderName.
+    static let folderName = Repo.parakeetV3.folderName
     private let session: URLSession
     private let taskFactory: DownloadTaskFactory?
     private let root: URL
-    private var operation: Task<Void, Never>?
-    private var cancelRequested = false
+    private var operation: Task<URL, Error>?
+    private var generation = 0
 
     init(session: URLSession = .shared, modelsRoot: URL? = nil, repoDirectory: URL? = nil,
          taskFactory: DownloadTaskFactory? = nil) {
         self.session = session
         self.taskFactory = taskFactory
         self.root = modelsRoot ?? Self.modelsDirectory
-        self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.repository.replacingOccurrences(of: "/", with: "-"), isDirectory: true)
+        self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
+        cleanupStaleArtifacts()
     }
 
     static var modelsDirectory: URL {
@@ -119,7 +122,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         return base.appendingPathComponent("MacTalk/Parakeet", isDirectory: true)
     }
 
-    static var repoDirectory: URL { modelsDirectory.appendingPathComponent(repository.replacingOccurrences(of: "/", with: "-"), isDirectory: true) }
+    static var repoDirectory: URL { modelsDirectory.appendingPathComponent(folderName, isDirectory: true) }
 
     func modelsAvailable() -> Bool {
         do {
@@ -137,15 +140,34 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             notifyState(.done(repoDirectory))
             return repoDirectory
         }
-
         operation?.cancel()
-        cancelRequested = false
+        generation += 1
+        let currentGeneration = generation
+        let task = Task { [weak self] () throws -> URL in
+            guard let self else { throw ErrorType.cancelled }
+            return try await self.performDownload(generation: currentGeneration)
+        }
+        operation = task
+        defer { if self.generation == currentGeneration { self.operation = nil } }
+        return try await task.value
+    }
+
+    func cancel() {
+        generation += 1
+        operation?.cancel()
+        operation = nil
+        notifyState(.failed(ErrorType.cancelled))
+    }
+
+    private func performDownload(generation: Int) async throws -> URL {
         let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        var activated = false
+        defer { if !activated { try? FileManager.default.removeItem(at: staging) } }
         do {
             notifyState(.running(progress: 0, fileIndex: 0, fileCount: Self.manifest.count, currentFile: nil))
             for (index, entry) in Self.manifest.enumerated() {
-                if cancelRequested || Task.isCancelled { throw ErrorType.cancelled }
+                try check(generation)
                 let target = try safeURL(entry.path, under: staging)
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let url = URL(string: "https://huggingface.co/\(Self.repository)/resolve/\(Self.revision)/\(entry.path)")!
@@ -156,6 +178,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 } else {
                     (temporary, response) = try await session.download(for: request)
                 }
+                try check(generation)
+                defer { try? FileManager.default.removeItem(at: temporary) }
                 guard let http = response as? HTTPURLResponse else { throw ErrorType.invalidResponse }
                 switch http.statusCode {
                 case 401, 403: throw ErrorType.unauthorized
@@ -164,27 +188,31 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 default: throw ErrorType.downloadFailed(entry.path)
                 }
                 try verify(source: temporary, entry: entry)
+                try check(generation)
                 try FileManager.default.moveItem(at: temporary, to: target)
                 notifyState(.running(progress: Double(index + 1) / Double(Self.manifest.count), fileIndex: index + 1, fileCount: Self.manifest.count, currentFile: entry.path))
             }
+            try check(generation)
             notifyState(.verifying)
             try validateSet(at: staging)
             try writeManifest(nextTo: staging)
+            try check(generation)
             try activate(staging: staging)
+            activated = true
             notifyState(.done(repoDirectory))
             return repoDirectory
         } catch {
-            try? FileManager.default.removeItem(at: staging)
-            notifyState(.failed(error))
-            throw error
+            let wasCancelled = Task.isCancelled || self.generation != generation
+            let finalError: Error = wasCancelled ? ErrorType.cancelled : error
+            // cancel() already emitted the terminal state for an invalidated
+            // generation; stale work must not emit a second terminal event.
+            if self.generation == generation { notifyState(.failed(finalError)) }
+            throw finalError
         }
     }
 
-    func cancel() {
-        cancelRequested = true
-        operation?.cancel()
-        operation = nil
-        notifyState(.failed(ErrorType.cancelled))
+    private func check(_ expectedGeneration: Int) throws {
+        guard !Task.isCancelled, self.generation == expectedGeneration else { throw ErrorType.cancelled }
     }
 
     /// Validates the fixed manifest itself, including path safety and duplicate rejection.
@@ -223,6 +251,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             guard isRegularFile(file), !isSymlink(file) else { throw ErrorType.symlink(entry.path) }
             try verify(source: file, entry: entry)
         }
+        // The identity sidecar is part of the activated tree, but not a model
+        // payload entry. Exact-set validation explicitly accounts for it.
+        expected.insert(manifestFileName)
         guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else { throw ErrorType.invalidManifest }
         for case let file as URL in enumerator {
             if isSymlink(file) { throw ErrorType.symlink(relative(file, from: directory)) }
@@ -254,7 +285,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         try data.write(to: url, options: .atomic)
     }
 
-    private func manifestURL(for directory: URL) -> URL { directory.appendingPathExtension("manifest.json") }
+    private let manifestFileName = ".mactalk-manifest.json"
+
+    private func manifestURL(for directory: URL) -> URL { directory.appendingPathComponent(manifestFileName) }
 
     private func activate(staging: URL) throws {
         let manager = FileManager.default
@@ -307,12 +340,20 @@ final class ParakeetModelDownloader: @unchecked Sendable {
 
     private func authorizedRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
+        guard url.scheme?.lowercased() == "https", url.host == "huggingface.co" else { return request }
         if let token = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
             ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"] {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         return request
+    }
+
+    private func cleanupStaleArtifacts() {
+        guard let items = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        for item in items where item.lastPathComponent.hasPrefix(".staging-") || item.lastPathComponent.hasPrefix(".backup-") {
+            try? FileManager.default.removeItem(at: item)
+        }
     }
 
     private func notifyState(_ state: State) {

@@ -16,6 +16,8 @@ final class ModelProvenanceTests: XCTestCase {
     func test_parakeetManifestIsCompleteAndPinned() throws {
         XCTAssertEqual(ParakeetModelDownloader.manifest.count, 21)
         XCTAssertEqual(ParakeetModelDownloader.revision, "aed02740059203c4a87495924f685de3722ae9ce")
+        XCTAssertEqual(ParakeetModelDownloader.fluidAudioRevision, "19600a485baa4998812e4654b70d2bab8f2c9949")
+        XCTAssertEqual(ParakeetModelDownloader.folderName, "parakeet-tdt-0.6b-v3")
         XCTAssertEqual(ParakeetModelDownloader.manifest.reduce(0) { $0 + $1.size }, 483_105_645)
         try ParakeetModelDownloader.validateManifest()
     }

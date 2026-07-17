@@ -66,6 +66,8 @@ enum ModelCatalog {
         ]
     }
 
+    /// The first URL is the provenance authority. The second is only a
+    /// byte-source fallback; credentials are deliberately never sent there.
     private static func pinnedURLs(filename: String) -> [URL] {
         [
             URL(string: "https://huggingface.co/\(source)/resolve/\(revision)/\(filename)")!,
