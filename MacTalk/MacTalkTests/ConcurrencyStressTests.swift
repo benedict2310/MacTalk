@@ -47,6 +47,16 @@ final class ConcurrencyStressTests: XCTestCase {
         XCTAssertEqual(frame?.sessionID, staleSession)
         XCTAssertEqual(frame?.frame.samples, [0.25, 0.25, 0.25, 0.25])
         XCTAssertEqual(frame?.frame.sampleRate, 48_000)
+        XCTAssertEqual(frame?.frame.firstSampleHostTime, 1)
+
+        let timestamped = OwnedAudioRing(slotCount: 3, maxFrames: 4)
+        XCTAssertTrue(timestamped.push(
+            buffer: source,
+            sampleRate: 48_000,
+            sessionID: staleSession,
+            firstSampleHostTime: 987_654_321
+        ))
+        XCTAssertEqual(timestamped.pop()?.frame.firstSampleHostTime, 987_654_321)
         XCTAssertEqual(ring.droppedCount, 1)
         XCTAssertNil(ring.pop())
     }
@@ -118,6 +128,24 @@ final class ConcurrencyStressTests: XCTestCase {
         _ = coordinator.push(buffer: followUp, sampleRate: 48_000, sessionID: UUID())
         XCTAssertEqual(scheduler.scheduledCount, 2)
         XCTAssertEqual(scheduler.pendingCount, 1)
+    }
+
+    func test_invalidMicrophoneHostTimeIsDropped() {
+        let scheduler = ManualDrainScheduler()
+        let coordinator = AudioCaptureDeliveryCoordinator(
+            slotCount: 3,
+            maxFramesPerBuffer: 4,
+            schedule: scheduler.schedule,
+            delivery: { _, _ in XCTFail("invalid timestamp must not be delivered") }
+        )
+        let source = makeConstantPCMBuffer(sampleRate: 16_000, channels: 1, frameCount: 4)
+        XCTAssertFalse(coordinator.push(
+            buffer: source,
+            sampleRate: 16_000,
+            sessionID: UUID(),
+            firstSampleHostTime: 0
+        ))
+        XCTAssertEqual(coordinator.droppedBufferCount, 1)
     }
 
     func test_audioCaptureDrainDoesNotLoseBufferEnqueuedDuringDelivery() {

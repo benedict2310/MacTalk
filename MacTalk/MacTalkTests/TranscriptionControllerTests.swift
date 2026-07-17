@@ -130,6 +130,11 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(captureSession.appCallbacks.count, 2)
         captureSession.appCallbacks[0](captureSession.sessionIDs[1], sampleBuffer)
         captureSession.appCallbacks[1](captureSession.sessionIDs[3], sampleBuffer)
+        captureSession.microphoneCallbacks[1](captureSession.microphoneSessionIDs[1], AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 24_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: 1
+        ))
         controller.stop()
 
         for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
@@ -230,6 +235,11 @@ final class TranscriptionControllerTests: XCTestCase {
                 }
             }
         }
+        captureSession.microphoneCallbacks[1](captureSession.microphoneSessionIDs[1], AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 96_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: 1
+        ))
         controller.stop()
 
         for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {

@@ -9,6 +9,24 @@
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 
+extension AudioHostTimestamp {
+    /// ScreenCaptureKit audio PTS is already in the host-clock timeline. Keep
+    /// it integer and reject invalid/indefinite timestamps rather than using
+    /// callback arrival time.
+    init?(presentationTimeStamp: CMTime) {
+        guard presentationTimeStamp.isNumeric else { return nil }
+        let converted = CMTimeConvertScale(
+            presentationTimeStamp,
+            timescale: 1_000_000_000,
+            method: .roundHalfAwayFromZero
+        )
+        guard converted.isNumeric, let nanos = Int64(exactly: converted.value) else {
+            return nil
+        }
+        self.init(nanoseconds: nanos)
+    }
+}
+
 /// App/System audio capture via ScreenCaptureKit.
 ///
 /// Every SCStream gets an immutable output adapter. This avoids callback
@@ -18,6 +36,12 @@
 final class ScreenAudioCapture: NSObject, @unchecked Sendable {
     private let streamLock = NSLock()
     private var stream: SCStream?
+    /// ScreenCaptureKit callbacks for one source must stay ordered because its
+    /// resampler is stateful. The adapter still carries its immutable session
+    /// token, so queued callbacks remain safe across replacement.
+    private let sampleHandlerQueue = DispatchQueue(
+        label: "com.mactalk.screen-audio.samples", qos: .userInitiated
+    )
 
     private final class OutputAdapter: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
         let sessionID: UUID
@@ -156,7 +180,7 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
             try stream.addStreamOutput(
                 adapter,
                 type: .audio,
-                sampleHandlerQueue: .global(qos: .userInitiated)
+                sampleHandlerQueue: sampleHandlerQueue
             )
 
             let stillCurrent = streamLock.withLock { self.stream === stream }

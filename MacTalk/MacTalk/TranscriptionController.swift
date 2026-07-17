@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AudioToolbox
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
@@ -40,6 +41,12 @@ final class AudioSessionGate: @unchecked Sendable {
         return activeSession == session
     }
 
+}
+
+private func UInt64ToHostNanoseconds(_ hostTime: UInt64) -> Int64? {
+    guard hostTime != 0 else { return nil }
+    let nanos = AudioConvertHostTimeToNanos(hostTime)
+    return Int64(exactly: nanos)
 }
 
 enum TranscriptCleaner {
@@ -223,6 +230,19 @@ final class TranscriptionController: @unchecked Sendable {
     /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
     /// can invalidate that stream without interrupting the microphone session.
     private let appAudioGate = AudioSessionGate()
+    /// The sole append path for both sources. Its queue is independent from
+    /// audioState, avoiding lock-order inversions at callback boundaries.
+    private lazy var compositionPipeline = SerializedAudioCompositionPipeline(
+        emit: { [weak self] sessionID, samples in
+            self?.appendSamples(samples, sessionID: sessionID, allowStopping: true)
+        },
+        microphoneReady: { [weak self] sessionID in
+            guard let self, self.audioSessionGate.accepts(sessionID) else { return }
+            if let onMicrophoneReady = self.onMicrophoneReady {
+                Task { @MainActor in onMicrophoneReady() }
+            }
+        }
+    )
 
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
@@ -269,6 +289,7 @@ final class TranscriptionController: @unchecked Sendable {
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?  // Callback when app audio is lost
+    var onMicrophoneReady: (@Sendable @MainActor () -> Void)?
     var onFallbackToMicOnly: (@Sendable @MainActor () -> Void)?  // Callback when falling back to mic-only
     var onFinalizationComplete: (@Sendable @MainActor () -> Void)?
     var autoPasteEnabled = false
@@ -372,6 +393,10 @@ final class TranscriptionController: @unchecked Sendable {
             state.chunkProcessingTail = nil
             state.isStopping = false
         }
+        compositionPipeline.reset(
+            sessionID: sessionID,
+            mode: recordingMode == .micPlusAppAudio ? .microphoneAndApplication : .microphoneOnly
+        )
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
@@ -448,12 +473,16 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
         captureSession.stop()
-        finishAudioStreams()
+        // The capture handoff is bounded but asynchronous. Give its delivery
+        // worker a chance to drain, then route both converter tails through the
+        // same composer before final inference.
         // Keep the controller alive through final inference and clipboard delivery.
         Task { [self] in
             // Capture the final in-flight microphone buffer without a noticeable delay.
             try? await Task.sleep(nanoseconds: UInt64(tailDrainMs) * 1_000_000)
 
+            finishAudioStreams(sessionID: sessionID)
+            compositionPipeline.finish(sessionID: sessionID)
             await cancelPendingChunkTasks(sessionID: sessionID)
             await flushFinalChunk(sessionID: sessionID)
 
@@ -492,7 +521,7 @@ final class TranscriptionController: @unchecked Sendable {
         appAudioGate.stop()
         captureSession.stop()
 
-        return audioState.withLock { state in
+        let sessionID = audioState.withLock { state in
             let sessionID = state.sessionID
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
@@ -502,24 +531,36 @@ final class TranscriptionController: @unchecked Sendable {
             state.isStopping = false
             return sessionID
         }
+        compositionPipeline.cancel(sessionID: sessionID)
+        return sessionID
     }
 
     // MARK: - Audio Processing
 
-    private func finishAudioStreams() {
+    private func finishAudioStreams(sessionID: UUID) {
+        guard audioState.withLock({ $0.sessionID == sessionID && $0.isStopping }) else { return }
         if let samples = micStream.finish(), !samples.isEmpty {
-            appendSamples(samples, allowStopping: true)
+            compositionPipeline.ingestTail(
+                sessionID: sessionID,
+                source: .microphone,
+                samples: samples
+            )
         }
         if let samples = appStream.finish(), !samples.isEmpty {
-            appendSamples(samples, allowStopping: true)
+            compositionPipeline.ingestTail(
+                sessionID: sessionID,
+                source: .application,
+                samples: samples
+            )
         }
     }
 
     private func processAudioFrame(_ frame: AudioCaptureFrame, sessionID: UUID) {
-        guard audioSessionGate.accepts(sessionID) else { return }
+        guard audioSessionGate.accepts(sessionID), frame.firstSampleHostTime != 0 else { return }
         let samples = micStream.convert(samples: frame.samples, sampleRate: frame.sampleRate)
         guard audioSessionGate.accepts(sessionID) else { return }
-        guard let samples else {
+        guard let samples,
+              let timestampNanos = UInt64ToHostNanoseconds(frame.firstSampleHostTime) else {
             return
         }
 
@@ -531,7 +572,14 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples, sessionID: sessionID)
+        compositionPipeline.ingest(
+            sessionID: sessionID,
+            chunk: TimedAudioChunk(
+                source: .microphone,
+                start: AudioHostTimestamp(nanoseconds: timestampNanos),
+                samples: samples
+            )
+        )
     }
 
     @discardableResult
@@ -542,7 +590,10 @@ final class TranscriptionController: @unchecked Sendable {
     ) -> Int? {
         // ScreenCaptureKit can deliver queued callbacks after stopAppAudio().
         // Reject them before touching the app stream converter.
-        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration),
+              let timestamp = AudioHostTimestamp(
+                presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+              ) else {
             return nil
         }
         let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
@@ -561,7 +612,10 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples, sessionID: sessionID)
+        compositionPipeline.ingest(
+            sessionID: sessionID,
+            chunk: TimedAudioChunk(source: .application, start: timestamp, samples: samples)
+        )
         return samples.count
     }
 
@@ -795,6 +849,14 @@ final class TranscriptionController: @unchecked Sendable {
         // The microphone remains active, preserving an uninterrupted fallback.
         appAudioGate.stop()
         captureSession.stopAppAudio()
+        if let samples = appStream.finish(), !samples.isEmpty {
+            compositionPipeline.ingestTail(
+                sessionID: sessionID,
+                source: .application,
+                samples: samples
+            )
+        }
+        compositionPipeline.deactivateApplication(sessionID: sessionID)
 
         // Re-check after capture shutdown; callbacks may have restarted a
         // session while ScreenCaptureKit was stopping.

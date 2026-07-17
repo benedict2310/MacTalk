@@ -6,6 +6,7 @@
 //
 
 @preconcurrency import AVFoundation
+import AudioToolbox
 import Synchronization
 import os
 
@@ -18,6 +19,15 @@ import os
 struct AudioCaptureFrame: Sendable, Equatable {
     let samples: [Float]
     let sampleRate: Double
+    /// Host time of the first frame in `samples`. Zero means invalid and is
+    /// rejected by the delivery worker; it is never replaced with wall time.
+    let firstSampleHostTime: UInt64
+
+    init(samples: [Float], sampleRate: Double, firstSampleHostTime: UInt64 = 1) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.firstSampleHostTime = firstSampleHostTime
+    }
 }
 
 /// Coalesces delivery scheduling for a bounded audio handoff.
@@ -48,8 +58,17 @@ final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
     }
 
     @discardableResult
-    func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID) -> Bool {
-        guard queue.push(buffer: buffer, sampleRate: sampleRate, sessionID: sessionID) else {
+    func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID, firstSampleHostTime: UInt64 = 1) -> Bool {
+        guard firstSampleHostTime != 0 else {
+            queue.recordDrop()
+            return false
+        }
+        guard queue.push(
+            buffer: buffer,
+            sampleRate: sampleRate,
+            sessionID: sessionID,
+            firstSampleHostTime: firstSampleHostTime
+        ) else {
             return false
         }
         requestDrain()
@@ -57,6 +76,10 @@ final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
     }
 
     var droppedBufferCount: UInt64 { queue.droppedCount }
+
+    func recordDroppedBuffer() {
+        queue.recordDrop()
+    }
 
     private func requestDrain() {
         let result = state.compareExchange(
@@ -148,12 +171,23 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         deliveryCoordinator = coordinator
 
         input.installTap(onBus: bus, bufferSize: AVAudioFrameCount(maxFramesPerBuffer), format: format) {
-            [weak self] buffer, _ in
-            guard let self else { return }
+            [weak self] buffer, time in
+            guard self != nil else { return }
             // This is the complete render-thread handoff. No AVAudio object
             // escapes into scheduled work; the bounded queue applies drop-newest
             // backpressure and coalesces the delivery schedule.
-            _ = coordinator.push(buffer: buffer, sampleRate: sampleRate, sessionID: sessionID)
+            // Copying the raw host ticks is part of the bounded render-thread
+            // handoff. Conversion to nanoseconds happens on delivery.
+            guard time.isHostTimeValid else {
+                coordinator.recordDroppedBuffer()
+                return
+            }
+            _ = coordinator.push(
+                buffer: buffer,
+                sampleRate: sampleRate,
+                sessionID: sessionID,
+                firstSampleHostTime: time.hostTime
+            )
         }
         engine.prepare()
 
@@ -196,6 +230,7 @@ final class OwnedAudioRing: @unchecked Sendable {
         var count = 0
         var sampleRate = 0.0
         var sessionID = UUID()
+        var firstSampleHostTime: UInt64 = 1
 
         init(capacity: Int) {
             samples = .allocate(capacity: capacity)
@@ -221,8 +256,17 @@ final class OwnedAudioRing: @unchecked Sendable {
 
     var droppedCount: UInt64 { dropped.load(ordering: .acquiring) }
 
+    func recordDrop() {
+        dropped.wrappingAdd(1, ordering: .relaxed)
+    }
+
     /// Called only by the render thread. AVAudioPCMBuffer is read only here.
-    func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID = UUID()) -> Bool {
+    func push(
+        buffer: AVAudioPCMBuffer,
+        sampleRate: Double,
+        sessionID: UUID = UUID(),
+        firstSampleHostTime: UInt64 = 1
+    ) -> Bool {
         let count = Int(buffer.frameLength)
         guard count > 0, count <= maxFrames, let channels = buffer.floatChannelData else {
             dropped.wrappingAdd(1, ordering: .relaxed)
@@ -244,6 +288,7 @@ final class OwnedAudioRing: @unchecked Sendable {
         slot.count = count
         slot.sampleRate = sampleRate
         slot.sessionID = sessionID
+        slot.firstSampleHostTime = firstSampleHostTime
         producerIndex.store(next, ordering: .releasing)
         return true
     }
@@ -261,7 +306,8 @@ final class OwnedAudioRing: @unchecked Sendable {
         let slot = slots[consumer]
         let frame = AudioCaptureFrame(
             samples: Array(UnsafeBufferPointer(start: slot.samples.baseAddress, count: slot.count)),
-            sampleRate: slot.sampleRate
+            sampleRate: slot.sampleRate,
+            firstSampleHostTime: slot.firstSampleHostTime
         )
         let sessionID = slot.sessionID
         consumerIndex.store((consumer + 1) % slots.count, ordering: .releasing)
