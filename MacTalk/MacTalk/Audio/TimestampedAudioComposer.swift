@@ -123,6 +123,25 @@ struct AudioTimelineComposer: Sendable {
     var hasMicrophoneAnchor: Bool { epoch != nil }
     var bufferedFrameCount: Int { sources.values.reduce(0) { $0 + $1.samples.count } }
 
+    /// True when composition has retained media that cannot yet be emitted
+    /// without a cross-source arrival-expiry decision. This is deliberately a
+    /// data-availability signal only; elapsed time belongs to the serialized
+    /// pipeline's monotonic arrival clock.
+    var isWaitingForCounterpart: Bool {
+        guard mode == .microphoneAndApplication, epoch != nil,
+              let microphone = sources[.microphone],
+              let application = sources[.application],
+              maxPlacedEnd() > outputCursor else { return false }
+        guard microphone.hasInput, application.hasInput,
+              let microphoneEnd = microphone.latestObservedEnd,
+              let applicationEnd = application.latestObservedEnd else {
+            return true
+        }
+        return microphoneEnd != applicationEnd
+    }
+
+    var hasPendingOutput: Bool { maxPlacedEnd() > outputCursor }
+
     mutating func reset(sessionID: UUID, mode: AudioCompositionMode) {
         self.sessionID = sessionID
         self.mode = mode
@@ -199,6 +218,22 @@ struct AudioTimelineComposer: Sendable {
             sessionID: sessionID,
             chunk: TimedAudioChunk(source: source, start: timestamp, samples: samples)
         )
+    }
+
+    /// Expires the current bounded arrival-lateness window. The media
+    /// timestamp timeline is unchanged: this only permits the available
+    /// source coverage to render, with the other source contributing silence.
+    /// Callers that need wall-clock policy must decide when to call `tick`.
+    mutating func tick(sessionID: UUID) -> [Float] {
+        guard self.sessionID == sessionID,
+              mode == .microphoneAndApplication else { return [] }
+        return render(until: maxPlacedEnd())
+    }
+
+    /// Descriptive alias for callers that model expiry rather than periodic
+    /// ticking. Both APIs intentionally share the same bounded behavior.
+    mutating func expire(sessionID: UUID) -> [Float] {
+        tick(sessionID: sessionID)
     }
 
     mutating func deactivateApplication(sessionID: UUID) -> [Float] {
@@ -448,68 +483,200 @@ struct AudioTimelineComposer: Sendable {
     }
 }
 
+/// A cancellable operation returned by `AudioCompositionScheduler`.
+protocol AudioCompositionScheduledTask: Sendable {
+    func cancel()
+}
+
+/// Schedules callbacks against a monotonic uptime deadline. Tests inject a
+/// manual implementation; production uses `DispatchTime` rather than wall
+/// clock/calendar time.
+protocol AudioCompositionScheduler: Sendable {
+    func schedule(
+        deadlineNanoseconds: UInt64,
+        operation: @escaping @Sendable () -> Void
+    ) -> any AudioCompositionScheduledTask
+}
+
+private final class DispatchCompositionScheduledTask: AudioCompositionScheduledTask, @unchecked Sendable {
+    private let workItem: DispatchWorkItem
+
+    init(workItem: DispatchWorkItem) {
+        self.workItem = workItem
+    }
+
+    func cancel() {
+        workItem.cancel()
+    }
+}
+
+private struct DispatchAudioCompositionScheduler: AudioCompositionScheduler {
+    private let queue = DispatchQueue(label: "com.mactalk.audio-composition-timers", qos: .userInitiated)
+
+    func schedule(
+        deadlineNanoseconds: UInt64,
+        operation: @escaping @Sendable () -> Void
+    ) -> any AudioCompositionScheduledTask {
+        let workItem = DispatchWorkItem(block: operation)
+        queue.asyncAfter(
+            deadline: DispatchTime(uptimeNanoseconds: deadlineNanoseconds),
+            execute: workItem
+        )
+        return DispatchCompositionScheduledTask(workItem: workItem)
+    }
+}
+
 /// Serializes composition and emission across microphone and ScreenCaptureKit
 /// callback queues. Every operation completes before its caller returns.
+/// Arrival lateness is intentionally owned here, not inferred from media PTS.
 final class SerializedAudioCompositionPipeline: @unchecked Sendable {
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<Void>()
     private var composer: AudioTimelineComposer
+    private let configuration: AudioCompositionConfiguration
+    private let arrivalClock: @Sendable () -> UInt64
+    private let scheduler: any AudioCompositionScheduler
+    private var expiryTask: (any AudioCompositionScheduledTask)?
+    private var expiryGeneration = UUID()
     private let emit: @Sendable (UUID, [Float]) -> Void
     private let microphoneReady: @Sendable (UUID) -> Void
 
     init(
         configuration: AudioCompositionConfiguration = AudioCompositionConfiguration(),
+        arrivalClock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        scheduler: any AudioCompositionScheduler = DispatchAudioCompositionScheduler(),
         emit: @escaping @Sendable (UUID, [Float]) -> Void,
         microphoneReady: @escaping @Sendable (UUID) -> Void = { _ in }
     ) {
-        queue = DispatchQueue(label: "com.mactalk.audio-composition", qos: .userInitiated)
-        composer = AudioTimelineComposer(configuration: configuration)
+        let queue = DispatchQueue(label: "com.mactalk.audio-composition", qos: .userInitiated)
+        queue.setSpecific(key: queueKey, value: ())
+        self.queue = queue
+        self.composer = AudioTimelineComposer(configuration: configuration)
+        self.configuration = configuration
+        self.arrivalClock = arrivalClock
+        self.scheduler = scheduler
         self.emit = emit
         self.microphoneReady = microphoneReady
     }
 
     func reset(sessionID: UUID, mode: AudioCompositionMode) {
-        queue.sync { composer.reset(sessionID: sessionID, mode: mode) }
+        onQueue {
+            cancelExpiry()
+            composer.reset(sessionID: sessionID, mode: mode)
+        }
     }
 
     func ingest(sessionID: UUID, chunk: TimedAudioChunk) {
-        queue.sync {
+        // Capture arrival before entering the serialization queue. The media
+        // timestamp in `chunk` remains untouched and is never used as a clock.
+        let arrival = arrivalClock()
+        onQueue {
             let wasReady = composer.hasMicrophoneAnchor
             let output = composer.ingest(sessionID: sessionID, chunk: chunk)
             if !wasReady && composer.hasMicrophoneAnchor { microphoneReady(sessionID) }
             if !output.isEmpty { emit(sessionID, output) }
+            updateExpiry(sessionID: sessionID, arrivalNanoseconds: arrival)
         }
     }
 
     func ingestTail(sessionID: UUID, source: AudioCompositionSource, samples: [Float]) {
-        queue.sync {
+        onQueue {
             let output = composer.ingestTail(sessionID: sessionID, source: source, samples: samples)
             if !output.isEmpty { emit(sessionID, output) }
+            updateExpiry(sessionID: sessionID, arrivalNanoseconds: arrivalClock())
         }
     }
 
+    /// Explicitly advances the composer without consulting media timestamps.
+    /// This is useful for deterministic schedulers and for a final bounded
+    /// timer callback.
+    func tick(sessionID: UUID) {
+        onQueue { tickOnQueue(sessionID: sessionID, nowNanoseconds: arrivalClock()) }
+    }
+
     func deactivateApplication(sessionID: UUID) {
-        queue.sync {
+        onQueue {
+            cancelExpiry()
             let output = composer.deactivateApplication(sessionID: sessionID)
             if !output.isEmpty { emit(sessionID, output) }
         }
     }
 
     func finish(sessionID: UUID) {
-        queue.sync {
+        onQueue {
+            cancelExpiry()
             let output = composer.finish(sessionID: sessionID)
             if !output.isEmpty { emit(sessionID, output) }
         }
     }
 
     func cancel(sessionID: UUID) {
-        queue.sync { composer.cancel(sessionID: sessionID) }
+        onQueue {
+            cancelExpiry()
+            composer.cancel(sessionID: sessionID)
+        }
     }
 
     func recordInvalidTimestamp(sessionID: UUID, source: AudioCompositionSource) {
-        queue.sync { composer.recordInvalidTimestamp(sessionID: sessionID, source: source) }
+        onQueue { composer.recordInvalidTimestamp(sessionID: sessionID, source: source) }
     }
 
     var metrics: AudioCompositionMetrics {
-        queue.sync { composer.metrics }
+        onQueue { composer.metrics }
+    }
+
+    private func updateExpiry(sessionID: UUID, arrivalNanoseconds: UInt64) {
+        guard composer.isWaitingForCounterpart,
+              composer.hasPendingOutput,
+              configuration.maximumLatenessFrames > 0 else {
+            cancelExpiry()
+            return
+        }
+        guard expiryTask == nil else { return }
+        let delay = UInt64(configuration.maximumLatenessFrames)
+            .multipliedReportingOverflow(by: 1_000_000_000 / UInt64(configuration.sampleRate))
+        let boundedDelay = delay.overflow ? 250_000_000 : delay.partialValue
+        let deadline = arrivalNanoseconds > UInt64.max - boundedDelay
+            ? UInt64.max
+            : arrivalNanoseconds + boundedDelay
+        let generation = UUID()
+        expiryGeneration = generation
+        expiryTask = scheduler.schedule(deadlineNanoseconds: deadline) { [weak self] in
+            self?.expiryFired(sessionID: sessionID, generation: generation, deadlineNanoseconds: deadline)
+        }
+    }
+
+    private func expiryFired(sessionID: UUID, generation: UUID, deadlineNanoseconds: UInt64) {
+        onQueue {
+            guard generation == expiryGeneration else { return }
+            expiryTask = nil
+            let now = arrivalClock()
+            guard now >= deadlineNanoseconds else {
+                // A scheduler may wake early; retain one task for the same
+                // deadline rather than allowing timer accumulation.
+                updateExpiry(sessionID: sessionID, arrivalNanoseconds: now)
+                return
+            }
+            tickOnQueue(sessionID: sessionID, nowNanoseconds: now)
+        }
+    }
+
+    private func tickOnQueue(sessionID: UUID, nowNanoseconds: UInt64) {
+        let output = composer.tick(sessionID: sessionID)
+        if !output.isEmpty { emit(sessionID, output) }
+        updateExpiry(sessionID: sessionID, arrivalNanoseconds: nowNanoseconds)
+    }
+
+    private func cancelExpiry() {
+        expiryTask?.cancel()
+        expiryTask = nil
+        expiryGeneration = UUID()
+    }
+
+    private func onQueue<T>(_ operation: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return operation()
+        }
+        return queue.sync(execute: operation)
     }
 }

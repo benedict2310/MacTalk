@@ -253,6 +253,10 @@ final class TranscriptionController: @unchecked Sendable {
     private let diagnosticsQueue = DispatchQueue(label: "com.mactalk.audio.diagnostics", qos: .utility)
     private let audioDiagnosticsEnabled = false
     private let audioDiagnosticsInterval: TimeInterval = 1.0
+    /// Inert unless MACTALK_AUDIO_HARDWARE_VALIDATION_LOG is explicitly set.
+    /// This records timestamp metadata only; samples and transcript text never
+    /// enter the validation file.
+    private let hardwareValidationRecorder: AudioHardwareValidationRecorder
 
     /// Audio buffer state protected by OSAllocatedUnfairLock.
     private struct PendingChunkTask {
@@ -312,6 +316,7 @@ final class TranscriptionController: @unchecked Sendable {
         self.micStream = mixer.makeStream()
         self.appStream = mixer.makeStream()
         self.engine = engine
+        self.hardwareValidationRecorder = AudioHardwareValidationRecorder.fromEnvironment()
         self.audioState = OSAllocatedUnfairLock(
             initialState: AudioState(chunkDuration: chunkDurationMs, language: "en")
         )
@@ -574,6 +579,12 @@ final class TranscriptionController: @unchecked Sendable {
             return
         }
 
+        hardwareValidationRecorder.recordMicrophone(
+            sessionID: sessionID,
+            hostNanoseconds: timestampNanos,
+            sampleCount: samples.count
+        )
+
         // Update microphone level
         let micLevel = levelMonitor.update(channel: .microphone, buffer: samples)
         if let onMicLevel {
@@ -604,8 +615,9 @@ final class TranscriptionController: @unchecked Sendable {
         guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
             return nil
         }
+        let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard let timestamp = AudioHostTimestamp(
-            presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            presentationTimeStamp: presentationTimeStamp
         ) else {
             compositionPipeline.recordInvalidTimestamp(
                 sessionID: sessionID,
@@ -620,6 +632,14 @@ final class TranscriptionController: @unchecked Sendable {
         guard let samples else {
             return nil
         }
+
+        hardwareValidationRecorder.recordApplication(
+            sessionID: sessionID,
+            ptsValue: presentationTimeStamp.value,
+            ptsTimescale: presentationTimeStamp.timescale,
+            mappedHostNanoseconds: timestamp.nanoseconds,
+            sampleCount: samples.count
+        )
 
         // Update app audio level
         let appLevel = levelMonitor.update(channel: .application, buffer: samples)
@@ -843,6 +863,10 @@ final class TranscriptionController: @unchecked Sendable {
     private func handleAppAudioError(_ error: Error, sessionID: UUID) {
         guard audioSessionGate.accepts(sessionID) else { return }
         DebugLogger.shared.log(.error(description: error.localizedDescription))
+        hardwareValidationRecorder.recordApplicationLoss(
+            sessionID: sessionID,
+            error: error.localizedDescription
+        )
 
         // Notify that app audio was lost
         if let onAppAudioLost {
