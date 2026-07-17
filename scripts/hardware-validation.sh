@@ -11,13 +11,17 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# Keep app selection aligned with build.sh so validation launches the bundle
+# produced by the completed Release build, not an arbitrary stale artifact.
+# shellcheck disable=SC1091
+source "$ROOT/scripts/build_helpers.sh"
+CONFIGURATION="Release"
 LOG_PATH="${MACTALK_AUDIO_HARDWARE_VALIDATION_LOG:-$ROOT/build/hardware-validation/audio.csv}"
 mkdir -p "$(dirname "$LOG_PATH")"
 
 # build.sh's Release path is signed and fails closed if no identity is present.
 ./build.sh build
-APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/MacTalk.app' -print | head -n 1)"
-if [[ -z "$APP_PATH" ]]; then
+if ! APP_PATH="$(resolve_latest_mactalk_app_path "$HOME/Library/Developer/Xcode/DerivedData" "$CONFIGURATION")"; then
   echo "No signed Release MacTalk.app found." >&2
   exit 1
 fi
