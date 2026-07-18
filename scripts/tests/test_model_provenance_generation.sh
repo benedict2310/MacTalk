@@ -4,11 +4,17 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GENERATOR="$ROOT/scripts/generate-model-provenance.py"
 CANONICAL="$ROOT/Config/ModelProvenance/model-provenance.v1.json"
 GENERATED="$ROOT/MacTalk/MacTalk/Whisper/GeneratedModelProvenance.swift"
+SECURITY_CHECKS="$ROOT/scripts/ci-security-checks.sh"
 
-for path in "$GENERATOR" "$CANONICAL" "$GENERATED"; do
+for path in "$GENERATOR" "$CANONICAL" "$GENERATED" "$SECURITY_CHECKS"; do
   test -f "$path" || { echo "missing provenance artifact: $path" >&2; exit 1; }
 done
 python3 "$GENERATOR" --root "$ROOT" --check
+
+grep -Fq 'bash scripts/tests/test_model_provenance_generation.sh' "$SECURITY_CHECKS" || {
+  echo 'security checker does not execute the provenance negative fixture suite' >&2
+  exit 1
+}
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-provenance-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -84,9 +90,8 @@ restore_fixture
 printf 'x' >> "$tmp/docs/security/model-provenance/parakeet_vocab.json"
 expect_failure vocabulary-sha python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
 
-# RED fixtures for the Task-1 review blockers. These currently pass because the
-# generator does not yet bind compiled LFS entries, regular-file bytes, or the
-# evidence index to the generated tuples.
+# Negative fixtures for the Task-1 review blockers. These fail closed when
+# compiled LFS entries, regular-file bytes, or the evidence index drift.
 restore_fixture
 python3 - "$tmp/docs/security/model-provenance/parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-001.json" <<'PY'
 import json, sys

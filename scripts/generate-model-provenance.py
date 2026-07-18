@@ -7,9 +7,7 @@ import hashlib
 import json
 import re
 import sys
-import tempfile
 from pathlib import Path
-from urllib.parse import quote
 
 WHISPER_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1"
 PARAKEET_REVISION = "aed02740059203c4a87495924f685de3722ae9ce"
