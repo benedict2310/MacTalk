@@ -61,6 +61,8 @@ jobs:
           test "$(xcodegen --version | awk 'NR == 1 {print $NF}')" = "$XCODEGEN_VERSION"
       - name: Verify semantic CI contract
         run: bash scripts/tests/test_ci_workflow_semantics.sh
+      - name: Verify deterministic test selection
+        run: bash scripts/tests/test_deterministic_test_selection.sh
       - name: Verify coverage summary schema
         run: bash scripts/tests/test_coverage_summary.sh
       - name: Verify reproducible project generation
