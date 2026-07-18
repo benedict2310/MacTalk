@@ -39,6 +39,44 @@ final class PermissionFlowCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.refresh(storedAutoPaste: true).effectiveAutoPaste)
     }
 
+    func test_systemAccessibilityPromptCompletesForGrant() async {
+        let client = SystemPermissionClient(
+            accessibilityTimeout: 1,
+            accessibilityPromptRequester: { completion in completion(true) }
+        )
+        let result = await client.requestAccessibilitySystemPrompt()
+        XCTAssertTrue(result)
+    }
+
+    func test_systemAccessibilityPromptCompletesForDeniedPrompt() async {
+        let client = SystemPermissionClient(
+            accessibilityTimeout: 1,
+            accessibilityPromptRequester: { completion in completion(false) }
+        )
+        let result = await client.requestAccessibilitySystemPrompt()
+        XCTAssertFalse(result)
+    }
+
+    func test_systemAccessibilityPromptCompletesForIgnoredPrompt() async {
+        let client = SystemPermissionClient(
+            accessibilityTimeout: 0.01,
+            accessibilityPromptRequester: { _ in }
+        )
+        let result = await client.requestAccessibilitySystemPrompt()
+        XCTAssertFalse(result)
+    }
+
+    func test_systemAccessibilityPromptInjectedTimeoutTerminates() async {
+        let client = SystemPermissionClient(
+            accessibilityTimeout: 0.01,
+            accessibilityPromptRequester: { _ in }
+        )
+        let started = Date()
+        let result = await client.requestAccessibilitySystemPrompt()
+        XCTAssertFalse(result)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
+
     func test_insertDenialUsesThirtySixtyAndThreeHundredSecondBackoff() {
         var now = Date(timeIntervalSince1970: 1_000)
         let client = PermissionFake(accessibility: false)

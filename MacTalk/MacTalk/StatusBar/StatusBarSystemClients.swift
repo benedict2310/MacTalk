@@ -41,6 +41,23 @@ protocol NotificationSubmitting: AnyObject {
 
 @MainActor
 final class SystemPermissionClient: PermissionClient {
+    typealias AccessibilityPromptRequester = @MainActor (
+        @escaping @MainActor @Sendable (Bool) -> Void
+    ) -> Void
+
+    private let accessibilityTimeout: TimeInterval
+    private let accessibilityPromptRequester: AccessibilityPromptRequester
+
+    init(
+        accessibilityTimeout: TimeInterval = 60,
+        accessibilityPromptRequester: @escaping AccessibilityPromptRequester = { completion in
+            Permissions.requestAccessibilityPermission(completion: completion)
+        }
+    ) {
+        self.accessibilityTimeout = accessibilityTimeout
+        self.accessibilityPromptRequester = accessibilityPromptRequester
+    }
+
     var microphoneState: MicrophonePermissionState { Permissions.microphonePermissionState() }
     var screenRecordingGranted: Bool { Permissions.checkScreenRecordingPermission() }
     var accessibilityTrusted: Bool { Permissions.isAccessibilityTrusted() }
@@ -55,11 +72,18 @@ final class SystemPermissionClient: PermissionClient {
     }
 
     func requestAccessibilitySystemPrompt() async -> Bool {
-        await withCheckedContinuation { continuation in
-            Permissions.requestAccessibilityPermission {
-                continuation.resume(returning: true)
+        let pending = AccessibilityPromptCompletion()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                pending.start(
+                    continuation: continuation,
+                    timeout: accessibilityTimeout,
+                    requester: accessibilityPromptRequester
+                )
             }
-        }
+        }, onCancel: {
+            Task { @MainActor in pending.finish(false) }
+        })
     }
 
     func resetAccessibilityApproval(reason: String) -> Bool {
@@ -69,6 +93,41 @@ final class SystemPermissionClient: PermissionClient {
     func openMicrophoneSettings() { Permissions.openMicrophoneSettings() }
     func openScreenRecordingSettings() { Permissions.openScreenRecordingSettings() }
     func openAccessibilitySettings() { Permissions.openAccessibilitySettings() }
+}
+
+/// Owns one checked continuation and its timeout. Completion is idempotent so
+/// grant/denial callbacks racing a timeout cannot resume twice.
+@MainActor
+private final class AccessibilityPromptCompletion {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    func start(
+        continuation: CheckedContinuation<Bool, Never>,
+        timeout: TimeInterval,
+        requester: SystemPermissionClient.AccessibilityPromptRequester
+    ) {
+        self.continuation = continuation
+        timeoutTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(max(timeout, 0) * 1_000_000_000))
+            } catch {
+                return
+            }
+            self?.finish(false)
+        }
+        requester { [weak self] granted in
+            self?.finish(granted)
+        }
+    }
+
+    func finish(_ granted: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(returning: granted)
+    }
 }
 
 @MainActor
@@ -81,8 +140,16 @@ final class SystemClipboardWriter: ClipboardWriting {
 
 @MainActor
 final class SystemTextInserter: TextInserting {
+    private let insertClipboardText: @MainActor (String) -> AutoInsertResult
+
+    init(insertClipboardText: @escaping @MainActor (String) -> AutoInsertResult = { text in
+        AutoInsertManager.insertClipboardText(text)
+    }) {
+        self.insertClipboardText = insertClipboardText
+    }
+
     func insert(_ text: String) -> AutoInsertResult {
-        AutoInsertManager.insertText(text)
+        insertClipboardText(text)
     }
 }
 

@@ -49,6 +49,16 @@ enum AutoInsertManager {
     /// - Parameter text: The text to insert
     /// - Returns: Result indicating which method was used or failure reason
     static func insertText(_ text: String) -> AutoInsertResult {
+        insertText(text, writeClipboardForFallback: true)
+    }
+
+    /// Insert text when the caller has already copied it to the clipboard.
+    /// The Cmd-V fallback deliberately does not write the clipboard again.
+    static func insertClipboardText(_ text: String) -> AutoInsertResult {
+        insertText(text, writeClipboardForFallback: false)
+    }
+
+    private static func insertText(_ text: String, writeClipboardForFallback: Bool) -> AutoInsertResult {
         NSLog("[AutoInsertManager] insertText called with \(text.count) characters")
         DLOG("[AutoInsert] insertText called: chars=\(text.count)")
 
@@ -81,10 +91,11 @@ enum AutoInsertManager {
         NSLog("[AutoInsertManager] AX SetValue failed, falling back to Cmd+V")
         DLOG("[AutoInsert] AX SetValue path failed; scheduling Cmd+V fallback after 50ms")
 
-        // Fallback to Cmd+V using existing ClipboardManager
-        // Use async dispatch with small delay to avoid blocking main thread
-        // and to ensure clipboard write is visible to the system
-        ClipboardManager.setClipboard(text)
+        // Legacy callers populate the clipboard here. The coordinator path has
+        // already done so and must not produce a second clipboard side effect.
+        if writeClipboardForFallback {
+            ClipboardManager.setClipboard(text)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             DLOG("[AutoInsert] Cmd+V fallback timer fired")
             Self.sendCommandV()

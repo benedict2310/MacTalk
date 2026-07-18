@@ -61,7 +61,7 @@ final class OutputCoordinator: OutputCoordinating {
         var message = "Text copied to clipboard"
 
         if context.autoPastePreference, permissionFlow.effectiveAutoPaste {
-            if targetStillFrontmost(contextTarget: context.target) {
+            if targetStillFrontmost() {
                 switch textInserter.insert(text) {
                 case .axSetValueSuccess:
                     outcome = .axSetValueSuccess
@@ -107,11 +107,11 @@ final class OutputCoordinator: OutputCoordinating {
         notifications.submit(.fallbackToMicOnly, enabled: showNotification)
     }
 
-    private func targetStillFrontmost(contextTarget: ApplicationIdentity?) -> Bool {
-        // The context is a value snapshot, while the coordinator's target is the
-        // owned session target. Context target is accepted for callers that pass
-        // an explicit target (and keeps tests independent of retained AppKit).
-        let capturedTarget = contextTarget ?? target
+    private func targetStillFrontmost() -> Bool {
+        // The coordinator owns the one session snapshot. OutputContext carries
+        // presentation settings only; callers cannot overwrite this target at
+        // finalization time.
+        let capturedTarget = target
         guard let capturedTarget else { return true }
         guard let frontmost = workspaceReader.frontmostApplication else { return true }
         if frontmost.processIdentifier == processIdentifier { return true }

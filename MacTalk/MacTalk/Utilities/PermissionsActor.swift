@@ -117,19 +117,15 @@ actor PermissionsActor {
 
     // MARK: - Polling
 
-    /// Start polling for accessibility permission grant
-    /// - Parameters:
-    ///   - timeout: Maximum time to poll (seconds)
-    ///   - pollInterval: Time between checks (seconds)
-    ///   - onGranted: Called when permission is granted
-    ///   - onTimeout: Called if timeout is reached without grant
+    /// Poll for accessibility permission until it is granted or the timeout is
+    /// reached. Completion is called exactly once for every request.
     func startPollingForGrant(
         timeout: TimeInterval = 60,
         pollInterval: TimeInterval = 0.5,
-        onGranted: @MainActor @escaping @Sendable () -> Void,
-        onTimeout: @MainActor @escaping @Sendable () -> Void
+        completion: @MainActor @escaping @Sendable (Bool) -> Void
     ) {
-        // Cancel any existing poll task
+        // Cancel any existing poll task. Its cancellation path completes its own
+        // request, so a replaced request never leaves an awaiting caller behind.
         pollTask?.cancel()
 
         pollTask = Task { [self] in
@@ -137,35 +133,32 @@ actor PermissionsActor {
             let timeoutDate = startTime.addingTimeInterval(timeout)
 
             while !Task.isCancelled {
-                // Check permission
                 if self.isAccessibilityTrusted() {
                     NSLog("[PermissionsActor] Accessibility permission granted after polling")
-                    await MainActor.run {
-                        onGranted()
-                    }
+                    await MainActor.run { completion(true) }
                     await self.clearPollTask()
                     return
                 }
 
-                // Check timeout
                 if Date() >= timeoutDate {
                     NSLog("[PermissionsActor] Polling timeout reached")
-                    await MainActor.run {
-                        onTimeout()
-                    }
+                    await MainActor.run { completion(false) }
                     await self.clearPollTask()
                     return
                 }
 
-                // Wait before next check
                 do {
-                    try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+                    try await Task.sleep(nanoseconds: UInt64(max(pollInterval, 0.001) * 1_000_000_000))
                 } catch {
-                    // Task was cancelled
+                    // Cancellation is also a terminal result for the request.
+                    await MainActor.run { completion(false) }
                     await self.clearPollTask()
                     return
                 }
             }
+
+            await MainActor.run { completion(false) }
+            await self.clearPollTask()
         }
     }
 

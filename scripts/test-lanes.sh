@@ -15,6 +15,10 @@ export HOME="$TEST_HOME"
 export CFFIXED_USER_HOME="$TEST_HOME"
 export OS_ACTIVITY_MODE=disable
 
+# Keep extracted status-bar coordinators free of production globals in every
+# deterministic lane, before any XCTest work begins.
+"$ROOT/scripts/statusbar-source-guard.sh"
+
 DETERMINISTIC_ARGS=()
 while IFS= read -r argument; do
   DETERMINISTIC_ARGS+=("$argument")

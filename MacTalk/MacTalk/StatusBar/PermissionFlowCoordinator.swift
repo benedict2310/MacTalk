@@ -61,6 +61,9 @@ final class PermissionFlowCoordinator: PermissionFlowCoordinating {
 
         hasRequestedAccessibilityPromptThisSession = true
         _ = await client.requestAccessibilitySystemPrompt()
+        // Re-read the effective state after every terminal prompt outcome. This
+        // keeps stored preference and current TCC state from drifting apart.
+        _ = refresh(storedAutoPaste: storedAutoPaste)
         return client.accessibilityTrusted ? .enabled : .promptRequested
     }
 

@@ -64,7 +64,6 @@ final class StatusBarController {
     private var isFinalizing = false
     private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
     private var selectedAudioSource: AppPickerWindowController.AudioSource?
-    private var recordingTargetApp: NSRunningApplication?
     // FIX P0: Retain app picker to keep callbacks alive
     private var appPickerController: AppPickerWindowController?
 
@@ -388,7 +387,7 @@ final class StatusBarController {
         withMicrophonePermission(
             onGranted: { [weak self] in
                 guard let self else { return }
-                self.captureRecordingTargetApp()
+                self.captureRecordingTarget()
                 self.startRecording()
             },
             onAbandoned: { [weak self] in
@@ -406,7 +405,7 @@ final class StatusBarController {
         withMicrophonePermission(
             onGranted: { [weak self] in
                 guard let self else { return }
-                self.captureRecordingTargetApp()
+                self.captureRecordingTarget()
 
                 // Check screen recording permission
                 NSLog("🔍 [StatusBar] Checking screen recording permission...")
@@ -436,7 +435,7 @@ final class StatusBarController {
             transcriber?.stop()
         } else {
             transcriber?.cancelStart()
-            recordingTargetApp = nil
+            outputCoordinator.cancel()
         }
         isRecording = false
         updateMenuBarIcon(recording: false)
@@ -962,8 +961,7 @@ final class StatusBarController {
             DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
             guard let owner = self else { return }
             owner.hudController?.updateFinal(text: text)
-            let target = owner.recordingTargetApp.map { ApplicationIdentity($0) }
-            owner.outputCoordinator.setTarget(target)
+            let target = owner.outputCoordinator.currentTarget
             let output = owner.outputCoordinator.handleFinal(
                 text: text,
                 context: OutputContext(
@@ -972,7 +970,6 @@ final class StatusBarController {
                     showNotifications: owner.showNotifications
                 )
             )
-            owner.recordingTargetApp = nil
             if let permissionEffect = output.permissionEffect {
                 owner.handle(permissionEffect)
             }
@@ -992,7 +989,7 @@ final class StatusBarController {
                 self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
             }
             NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled) (Accessibility trusted: \(accessibilityTrusted))")
-            DLOG("[AutoPaste] paste decision inputs: preference=\(autoPastePreference), accessibilityTrusted=\(accessibilityTrusted), effective=\(autoPasteEnabled), target=\(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"), frontmost=\(self?.describeApplication(NSWorkspace.shared.frontmostApplication) ?? "unknown")")
+            DLOG("[AutoPaste] legacy output path removed")
 
             // Always copy to clipboard first
             NSLog("[StatusBar] Copying text to clipboard...")
@@ -1049,8 +1046,7 @@ final class StatusBarController {
                 DLOG("[AutoPaste] effective auto-paste disabled; leaving text on clipboard")
             }
 
-            DLOG("[AutoPaste] clearing recording target app (was: \(self?.describeApplication(self?.recordingTargetApp) ?? "unknown"))")
-            self?.recordingTargetApp = nil
+            DLOG("[AutoPaste] legacy output target cleanup removed")
 
             NSLog("[StatusBar] Showing transcription completion notification")
             self?.notificationManager.submit(.transcriptionComplete, enabled: self?.showNotifications ?? false)
@@ -1092,67 +1088,8 @@ final class StatusBarController {
         }
     }
 
-    private func captureRecordingTargetApp() {
+    private func captureRecordingTarget() {
         _ = outputCoordinator.captureTarget()
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        let selfPID = ProcessInfo.processInfo.processIdentifier
-
-        // If MacTalk is frontmost (e.g. user clicked menu bar), find the
-        // previously-active app instead so the focus check doesn't misfire.
-        if frontmost?.processIdentifier == selfPID {
-            // Pick the first visible app that isn't us
-            let candidate = NSWorkspace.shared.runningApplications.first {
-                $0.isActive && $0.processIdentifier != selfPID
-            }
-            recordingTargetApp = candidate ?? frontmost
-            NSLog("[StatusBar] MacTalk is frontmost — captured underlying app: \(describeApplication(recordingTargetApp))")
-            DLOG("[AutoPaste] capture target while MacTalk frontmost: frontmost=\(describeApplication(frontmost)), candidate=\(describeApplication(candidate)), chosen=\(describeApplication(recordingTargetApp))")
-        } else {
-            recordingTargetApp = frontmost
-            NSLog("[StatusBar] Captured recording target app: \(describeApplication(recordingTargetApp))")
-            DLOG("[AutoPaste] captured recording target app: \(describeApplication(recordingTargetApp))")
-        }
-    }
-
-    private func isRecordingTargetAppStillFrontmost() -> Bool {
-        guard let recordingTargetApp else {
-            NSLog("⚠️ [StatusBar] No recording target app captured — allowing auto-paste")
-            DLOG("[AutoPaste] target/frontmost check: no target captured; allowing paste")
-            return true   // Permissive: paste if we couldn't capture
-        }
-
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            NSLog("⚠️ [StatusBar] No frontmost app available — allowing auto-paste")
-            DLOG("[AutoPaste] target/frontmost check: no frontmost app; allowing paste")
-            return true
-        }
-
-        // If MacTalk itself is frontmost (HUD clicked, etc.) allow the paste —
-        // the target app is likely right behind us.
-        let selfPID = ProcessInfo.processInfo.processIdentifier
-        if frontmostApp.processIdentifier == selfPID {
-            NSLog("[StatusBar] MacTalk is frontmost at paste time — allowing auto-paste")
-            DLOG("[AutoPaste] target/frontmost check: MacTalk frontmost at paste time; allowing paste. target=\(describeApplication(recordingTargetApp))")
-            return true
-        }
-
-        let isSameApp = recordingTargetApp.processIdentifier == frontmostApp.processIdentifier
-        if !isSameApp {
-            NSLog(
-                "⚠️ [StatusBar] Frontmost app changed during recording: \(describeApplication(recordingTargetApp)) -> \(describeApplication(frontmostApp))"
-            )
-            DLOG("[AutoPaste] target/frontmost mismatch: target=\(describeApplication(recordingTargetApp)), frontmost=\(describeApplication(frontmostApp))")
-        } else {
-            NSLog("[StatusBar] Frontmost app matches recording target: \(describeApplication(frontmostApp))")
-            DLOG("[AutoPaste] target/frontmost matched: \(describeApplication(frontmostApp))")
-        }
-
-        return isSameApp
-    }
-
-    private func describeApplication(_ app: NSRunningApplication?) -> String {
-        guard let app else { return "unknown" }
-        return "\(app.localizedName ?? app.bundleIdentifier ?? "unknown") [pid=\(app.processIdentifier)]"
     }
 
     private func startRecording() {
@@ -1173,8 +1110,8 @@ final class StatusBarController {
             }
         }
         NSLog("🎬 [StatusBar] startRecording() called")
-        if recordingTargetApp == nil {
-            captureRecordingTargetApp()
+        if outputCoordinator.currentTarget == nil {
+            captureRecordingTarget()
         }
         NSLog("🎬 [StatusBar] Mode: \(mode)")
         if let source = selectedAudioSource {
@@ -1403,7 +1340,7 @@ final class StatusBarController {
                     self.isStartInFlight = false
                     self.pendingSettingsLatch.clear()
                     self.pendingStartMode = nil
-                    self.recordingTargetApp = nil
+                    self.outputCoordinator.cancel()
                     self.showError("Failed to start recording: \(error.localizedDescription)")
                 }
             }
@@ -1750,7 +1687,6 @@ final class StatusBarController {
 
     private func abandonPendingStart() {
         outputCoordinator.cancel()
-        recordingTargetApp = nil
         pendingSettingsLatch.clear()
         pendingStartMode = nil
         pendingParakeetStartRetry = false
@@ -1760,7 +1696,6 @@ final class StatusBarController {
 
     private func invalidatePendingStart() {
         outputCoordinator.cancel()
-        recordingTargetApp = nil
         startGeneration += 1
         pendingParakeetStartRetry = false
         pendingParakeetStartGeneration = nil

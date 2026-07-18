@@ -16,6 +16,51 @@ final class OutputCoordinatorTests: XCTestCase {
         XCTAssertEqual(events.values, ["clipboard", "insert"])
     }
 
+    func test_liveTextInserterSeamProvesClipboardIsWrittenOnceBeforeFallback() {
+        let events = EventLog()
+        let inserter = SystemTextInserter { _ in
+            events.values.append("insert")
+            return .cmdVFallback
+        }
+        let output = OutputCoordinator(
+            clipboardWriter: ClipboardFake(events: events),
+            textInserter: inserter,
+            workspaceReader: WorkspaceFake(frontmost: ApplicationIdentity(processIdentifier: 10, displayName: "Editor")),
+            notifications: NotificationFake(),
+            permissionFlow: OutputPermissionFake(trusted: true),
+            processIdentifier: 99
+        )
+        let target = ApplicationIdentity(processIdentifier: 10, displayName: "Editor")
+        output.setTarget(target)
+
+        XCTAssertEqual(
+            output.handleFinal(
+                text: "secret",
+                context: OutputContext(target: target, autoPastePreference: true, showNotifications: false)
+            ).insertOutcome,
+            .cmdVFallback
+        )
+        XCTAssertEqual(events.values, ["clipboard", "insert"])
+    }
+
+    func test_targetSnapshotIsStableUntilFinalization() {
+        let workspace = WorkspaceFake(frontmost: ApplicationIdentity(processIdentifier: 20, displayName: "Other"))
+        let output = OutputCoordinator(
+            clipboardWriter: ClipboardFake(),
+            textInserter: InserterFake(result: .axSetValueSuccess),
+            workspaceReader: workspace,
+            notifications: NotificationFake(),
+            permissionFlow: OutputPermissionFake(trusted: true),
+            processIdentifier: 99
+        )
+        let captured = output.captureTarget()
+        workspace.frontmostApplication = ApplicationIdentity(processIdentifier: 30, displayName: "Third")
+        XCTAssertEqual(captured?.processIdentifier, 20)
+        XCTAssertEqual(output.currentTarget?.processIdentifier, 20)
+        output.cancel()
+        XCTAssertNil(output.currentTarget)
+    }
+
     func test_disabledOrUntrustedAutoPasteCopiesOnly() {
         for trusted in [true, false] {
             let events = EventLog()
