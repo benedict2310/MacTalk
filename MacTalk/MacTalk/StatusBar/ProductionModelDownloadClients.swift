@@ -28,44 +28,87 @@ final class ProductionModelDownloadClient: ModelDownloadClient {
     }
 }
 
+private final class WhisperDownloadContinuationOwner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        let previous = self.continuation
+        self.continuation = continuation
+        lock.unlock()
+
+        // A direct adapter user can start a replacement download before the
+        // prior manager operation reports its terminal state. Do not leave the
+        // prior waiter suspended while handing ownership to the replacement.
+        previous?.resume(throwing: CancellationError())
+    }
+
+    @discardableResult
+    func finish(_ result: Result<Void, Error>) -> Bool {
+        lock.lock()
+        guard let continuation else {
+            lock.unlock()
+            return false
+        }
+        self.continuation = nil
+        lock.unlock()
+        continuation.resume(with: result)
+        return true
+    }
+
+    func cancel() {
+        _ = finish(.failure(CancellationError()))
+    }
+
+    func isActive() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return continuation != nil
+    }
+}
+
 @MainActor
 final class WhisperModelDownloadClient {
-    private let manager: ModelManager
-    private var completed = false
+    private let manager: any ModelManaging
+    private let continuationOwner = WhisperDownloadContinuationOwner()
 
-    init(manager: ModelManager = .shared) { self.manager = manager }
+    init(manager: any ModelManaging = ModelManager.shared) { self.manager = manager }
 
     func download(_ spec: ModelSpec, onEvent: @escaping @MainActor (ModelDownloadClientEvent) -> Void) async throws {
-        completed = false
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            continuationOwner.install(continuation)
             manager.onDownloadState = { [weak self] state in
-                guard let self, !self.completed else { return }
+                guard let self, self.continuationOwner.isActive() else { return }
                 switch state {
-                case let .running(progress): onEvent(.downloading(fraction: progress, fileIndex: nil, fileCount: nil))
-                case .verifying: onEvent(.verifying)
+                case let .running(progress):
+                    onEvent(.downloading(fraction: progress, fileIndex: nil, fileCount: nil))
+                case .verifying:
+                    onEvent(.verifying)
                 case .done:
-                    self.completed = true
+                    guard self.continuationOwner.finish(.success(())) else { return }
                     onEvent(.ready)
-                    continuation.resume()
                 case let .failed(error):
-                    self.completed = true
-                    continuation.resume(throwing: error)
-                case .idle: break
+                    _ = self.continuationOwner.finish(.failure(error))
+                case .idle:
+                    break
                 }
             }
             manager.ensureAvailable(spec) { [weak self] result in
-                guard let self, !self.completed else { return }
+                guard let self else { return }
                 if case let .failure(error) = result {
-                    self.completed = true
-                    continuation.resume(throwing: error)
+                    _ = self.continuationOwner.finish(.failure(error))
                 }
             }
         }
     }
 
     func cancel() {
+        // Claim and resume the continuation before asking ModelManager to
+        // cancel. Its cancellation callback may race or arrive synchronously;
+        // the owner makes every later result a no-op.
+        continuationOwner.cancel()
         manager.cancelDownload()
-        completed = true
     }
 }
 

@@ -8,10 +8,20 @@
 import Foundation
 import AppKit
 
+/// The model-management boundary used by production download adapters.
+/// Keeping this seam actor-isolated lets tests exercise callback ordering without
+/// touching the shared model store or network.
+@MainActor
+protocol ModelManaging: AnyObject {
+    var onDownloadState: (@MainActor @Sendable (ModelDownloader.State) -> Void)? { get set }
+    func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void)
+    func cancelDownload()
+}
+
 /// Enhanced ModelManager with automatic download capabilities.
 /// @MainActor ensures thread-safe access to download state and callbacks.
 @MainActor
-final class ModelManager {
+final class ModelManager: ModelManaging {
     static let shared = ModelManager()
     private let downloader: ModelDownloader
 

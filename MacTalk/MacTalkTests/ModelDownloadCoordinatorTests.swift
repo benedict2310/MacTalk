@@ -2,6 +2,58 @@ import XCTest
 @testable import MacTalk
 
 @MainActor
+final class WhisperModelDownloadClientTests: XCTestCase {
+    func test_cancelCompletesAwaitAndIgnoresLateManagerResults() async throws {
+        let manager = FakeWhisperModelManager()
+        let client = WhisperModelDownloadClient(manager: manager)
+        let spec = try XCTUnwrap(ModelCatalog.bundled().first)
+        let downloadTask = Task { @MainActor in
+            try await client.download(spec) { _ in }
+        }
+
+        while !manager.didStart { await Task.yield() }
+        client.cancel()
+        XCTAssertTrue(manager.didCancel)
+
+        do {
+            try await downloadTask.value
+            XCTFail("Cancellation must complete the adapter with an error")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        manager.emit(.failed(ModelDownloader.ErrorType.cancelled))
+        manager.emit(.done(URL(fileURLWithPath: "/tmp/late-model")))
+        manager.complete(.failure(ModelDownloader.ErrorType.cancelled))
+    }
+}
+
+@MainActor
+private final class FakeWhisperModelManager: ModelManaging {
+    var onDownloadState: (@MainActor @Sendable (ModelDownloader.State) -> Void)?
+    var didStart = false
+    var didCancel = false
+    private var completion: ((Result<URL, Error>) -> Void)?
+
+    func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
+        didStart = true
+        self.completion = completion
+    }
+
+    func cancelDownload() {
+        didCancel = true
+    }
+
+    func emit(_ state: ModelDownloader.State) {
+        onDownloadState?(state)
+    }
+
+    func complete(_ result: Result<URL, Error>) {
+        completion?(result)
+    }
+}
+
+@MainActor
 final class ModelDownloadCoordinatorTests: XCTestCase {
     func test_normalizesProgressAndPublishesVerifyingAndReady() async throws {
         let client = DownloadClientFake()
