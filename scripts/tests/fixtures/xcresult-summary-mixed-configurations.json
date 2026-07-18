@@ -1,0 +1,17 @@
+{
+  "devicesAndConfigurations": [
+    {
+      "passedTests": 2,
+      "failedTests": 0,
+      "skippedTests": 1
+    },
+    {
+      "configurationMetadata": {
+        "passedTests": 3,
+        "failedTests": 1,
+        "skippedTests": 0
+      }
+    }
+  ],
+  "result": "Failed"
+}

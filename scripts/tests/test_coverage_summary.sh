@@ -23,6 +23,19 @@ if python3 "$PARSER" "$FIXTURES/xcresult-summary-missing-count.json" >/dev/null 
   exit 1
 fi
 
+for fixture in \
+  xcresult-summary-unrelated-nested-counts.json \
+  xcresult-summary-mixed-configurations.json \
+  xcresult-summary-empty-configurations.json \
+  xcresult-summary-malformed-configurations.json \
+  xcresult-summary-non-numeric-configurations.json \
+  xcresult-summary-partial-configuration.json; do
+  if python3 "$PARSER" "$FIXTURES/$fixture" >/dev/null 2>&1; then
+    echo "parser accepted malformed coverage schema: $fixture" >&2
+    exit 1
+  fi
+done
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$tmpdir/Result.xcresult" "$tmpdir/bin"

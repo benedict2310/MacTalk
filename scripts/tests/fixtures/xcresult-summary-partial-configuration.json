@@ -1,0 +1,14 @@
+{
+  "devicesAndConfigurations": [
+    {
+      "passedTests": 147,
+      "failedTests": 0,
+      "metadata": {
+        "passedTests": 147,
+        "failedTests": 0,
+        "skippedTests": 0
+      }
+    }
+  ],
+  "result": "Passed"
+}

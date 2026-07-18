@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import math
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -24,16 +23,6 @@ def numeric(value: Any) -> int | None:
     return None
 
 
-def dictionaries(value: Any) -> Iterator[dict[str, Any]]:
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from dictionaries(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from dictionaries(child)
-
-
 def count_values(candidate: dict[str, Any]) -> tuple[int, int, int] | None:
     values = tuple(numeric(candidate.get(name)) for name in COUNT_FIELDS)
     if not all(value is not None for value in values):
@@ -43,27 +32,34 @@ def count_values(candidate: dict[str, Any]) -> tuple[int, int, int] | None:
 
 
 def find_counts(payload: Any) -> tuple[dict[str, Any], tuple[int, int, int]] | None:
-    """Find aggregate counts, preferring the root or device configurations."""
-    if isinstance(payload, dict):
-        root_counts = count_values(payload)
-        if root_counts is not None:
-            return payload, root_counts
+    """Find counts in the documented root or device-configuration schema only."""
+    if not isinstance(payload, dict):
+        return None
 
-        configurations = payload.get("devicesAndConfigurations")
-        if isinstance(configurations, list):
-            configuration_counts = [
-                count_values(configuration)
-                for configuration in configurations
-                if isinstance(configuration, dict)
-            ]
-            if configuration_counts and all(count is not None for count in configuration_counts):
-                aggregate = tuple(sum(count[index] for count in configuration_counts) for index in range(3))
-                return payload, aggregate  # type: ignore[arg-type]
+    configurations = payload.get("devicesAndConfigurations")
+    if "devicesAndConfigurations" in payload:
+        if not isinstance(configurations, list) or not configurations:
+            return None
 
-    for candidate in dictionaries(payload):
-        values = count_values(candidate)
-        if values is not None:
-            return candidate, values
+        configuration_counts: list[tuple[int, int, int]] = []
+        for configuration in configurations:
+            if not isinstance(configuration, dict):
+                return None
+            counts = count_values(configuration)
+            if counts is None:
+                return None
+            configuration_counts.append(counts)
+
+        aggregate = (
+            sum(count[0] for count in configuration_counts),
+            sum(count[1] for count in configuration_counts),
+            sum(count[2] for count in configuration_counts),
+        )
+        return payload, aggregate
+
+    root_counts = count_values(payload)
+    if root_counts is not None:
+        return payload, root_counts
     return None
 
 
