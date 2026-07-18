@@ -72,31 +72,6 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    func selectFirstWindow(
-        named name: String,
-        sessionID: UUID,
-        onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
-        onStreamError: @escaping @Sendable (UUID, Error) -> Void
-    ) async throws {
-        let content = try await SCShareableContent.current
-        guard let app = content.applications.first(where: { $0.applicationName == name }) else {
-            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Could not find app named '\(name)'"
-            ])
-        }
-        guard let window = content.windows.first(where: { $0.owningApplication == app }) else {
-            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "App '\(name)' has no windows"
-            ])
-        }
-        try await startCapture(
-            filter: SCContentFilter(desktopIndependentWindow: window),
-            sessionID: sessionID,
-            onAudioSampleBuffer: onAudioSampleBuffer,
-            onStreamError: onStreamError
-        )
-    }
-
     func selectApp(
         app: SCRunningApplication,
         sessionID: UUID,

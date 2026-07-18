@@ -321,7 +321,6 @@ final class TranscriptionController: @unchecked Sendable {
     var onMicrophoneReady: (@Sendable @MainActor () -> Void)?
     var onFallbackToMicOnly: (@Sendable @MainActor () -> Void)?  // Callback when falling back to mic-only
     var onFinalizationComplete: (@Sendable @MainActor () -> Void)?
-    var autoPasteEnabled = false
 
     // Performance optimization
     private var adaptiveQualityEnabled = true

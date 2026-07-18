@@ -221,7 +221,6 @@ struct StatusBarDependencies {
     let download: any (ModelDownloadCoordinating & ModelRequirementDownloading)
     let sessions: any TranscriptionSessionFactory
     let permissionClient: any PermissionClient
-    let clock: @MainActor () -> Date
 
     init(
         settings: any StatusBarSettingsReading,
@@ -232,8 +231,7 @@ struct StatusBarDependencies {
         engine: any EngineLifecycleCoordinating,
         download: any (ModelDownloadCoordinating & ModelRequirementDownloading),
         sessions: any TranscriptionSessionFactory,
-        permissionClient: any PermissionClient,
-        clock: @escaping @MainActor () -> Date
+        permissionClient: any PermissionClient
     ) {
         self.settings = settings
         self.permissionFlow = permissionFlow
@@ -244,7 +242,6 @@ struct StatusBarDependencies {
         self.download = download
         self.sessions = sessions
         self.permissionClient = permissionClient
-        self.clock = clock
     }
 
     static func live(notificationManager: NotificationManager) -> StatusBarDependencies {
@@ -282,8 +279,7 @@ struct StatusBarDependencies {
             engine: engine,
             download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
             sessions: ProductionTranscriptionSessionFactory(),
-            permissionClient: permissionClient,
-            clock: { Date() }
+            permissionClient: permissionClient
         )
     }
 }

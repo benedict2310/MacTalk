@@ -2,20 +2,15 @@
 //  ClipboardManager.swift
 //  MacTalk
 //
-//  Clipboard operations and auto-paste functionality
+//  Clipboard operations
 //
 
 import AppKit
-import ApplicationServices
 
-/// Clipboard manager for handling clipboard operations and auto-paste
-/// @MainActor ensures all NSPasteboard operations happen on the main thread
-/// and provides thread-safe access to clipboard history state.
+/// Writes transcript text to the system clipboard on the main actor.
 @MainActor
 enum ClipboardManager {
-    // MARK: - Clipboard Operations
-
-    /// Set text to system clipboard
+    /// Set text to system clipboard.
     static func setClipboard(_ text: String) {
         NSLog("📋 [ClipboardManager] Setting clipboard with text length: \(text.count) characters")
         DLOG("[Clipboard] setClipboard called: chars=\(text.count)")
@@ -30,126 +25,5 @@ enum ClipboardManager {
             NSLog("❌ [ClipboardManager] Failed to set clipboard")
             DLOG("[Clipboard] setClipboard failed: beforeChangeCount=\(beforeChangeCount), afterChangeCount=\(pasteboard.changeCount)")
         }
-    }
-
-    /// Get current clipboard text
-    static func getClipboard() -> String? {
-        let pasteboard = NSPasteboard.general
-        return pasteboard.string(forType: .string)
-    }
-
-    // MARK: - Auto-Paste
-
-    /// Attempt to paste clipboard content using Cmd+V simulation
-    static func pasteIfAllowed() {
-        NSLog("🔍 [ClipboardManager] pasteIfAllowed() called - checking accessibility permission...")
-        DLOG("[Clipboard] pasteIfAllowed called")
-
-        let isGranted = Permissions.isAccessibilityTrusted()
-        NSLog("🔍 [ClipboardManager] Accessibility permission status: \(isGranted ? "GRANTED ✅" : "NOT GRANTED ❌")")
-        DLOG("[Clipboard] pasteIfAllowed Accessibility trusted=\(isGranted)")
-
-        guard isGranted else {
-            NSLog("❌ [ClipboardManager] Accessibility permission not granted - cannot auto-paste")
-            NSLog("🚨 [ClipboardManager] Requesting accessibility permission from user...")
-            DLOG("[Clipboard] pasteIfAllowed requesting Accessibility permission")
-            Permissions.requestAccessibilityPermission()
-            return
-        }
-
-        NSLog("📝 [ClipboardManager] Accessibility granted - executing Cmd+V...")
-        sendCommandV()
-        NSLog("✅ [ClipboardManager] Auto-paste executed (Cmd+V sent)")
-        DLOG("[Clipboard] pasteIfAllowed sent Cmd+V")
-    }
-
-    /// Simulate Command+V key press
-    private static func sendCommandV() {
-        let source = CGEventSource(stateID: .hidSystemState)
-
-        // Virtual key code for 'V' key
-        let vKeyCode: CGKeyCode = 9
-
-        // Create key down event
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true) else {
-            print("Failed to create key down event")
-            DLOG("[Clipboard] failed to create Cmd+V keyDown event")
-            return
-        }
-        keyDown.flags = .maskCommand
-
-        // Create key up event
-        guard let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
-            print("Failed to create key up event")
-            DLOG("[Clipboard] failed to create Cmd+V keyUp event")
-            return
-        }
-        keyUp.flags = .maskCommand
-
-        // Post events to system
-        DLOG("[Clipboard] posting Cmd+V key events to cghidEventTap")
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-        DLOG("[Clipboard] posted Cmd+V key events")
-    }
-
-    // MARK: - Alternative Paste Methods
-
-    /// Attempt to paste via AppleScript (fallback method)
-    static func pasteViaAppleScript() -> Bool {
-        let script = """
-        tell application "System Events"
-            keystroke "v" using command down
-        end tell
-        """
-
-        var error: NSDictionary?
-        if let scriptObject = NSAppleScript(source: script) {
-            scriptObject.executeAndReturnError(&error)
-            if let error = error {
-                DebugLogger.shared.log(.error(description: String(describing: error)))
-                return false
-            }
-            return true
-        }
-        return false
-    }
-
-    /// Check if a specific app supports paste
-    static func canPasteInFrontmostApp() -> Bool {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            return false
-        }
-
-        // List of known apps that don't support simulated paste well
-        let problematicApps = [
-            "com.apple.loginwindow",
-            "com.apple.SecurityAgent"
-        ]
-
-        return !problematicApps.contains(frontmostApp.bundleIdentifier ?? "")
-    }
-
-    // MARK: - Clipboard History (Future Enhancement)
-
-    private static var clipboardHistory: [String] = []
-    private static let maxHistorySize = 10
-
-    /// Add to clipboard history
-    static func addToHistory(_ text: String) {
-        clipboardHistory.insert(text, at: 0)
-        if clipboardHistory.count > maxHistorySize {
-            clipboardHistory.removeLast()
-        }
-    }
-
-    /// Get clipboard history
-    static func getHistory() -> [String] {
-        return clipboardHistory
-    }
-
-    /// Clear clipboard history
-    static func clearHistory() {
-        clipboardHistory.removeAll()
     }
 }
