@@ -100,6 +100,11 @@ struct AudioTimelineComposer: Sendable {
         var latestPlacedEnd: Int?
         var latestObservedEnd: Int?
         var expectedNextStart: Int?
+        /// Number of source-local frames elided from this source's raw PTS
+        /// timeline. Keeping this on the source (rather than advancing the
+        /// shared output cursor) prevents a discontinuous source from
+        /// discarding already buffered coverage from its counterpart.
+        var discontinuityOffset = 0
         var hasInput = false
     }
 
@@ -157,16 +162,27 @@ struct AudioTimelineComposer: Sendable {
         guard self.sessionID == sessionID, !chunk.samples.isEmpty else { return [] }
         guard mode == .microphoneAndApplication || chunk.source == .microphone else { return [] }
 
+        var pendingApplication: [TimedAudioChunk] = []
+        var placePendingAfterCurrent = false
         if epoch == nil {
             guard chunk.source == .microphone else {
                 bufferPreAnchor(chunk)
                 return []
             }
             epoch = chunk.start
-            let pending = preAnchorApplication
+            pendingApplication = preAnchorApplication
             preAnchorApplication.removeAll(keepingCapacity: true)
             preAnchorFrames = 0
-            for queued in pending { place(queued) }
+            // Preserve the established callback behavior for aligned
+            // pre-anchor packets, but establish current microphone coverage
+            // first when a queued application PTS is itself discontinuous.
+            placePendingAfterCurrent = pendingApplication.contains {
+                $0.start.frameOffset(from: epoch!, sampleRate: configuration.sampleRate)
+                    > configuration.maximumZeroFillFrames
+            }
+            if !placePendingAfterCurrent {
+                for queued in pendingApplication { place(queued) }
+            }
         }
 
         // Process packets in bounded slices. This lets a second source make
@@ -198,6 +214,14 @@ struct AudioTimelineComposer: Sendable {
                 // deliberately dropped rather than materialized.
                 _metrics.lateFramesDropped += chunk.samples.count - offset
                 break
+            }
+        }
+        if placePendingAfterCurrent {
+            for queued in pendingApplication { place(queued) }
+            if output.count < configuration.maximumBufferedFrames {
+                output.append(contentsOf: renderThroughSafeWatermark().prefix(
+                    configuration.maximumBufferedFrames - output.count
+                ))
             }
         }
         enforceBufferBound()
@@ -305,43 +329,67 @@ struct AudioTimelineComposer: Sendable {
         guard let epoch else { return }
         let source = chunk.source
         var state = sources[source] ?? SourceState()
-        var originalStart = chunk.start.frameOffset(from: epoch, sampleRate: configuration.sampleRate)
+        var rawStart = chunk.start.frameOffset(from: epoch, sampleRate: configuration.sampleRate)
         if let expected = state.expectedNextStart,
-           abs(originalStart - expected) <= configuration.timestampSnapFrames {
-            originalStart = expected
+           abs(rawStart - expected) <= configuration.timestampSnapFrames {
+            rawStart = expected
         }
 
-        let end = originalStart + chunk.samples.count
-        state.latestObservedEnd = max(state.latestObservedEnd ?? Int.min, end)
+        let rawEnd = rawStart + chunk.samples.count
+        state.latestObservedEnd = max(state.latestObservedEnd ?? Int.min, rawEnd)
 
+        // A discontinuity belongs to the source which observed it. Place the
+        // source after the furthest already-retained source coverage, keeping
+        // only the configured zero-fill interval, but do not move the shared
+        // output cursor. The cursor may still point into valid microphone
+        // frames that have not reached the cross-source watermark yet.
+        var originalStart = rawStart - state.discontinuityOffset
+        let placementFloor = max(
+            outputCursor,
+            sources.values.compactMap(\.latestPlacedEnd).max() ?? outputCursor
+        )
+        // Only a forward jump in this source's raw PTS timeline is a
+        // discontinuity. A contiguous oversized callback can extend beyond
+        // the bounded retained window while latestPlacedEnd still points at
+        // that window's old end; treating that stale placement as a gap would
+        // shift the remainder of an otherwise valid source and duplicate
+        // audio on its converter tail.
+        let isForwardDiscontinuity: Bool
+        if let expected = state.expectedNextStart {
+            isForwardDiscontinuity = rawStart > expected + configuration.timestampSnapFrames
+        } else {
+            isForwardDiscontinuity = originalStart > placementFloor + configuration.maximumZeroFillFrames
+        }
+        if isForwardDiscontinuity,
+           originalStart > placementFloor + configuration.maximumZeroFillFrames {
+            let skipped = originalStart - placementFloor - configuration.maximumZeroFillFrames
+            state.discontinuityOffset += skipped
+            originalStart -= skipped
+            _metrics.discontinuitiesElided += skipped
+        }
         var start = originalStart
         if start < outputCursor {
             let dropped = min(chunk.samples.count, outputCursor - start)
             _metrics.lateFramesDropped += dropped
             start += dropped
         }
-        if start >= outputCursor + configuration.maximumBufferedFrames,
-           start > outputCursor + configuration.maximumZeroFillFrames {
-            // A long discontinuity is represented by a bounded cursor advance;
-            // never allocate the missing interval.
-            let skipped = start - outputCursor - configuration.maximumZeroFillFrames
-            outputCursor += skipped
-            _metrics.discontinuitiesElided += skipped
-        }
 
         // Never materialize more than the configured horizon. A callback can
         // contain an arbitrarily large packet; retaining only this bounded
         // window is equivalent to trimming a packet before insertion.
         let retainedStart = max(start, outputCursor)
-        let retainedEnd = min(end, outputCursor + configuration.maximumBufferedFrames)
+        let retainedEnd = min(
+            originalStart + chunk.samples.count,
+            outputCursor + configuration.maximumBufferedFrames
+        )
         let offset = max(0, retainedStart - originalStart)
         guard offset < chunk.samples.count, retainedStart < retainedEnd else {
             // This callback was wholly late or outside the bounded horizon.
             // It may inform the watermark, but it must not rewind sequencing.
             if let expected = state.expectedNextStart {
-                state.expectedNextStart = max(expected, end)
+                state.expectedNextStart = max(expected, rawEnd)
             } else {
-                state.expectedNextStart = end
+                state.expectedNextStart = rawEnd
             }
             state.hasInput = true
             sources[source] = state
@@ -376,7 +424,7 @@ struct AudioTimelineComposer: Sendable {
         // A duplicate/backward callback must never move the expected timeline
         // backwards. This is also what prevents a later callback from being
         // snapped into and overwriting an already accepted interval.
-        state.expectedNextStart = max(state.expectedNextStart ?? Int.min, end)
+        state.expectedNextStart = max(state.expectedNextStart ?? Int.min, rawEnd)
         sources[source] = state
     }
 

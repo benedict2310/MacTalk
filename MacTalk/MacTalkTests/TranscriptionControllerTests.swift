@@ -247,7 +247,9 @@ final class TranscriptionControllerTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
+        // The composer keeps the microphone's contiguous post-watermark
+        // coverage instead of advancing the shared cursor to discard it.
+        XCTAssertEqual(engine.finalizedFrameCounts, [28_000])
     }
 
     func test_appCallbackQueuedAfterFallbackIsRejectedBeforeConversion() async throws {

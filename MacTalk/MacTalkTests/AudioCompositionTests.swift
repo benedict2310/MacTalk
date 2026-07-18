@@ -107,6 +107,104 @@ final class AudioCompositionTests: XCTestCase {
         XCTAssertEqual(output[0], 0.4, accuracy: 0.001)
     }
 
+    func test_farFutureApplicationDoesNotAdvancePastBufferedMicrophoneOnExpiry() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [Float](repeating: 0.25, count: 500)
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 100_000,
+            values: [0.75]
+        ))
+
+        let output = composer.expire(sessionID: session)
+        XCTAssertEqual(output.count, 4_501)
+        XCTAssertEqual(Array(output.prefix(500)), [Float](repeating: 0.25, count: 500))
+        XCTAssertTrue(output[500..<4_500].allSatisfy { abs($0) < 0.0001 })
+        XCTAssertEqual(output[4_500], 0.75, accuracy: 0.0001)
+        XCTAssertGreaterThan(composer.metrics.discontinuitiesElided, 90_000)
+        XCTAssertLessThanOrEqual(composer.bufferedFrameCount, 16_000)
+    }
+
+    func test_farFutureMicrophoneDoesNotAdvancePastBufferedApplicationOnExpiry() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [0.25]
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 0,
+            values: [Float](repeating: 0.75, count: 500)
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 100_000,
+            values: [0.25]
+        ))
+
+        let output = composer.expire(sessionID: session)
+        XCTAssertEqual(output.count, 4_501)
+        XCTAssertEqual(output[0], 0.5, accuracy: 0.0001)
+        XCTAssertEqual(Array(output[1..<500]), [Float](repeating: 0.75, count: 499))
+        XCTAssertTrue(output[500..<4_500].allSatisfy { abs($0) < 0.0001 })
+        XCTAssertEqual(output[4_500], 0.25, accuracy: 0.0001)
+        XCTAssertGreaterThan(composer.metrics.discontinuitiesElided, 90_000)
+        XCTAssertLessThanOrEqual(composer.bufferedFrameCount, 16_000)
+    }
+
+    func test_farFutureApplicationFinishPreservesBufferedMicrophoneCoverage() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [Float](repeating: 0.25, count: 500)
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 100_000,
+            values: [0.75]
+        ))
+
+        let output = composer.finish(sessionID: session)
+        XCTAssertEqual(output.count, 4_501)
+        XCTAssertEqual(Array(output.prefix(500)), [Float](repeating: 0.25, count: 500))
+        XCTAssertTrue(output[500..<4_500].allSatisfy { abs($0) < 0.0001 })
+        XCTAssertEqual(output[4_500], 0.75, accuracy: 0.0001)
+    }
+
+    func test_farFutureApplicationFallbackFlushPreservesBufferedMicrophoneCoverage() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [Float](repeating: 0.25, count: 500)
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 100_000,
+            values: [0.75]
+        ))
+
+        let output = composer.deactivateApplication(sessionID: session)
+        XCTAssertEqual(output.count, 4_501)
+        XCTAssertEqual(Array(output.prefix(500)), [Float](repeating: 0.25, count: 500))
+        XCTAssertEqual(output[4_500], 0.75, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(composer.bufferedFrameCount, 16_000)
+    }
+
     func test_lateChunkOlderThanOutputCursorIsDropped() {
         let session = UUID()
         var composer = AudioTimelineComposer(configuration: .init(maximumLatenessFrames: 0))
