@@ -198,6 +198,16 @@ def tuple_from_lfs(item: dict, path: str) -> tuple[int, str]:
         fail(f"LFS size mismatch for {path}")
     if not is_int(lfs.get("pointerSize")) or lfs["pointerSize"] <= 0:
         fail(f"invalid LFS pointer size for {path}")
+    pointer = (
+        f"version https://git-lfs.github.com/spec/v1\n"
+        f"oid sha256:{lfs['oid']}\n"
+        f"size {lfs['size']}\n"
+    ).encode("ascii")
+    if len(pointer) != lfs["pointerSize"]:
+        fail(f"LFS pointer size mismatch for {path}")
+    git_blob = hashlib.sha1(f"blob {len(pointer)}\0".encode("ascii") + pointer).hexdigest()
+    if git_blob != item["oid"]:
+        fail(f"LFS pointer Git blob mismatch for {path}")
     return size, lfs["oid"]
 
 

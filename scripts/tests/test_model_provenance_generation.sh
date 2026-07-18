@@ -65,6 +65,27 @@ with open(index_path, 'w', encoding='utf-8') as stream:
 PY
 }
 
+# Update the canonical tuple and generated output after a coherent nested LFS
+# mutation. Without the pointer-to-Git-blob binding, these fixtures otherwise
+# pass because the tuple's LFS digest/size remains internally consistent.
+update_canonical_entry_and_generated() {
+  local path="$1"
+  local bytes="$2"
+  local digest="$3"
+  python3 - "$tmp/Config/ModelProvenance/model-provenance.v1.json" "$path" "$bytes" "$digest" <<'PY'
+import json, sys
+canonical_path, target, bytes_value, digest = sys.argv[1:]
+canonical = json.load(open(canonical_path, encoding='utf-8'))
+entry = next(item for item in canonical['entries'] if item['path'] == target)
+entry['bytes'] = int(bytes_value)
+entry['sha256'] = digest
+with open(canonical_path, 'w', encoding='utf-8') as stream:
+    json.dump(canonical, stream, indent=2, sort_keys=True)
+    stream.write('\n')
+PY
+  python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp"
+}
+
 # Canonical tuple, evidence size/OID, path-set, immutable-reference, digest,
 # generated-output, and vocabulary identity checks must all fail closed.
 restore_fixture
@@ -249,7 +270,7 @@ import json, sys
 p=sys.argv[1]; d=json.load(open(p)); next(x for x in d if x['path'] == 'ggml-tiny-q5_1.bin')['lfs']['oid']='0'*64; json.dump(d,open(p,'w'),separators=(',',':'))
 PY
 update_evidence_index whisper-5359861c739e955e79d9a303bcbc70fb988958b1-hf-tree.json
-expect_failure evidence-lfs-oid 'canonical tuples drift' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+expect_failure evidence-lfs-oid 'LFS pointer Git blob mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
 
 restore_fixture
 python3 - "$tmp/Config/ModelProvenance/model-provenance.v1.json" <<'PY'
@@ -275,7 +296,7 @@ import json, sys
 p=sys.argv[1]; d=json.load(open(p)); item=next(x for x in d if x['path'] == 'Decoder.mlmodelc/weights/weight.bin'); item['lfs']['oid']='0'*64; json.dump(d,open(p,'w'),separators=(',',':'))
 PY
 update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-001.json
-expect_failure compiled-lfs-oid 'canonical tuples drift' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+expect_failure compiled-lfs-oid 'LFS pointer Git blob mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
 
 restore_fixture
 printf 'byte drift' >> "$tmp/docs/security/model-provenance/parakeet-compiled-regular-files-aed02740059203c4a87495924f685de3722ae9ce/Decoder.mlmodelc/metadata.json"
@@ -296,5 +317,116 @@ import json, sys
 p=sys.argv[1]; d=json.load(open(p)); d['files'][0]['sha256']='0'*64; json.dump(d,open(p,'w'),separators=(',',':'))
 PY
 expect_failure evidence-index-digest python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+
+# The nested LFS record is not enough: its exact pointer bytes must hash to the
+# outer Git blob OID. These four fixtures deliberately keep the canonical
+# tuples/generated output coherent wherever the tuple would otherwise change.
+restore_fixture
+nested_oid_evidence="$tmp/docs/security/model-provenance/parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json"
+nested_oid_original=$(python3 - "$nested_oid_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel')
+print(item['oid'])
+PY
+)
+python3 - "$nested_oid_evidence" <<'PY'
+import hashlib, json, sys
+p=sys.argv[1]
+d=json.load(open(p))
+target='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'
+item=next(x for x in d if x['path'] == target)
+item['lfs']['oid']='1'*64
+lfs=item['lfs']
+pointer=(f"version https://git-lfs.github.com/spec/v1\noid sha256:{lfs['oid']}\nsize {lfs['size']}\n").encode('ascii')
+item['oid']=hashlib.sha1(f"blob {len(pointer)}\0".encode('ascii')+pointer).hexdigest()
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+update_canonical_entry_and_generated 'mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel' "$(python3 - "$nested_oid_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); print(item['lfs']['size'])
+PY
+)" "$(python3 - "$nested_oid_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); print(item['lfs']['oid'])
+PY
+)"
+python3 - "$nested_oid_evidence" "$nested_oid_original" <<'PY'
+import json, sys
+p, original = sys.argv[1:]
+d=json.load(open(p)); item=next(x for x in d if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); item['oid']=original
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+expect_failure nested-lfs-oid 'LFS pointer Git blob mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+
+restore_fixture
+nested_size_evidence="$tmp/docs/security/model-provenance/parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json"
+nested_size_original=$(python3 - "$nested_size_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel')
+print(item['oid'], item['lfs']['pointerSize'])
+PY
+)
+nested_size_original_oid=${nested_size_original%% *}
+nested_size_original_pointer=${nested_size_original##* }
+python3 - "$nested_size_evidence" <<'PY'
+import hashlib, json, sys
+p=sys.argv[1]
+d=json.load(open(p))
+target='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'
+item=next(x for x in d if x['path'] == target)
+item['lfs']['size'] += 1
+item['size'] = item['lfs']['size']
+lfs=item['lfs']
+pointer=(f"version https://git-lfs.github.com/spec/v1\noid sha256:{lfs['oid']}\nsize {lfs['size']}\n").encode('ascii')
+lfs['pointerSize']=len(pointer)
+item['oid']=hashlib.sha1(f"blob {len(pointer)}\0".encode('ascii')+pointer).hexdigest()
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+update_canonical_entry_and_generated 'mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel' "$(python3 - "$nested_size_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); print(item['lfs']['size'])
+PY
+)" "$(python3 - "$nested_size_evidence" <<'PY'
+import json, sys
+item=next(x for x in json.load(open(sys.argv[1])) if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); print(item['lfs']['oid'])
+PY
+)"
+python3 - "$nested_size_evidence" "$nested_size_original_oid" "$nested_size_original_pointer" <<'PY'
+import json, sys
+p, original_oid, original_pointer = sys.argv[1:]
+d=json.load(open(p)); item=next(x for x in d if x['path']=='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'); item['oid']=original_oid; item['lfs']['pointerSize']=int(original_pointer)
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+expect_failure nested-lfs-size 'LFS pointer Git blob mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+
+restore_fixture
+python3 - "$tmp/docs/security/model-provenance/parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json" <<'PY'
+import json, sys
+p=sys.argv[1]
+d=json.load(open(p))
+target='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'
+item=next(x for x in d if x['path'] == target)
+item['lfs']['pointerSize'] += 1
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+expect_failure nested-pointer-size 'LFS pointer size mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
+
+restore_fixture
+python3 - "$tmp/docs/security/model-provenance/parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json" <<'PY'
+import json, sys
+p=sys.argv[1]
+d=json.load(open(p))
+target='mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel'
+item=next(x for x in d if x['path'] == target)
+item['oid']='0'*40
+json.dump(d, open(p, 'w'), separators=(',', ':'))
+PY
+update_evidence_index parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json
+expect_failure outer-git-oid 'LFS pointer Git blob mismatch' python3 "$tmp/scripts/generate-model-provenance.py" --root "$tmp" --check
 
 echo 'model provenance generation tests passed'
