@@ -82,7 +82,6 @@
 		A6793E663C67A0D63408317E /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D465A46A98C40FCE2AC3C775 /* AppSettings.swift */; };
 		A843366A6B64CA916E0322C7 /* StatusBarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 842D1A1DB98DC2331ECEE659 /* StatusBarState.swift */; };
 		AA39FB6B87B1C66210E66439 /* PermissionFlowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD54862EE140DF20207C603B /* PermissionFlowCoordinatorTests.swift */; };
-		AE41026963FA04BD04035A0D /* RingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */; };
 		B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */; };
 		BA9FFF3F1CCA6EB8B399BC2C /* PermissionFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96000BE65E6ABE18BF19F1EC /* PermissionFlowCoordinator.swift */; };
 		BAD2320D9521ED8C2B05863B /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AFDF15D9275C7B2662A6B51F /* FluidAudio */; };
@@ -97,7 +96,6 @@
 		D12ACE6C04D0BC9571BF1736 /* AppPickerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2F549ED7DBEBADC45C4429 /* AppPickerIntegrationTests.swift */; };
 		D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */; };
 		DB47CCD04FB7C1B3419C7F33 /* ModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6A14DF13BE05A8263A8449 /* ModelManager.swift */; };
-		DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4F33E65DF8138019C37275 /* RingBufferTests.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		DFFE8483B6228AAECF551FF2 /* ModelDownloadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEBF2DAAD3C5BAB9F33E30E2 /* ModelDownloadCoordinatorTests.swift */; };
 		E0E3BD7B773ECE54B518C2C8 /* EngineSelectionLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1711734B0AD4FDB46A70A1 /* EngineSelectionLoaderTests.swift */; };
@@ -200,10 +198,8 @@
 		C0B0E921D638972D397B465C /* DeterministicHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicHarness.swift; sourceTree = "<group>"; };
 		C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionControllerTests.swift; sourceTree = "<group>"; };
 		C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelMonitor.swift; sourceTree = "<group>"; };
-		C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBuffer.swift; sourceTree = "<group>"; };
 		C657766293ADBF02FDD74B36 /* AppPickerWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPickerWindowController.swift; sourceTree = "<group>"; };
 		CC13B415ED06C97834D8484E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
-		CC4F33E65DF8138019C37275 /* RingBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBufferTests.swift; sourceTree = "<group>"; };
 		CDABAA799E48D4CA3D9D1764 /* ModelDownloadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadCoordinator.swift; sourceTree = "<group>"; };
 		CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoInsertManager.swift; sourceTree = "<group>"; };
 		D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManagerTests.swift; sourceTree = "<group>"; };
@@ -275,7 +271,6 @@
 				87FBF01E284CBD93030272C6 /* AudioHardwareValidationRecorder.swift */,
 				C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */,
 				09A2146139DC4C5E50571381 /* AudioMixer.swift */,
-				C600411A06F5AB7E8B3AB026 /* RingBuffer.swift */,
 				F0CB0C822E590700DC92674D /* ScreenAudioCapture.swift */,
 				31C64476BEB27CFE9AB9D1E2 /* TimestampedAudioComposer.swift */,
 			);
@@ -341,7 +336,6 @@
 				81F3CF3EAB00EA975604C5A1 /* PrivacyLoggingTests.swift */,
 				ED777F1046A4254BCB252ACC /* RealModelLaneTests.swift */,
 				7F8FE4AB019087397C11051E /* RecordingSessionCoordinatorTests.swift */,
-				CC4F33E65DF8138019C37275 /* RingBufferTests.swift */,
 				44DB11AF678F4F2CB4A12F7A /* ScreenAudioCaptureTests.swift */,
 				1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */,
 				99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */,
@@ -634,7 +628,6 @@
 				8A22A35CB015DD0ED33C1A1E /* ProductionModelDownloadClients.swift in Sources */,
 				48C97CBD534F14344618304E /* ProductionRecordingSession.swift in Sources */,
 				7EF5A1780F0CB2DFA7923539 /* RecordingSessionCoordinator.swift in Sources */,
-				AE41026963FA04BD04035A0D /* RingBuffer.swift in Sources */,
 				7AB2F2BBEDB6558B75DB870A /* SHA256Streamer.swift in Sources */,
 				78C03577C5DF441A3E20842D /* ScreenAudioCapture.swift in Sources */,
 				22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */,
@@ -686,7 +679,6 @@
 				7FA1E14C0F925120151EB0CB /* PrivacyLoggingTests.swift in Sources */,
 				5A70A77ED62B8C36C9D8DB55 /* RealModelLaneTests.swift in Sources */,
 				4677C03CD8AC66080401C40A /* RecordingSessionCoordinatorTests.swift in Sources */,
-				DC7561B94F6356ECC5849A36 /* RingBufferTests.swift in Sources */,
 				FE70C047F8540DB2C94D4DE5 /* ScreenAudioCaptureTests.swift in Sources */,
 				EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */,
 				2CA2A08ADEAAAC67AA9DD125 /* SettingsWindowControllerTests.swift in Sources */,
