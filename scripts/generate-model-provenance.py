@@ -26,6 +26,23 @@ WHISPER_METADATA = {
     "ggml-medium-q5_0.bin": ("whisper-medium-q5_0", "Medium (Q5_0) - 539MB"),
     "ggml-large-v3-turbo-q5_0.bin": ("whisper-large-v3-turbo-q5_0", "Large v3 Turbo (Q5_0) - 574MB"),
 }
+COMPILED_REGULAR_EVIDENCE_ROOT = "parakeet-compiled-regular-files-aed02740059203c4a87495924f685de3722ae9ce"
+COMPILED_REGULAR_PATHS = {
+    "Decoder.mlmodelc/metadata.json",
+    "Decoder.mlmodelc/model.mil",
+    "Encoder.mlmodelc/metadata.json",
+    "Encoder.mlmodelc/model.mil",
+    "JointDecisionv3.mlmodelc/metadata.json",
+    "JointDecisionv3.mlmodelc/model.mil",
+    "Preprocessor.mlmodelc/metadata.json",
+    "Preprocessor.mlmodelc/model.mil",
+}
+EVIDENCE_INDEX = {
+    "whisper-5359861c739e955e79d9a303bcbc70fb988958b1-hf-tree.json": "https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1?recursive=true&expand=true&limit=100",
+    "parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-001.json": "https://huggingface.co/api/models/FluidInference/parakeet-tdt-0.6b-v3-coreml/tree/aed02740059203c4a87495924f685de3722ae9ce?recursive=true&expand=true&limit=100",
+    "parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json": "https://huggingface.co/api/models/FluidInference/parakeet-tdt-0.6b-v3-coreml/tree/aed02740059203c4a87495924f685de3722ae9ce?expand=true&recursive=true&limit=100&cursor=ZXlKbWFXeGxYMjVoYldVaU9pSk5aV3hGYm1OdlpHVnlMbTFzYlc5a1pXeGpMM2RsYVdkb2RITXZkMlZwWjJoMExtSnBiaUlzSW5SeVpXVmZiMmxrSWpvaU0yVTBPVGMzTUdRNU9HRTJZMlJqTnpjM1pUY3pPREJoWkRWbVpERTNaV0ppWVRNNU5EWTVaaUo5OjEwMA%3D%3D",
+    "parakeet_vocab.json": "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/aed02740059203c4a87495924f685de3722ae9ce/parakeet_vocab.json?download=false",
+}
 COMPILED_PATHS = {
     "Decoder.mlmodelc/analytics/coremldata.bin": "Decoder",
     "Decoder.mlmodelc/coremldata.bin": "Decoder",
@@ -73,14 +90,44 @@ def read_json(path: Path):
         fail(f"invalid JSON {path}: {exc}")
 
 
+def validate_evidence_index(root: Path) -> None:
+    directory = root / "docs/security/model-provenance"
+    index = read_json(directory / "evidence-index.v1.json")
+    if set(index) != {"files", "repository_revisions", "schema"} or index.get("schema") != "mactalk.model-evidence.v1":
+        fail("unsupported evidence index schema")
+    revisions = index.get("repository_revisions")
+    if revisions != {"parakeet": PARAKEET_REVISION, "whisper": WHISPER_REVISION}:
+        fail("evidence index repository revisions drift")
+    files = index.get("files")
+    if not isinstance(files, list) or len(files) != len(EVIDENCE_INDEX):
+        fail("evidence index file set is incomplete")
+    seen = set()
+    for entry in files:
+        if not isinstance(entry, dict) or set(entry) != {"bytes", "path", "sha256", "url"}:
+            fail("malformed evidence index entry")
+        path = entry["path"]
+        if path in seen or path not in EVIDENCE_INDEX:
+            fail(f"unexpected evidence index path: {path}")
+        seen.add(path)
+        if entry["url"] != EVIDENCE_INDEX[path] or not isinstance(entry["bytes"], int) or entry["bytes"] <= 0 or not HEX64.fullmatch(str(entry["sha256"])):
+            fail(f"invalid evidence index metadata: {path}")
+        raw = directory / path
+        if not raw.is_file():
+            fail(f"missing indexed evidence bytes: {path}")
+        data = raw.read_bytes()
+        if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            fail(f"indexed evidence bytes drift: {path}")
+    if seen != set(EVIDENCE_INDEX):
+        fail("evidence index has missing or extra response pages")
+
+
 def evidence(root: Path, repository: str) -> dict[str, dict]:
     directory = root / "docs/security/model-provenance"
+    validate_evidence_index(root)
     if repository == WHISPER_REPOSITORY:
         paths = [directory / "whisper-5359861c739e955e79d9a303bcbc70fb988958b1-hf-tree.json"]
     else:
-        paths = sorted(directory.glob("parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-*.json"))
-        if len(paths) < 2:
-            fail("complete paginated Parakeet evidence is required")
+        paths = [directory / name for name in sorted(EVIDENCE_INDEX) if name.startswith("parakeet-aed")]
     result: dict[str, dict] = {}
     for path in paths:
         values = read_json(path)
@@ -111,6 +158,22 @@ def tuple_from_lfs(item: dict, path: str) -> tuple[int, str]:
     return size, lfs["oid"]
 
 
+def tuple_from_regular_file(root: Path, item: dict, path: str, relative_root: str) -> tuple[int, str]:
+    if item.get("type") != "file" or item.get("lfs") is not None or not HEX40.fullmatch(str(item.get("oid", ""))):
+        fail(f"regular evidence tree identity is invalid for {path}")
+    raw = root / "docs/security/model-provenance" / relative_root / path
+    if not raw.is_file():
+        fail(f"missing byte-preserved regular evidence: {path}")
+    data = raw.read_bytes()
+    size = item.get("size")
+    if not isinstance(size, int) or size <= 0 or len(data) != size:
+        fail(f"regular evidence size mismatch for {path}")
+    git_blob = hashlib.sha1((f"blob {len(data)}\0").encode() + data).hexdigest()
+    if git_blob != item["oid"]:
+        fail(f"regular evidence Git blob mismatch for {path}")
+    return size, hashlib.sha256(data).hexdigest()
+
+
 def validate_entry(entry: dict, expected_kind: str, expected_layout: str) -> None:
     required = {"kind", "layout", "path", "bytes", "sha256", "role", "component"}
     if set(entry) != required and not (expected_kind == "whisper" and set(entry) == required | {"id", "displayName", "license", "languages"}):
@@ -135,37 +198,31 @@ def expected_entries(root: Path) -> tuple[list[dict], list[dict], list[dict]]:
             fail(f"missing Whisper evidence path: {path}")
         size, digest = tuple_from_lfs(item, path)
         whisper_entries.append({"kind":"whisper", "layout":"catalog", "path":path, "bytes":size, "sha256":digest, "role":"model", "component":identifier, "id":identifier, "displayName":display, "license":"MIT", "languages":["multilingual"]})
-    compiled_sidecar = read_json(root / "docs/security/model-provenance/parakeet-compiled-digest-evidence.v1.json")
-    if compiled_sidecar.get("repository") != PARAKEET_REPOSITORY or compiled_sidecar.get("revision") != PARAKEET_REVISION:
-        fail("compiled digest evidence is not pinned to the Parakeet revision")
-    sidecar = {x.get("path"): x for x in compiled_sidecar.get("entries", [])}
-    if set(sidecar) != set(COMPILED_PATHS) or len(sidecar) != 21:
-        fail("compiled digest evidence path set is incomplete or contains an unknown path")
+    regular_paths = {path for path in COMPILED_PATHS if path in COMPILED_REGULAR_PATHS}
+    evidence_root = root / "docs/security/model-provenance" / COMPILED_REGULAR_EVIDENCE_ROOT
+    if not evidence_root.is_dir() or {p.relative_to(evidence_root).as_posix() for p in evidence_root.rglob("*") if p.is_file()} != regular_paths:
+        fail("compiled regular evidence path set is incomplete or contains an unknown path")
     compiled = []
     for path, component in COMPILED_PATHS.items():
         item = parakeet.get(path)
-        record = sidecar.get(path)
-        if item is None or record is None:
+        if item is None or item.get("type") != "file":
             fail(f"missing compiled Parakeet evidence path: {path}")
-        if item.get("type") != "file" or item.get("size") != record.get("bytes"):
-            fail(f"compiled evidence size/type mismatch for {path}")
-        if not HEX64.fullmatch(str(record.get("sha256", ""))):
-            fail(f"invalid compiled digest evidence for {path}")
-        compiled.append({"kind":"parakeet", "layout":"compiled", "path":path, "bytes":record["bytes"], "sha256":record["sha256"], "role":"compiled", "component":component})
+        if item.get("lfs") is not None:
+            size, digest = tuple_from_lfs(item, path)
+        elif path in COMPILED_REGULAR_PATHS:
+            size, digest = tuple_from_regular_file(root, item, path, COMPILED_REGULAR_EVIDENCE_ROOT)
+        elif path == "parakeet_vocab.json":
+            size, digest = tuple_from_regular_file(root, item, path, "")
+        else:
+            fail(f"compiled entry has neither LFS nor independent regular evidence: {path}")
+        compiled.append({"kind":"parakeet", "layout":"compiled", "path":path, "bytes":size, "sha256":digest, "role":"compiled", "component":component})
     source = []
     for path, (component, role) in SOURCE_PATHS.items():
         item = parakeet.get(path)
         if item is None:
             fail(f"missing source Parakeet evidence path: {path}")
         if path == "parakeet_vocab.json":
-            raw = root / "docs/security/model-provenance/parakeet_vocab.json"
-            if not raw.is_file(): fail("missing committed vocabulary evidence")
-            data = raw.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
-            blob = hashlib.sha1((f"blob {len(data)}\0").encode() + data).hexdigest()
-            if len(data) != item.get("size") or digest != "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735" or blob != "c684822ec3b671ebc449c433a7012398d39b8bb0":
-                fail("vocabulary SHA-256 or Git blob identity mismatch")
-            size = len(data)
+            size, digest = tuple_from_regular_file(root, item, path, "")
         else:
             size, digest = tuple_from_lfs(item, path)
         source.append({"kind":"parakeet", "layout":"source", "path":path, "bytes":size, "sha256":digest, "role":role, "component":component})
