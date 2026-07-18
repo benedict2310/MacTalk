@@ -17,6 +17,10 @@ PARAKEET_REPOSITORY = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
+
+def is_int(value: object) -> bool:
+    return type(value) is int
+
 WHISPER_METADATA = {
     "ggml-tiny-q5_1.bin": ("whisper-tiny-q5_1", "Tiny (Q5_1) - 32MB"),
     "ggml-base-q5_1.bin": ("whisper-base-q5_1", "Base (Q5_1) - 60MB"),
@@ -35,6 +39,16 @@ COMPILED_REGULAR_PATHS = {
     "Preprocessor.mlmodelc/metadata.json",
     "Preprocessor.mlmodelc/model.mil",
 }
+CANONICAL_KEYS = {"entries", "fluidAudio", "repositories", "schema"}
+REPOSITORY_KEYS = {"name", "revision", "sourceURL"}
+FLUID_AUDIO_KEYS = {"version", "revision"}
+EVIDENCE_INDEX_KEYS = {"files", "repository_revisions", "schema"}
+EVIDENCE_FILE_KEYS = {"bytes", "path", "sha256", "url"}
+RAW_LFS_KEYS = {"type", "oid", "size", "lfs", "xetHash", "path", "lastCommit", "securityFileStatus"}
+RAW_REGULAR_KEYS = {"type", "oid", "size", "path", "lastCommit"}
+RAW_REGULAR_SCANNED_KEYS = RAW_REGULAR_KEYS | {"securityFileStatus"}
+LFS_KEYS = {"oid", "size", "pointerSize"}
+
 EVIDENCE_INDEX = {
     "whisper-5359861c739e955e79d9a303bcbc70fb988958b1-hf-tree.json": "https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1?recursive=true&expand=true&limit=100",
     "parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-001.json": "https://huggingface.co/api/models/FluidInference/parakeet-tdt-0.6b-v3-coreml/tree/aed02740059203c4a87495924f685de3722ae9ce?recursive=true&expand=true&limit=100",
@@ -81,33 +95,54 @@ def fail(message: str) -> "NoReturn":
     raise ValueError(message)
 
 
+class DuplicateJSONKey(ValueError):
+    pass
+
+
+def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJSONKey(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
 def read_json(path: Path):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except DuplicateJSONKey as exc:
+        fail(f"duplicate JSON key in {path}: {exc}")
     except Exception as exc:
         fail(f"invalid JSON {path}: {exc}")
 
 
+def require_exact_keys(value: object, expected: set[str], label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != expected:
+        actual = sorted(value) if isinstance(value, dict) else type(value).__name__
+        fail(f"{label} fields mismatch: expected {sorted(expected)}, got {actual}")
+    return value
+
+
 def validate_evidence_index(root: Path) -> None:
     directory = root / "docs/security/model-provenance"
-    index = read_json(directory / "evidence-index.v1.json")
-    if set(index) != {"files", "repository_revisions", "schema"} or index.get("schema") != "mactalk.model-evidence.v1":
+    index = require_exact_keys(read_json(directory / "evidence-index.v1.json"), EVIDENCE_INDEX_KEYS, "evidence index")
+    if index.get("schema") != "mactalk.model-evidence.v1":
         fail("unsupported evidence index schema")
     revisions = index.get("repository_revisions")
-    if revisions != {"parakeet": PARAKEET_REVISION, "whisper": WHISPER_REVISION}:
+    if not isinstance(revisions, dict) or set(revisions) != {"parakeet", "whisper"} or revisions != {"parakeet": PARAKEET_REVISION, "whisper": WHISPER_REVISION}:
         fail("evidence index repository revisions drift")
     files = index.get("files")
     if not isinstance(files, list) or len(files) != len(EVIDENCE_INDEX):
         fail("evidence index file set is incomplete")
     seen = set()
     for entry in files:
-        if not isinstance(entry, dict) or set(entry) != {"bytes", "path", "sha256", "url"}:
-            fail("malformed evidence index entry")
+        entry = require_exact_keys(entry, EVIDENCE_FILE_KEYS, "evidence index entry")
         path = entry["path"]
         if path in seen or path not in EVIDENCE_INDEX:
             fail(f"unexpected evidence index path: {path}")
         seen.add(path)
-        if entry["url"] != EVIDENCE_INDEX[path] or not isinstance(entry["bytes"], int) or entry["bytes"] <= 0 or not HEX64.fullmatch(str(entry["sha256"])):
+        if entry["url"] != EVIDENCE_INDEX[path] or not is_int(entry["bytes"]) or entry["bytes"] <= 0 or not isinstance(entry["sha256"], str) or not HEX64.fullmatch(entry["sha256"]):
             fail(f"invalid evidence index metadata: {path}")
         raw = directory / path
         if not raw.is_file():
@@ -147,16 +182,28 @@ def validate_revision(value: str, expected: str, label: str) -> None:
 
 
 def tuple_from_lfs(item: dict, path: str) -> tuple[int, str]:
+    if not isinstance(item, dict) or set(item) != RAW_LFS_KEYS:
+        fail(f"raw evidence fields mismatch for {path}")
+    if item.get("type") != "file":
+        fail(f"raw evidence item type must be file for {path}")
+    if not HEX40.fullmatch(str(item.get("oid", ""))) or not HEX64.fullmatch(str(item.get("xetHash", ""))):
+        fail(f"raw evidence identity is invalid for {path}")
     lfs = item.get("lfs")
-    if not isinstance(lfs, dict) or not HEX64.fullmatch(str(lfs.get("oid", ""))):
+    if not isinstance(lfs, dict) or set(lfs) != LFS_KEYS:
+        fail(f"raw LFS fields mismatch for {path}")
+    if not HEX64.fullmatch(str(lfs.get("oid", ""))):
         fail(f"missing immutable LFS digest for {path}")
     size = item.get("size")
-    if not isinstance(size, int) or size <= 0 or lfs.get("size") != size:
+    if not is_int(size) or size <= 0 or lfs.get("size") != size or not is_int(lfs.get("size")):
         fail(f"LFS size mismatch for {path}")
+    if not is_int(lfs.get("pointerSize")) or lfs["pointerSize"] <= 0:
+        fail(f"invalid LFS pointer size for {path}")
     return size, lfs["oid"]
 
 
 def tuple_from_regular_file(root: Path, item: dict, path: str, relative_root: str) -> tuple[int, str]:
+    if not isinstance(item, dict) or set(item) not in (RAW_REGULAR_KEYS, RAW_REGULAR_SCANNED_KEYS):
+        fail(f"raw evidence fields mismatch for {path}")
     if item.get("type") != "file" or item.get("lfs") is not None or not HEX40.fullmatch(str(item.get("oid", ""))):
         fail(f"regular evidence tree identity is invalid for {path}")
     raw = root / "docs/security/model-provenance" / relative_root / path
@@ -164,7 +211,7 @@ def tuple_from_regular_file(root: Path, item: dict, path: str, relative_root: st
         fail(f"missing byte-preserved regular evidence: {path}")
     data = raw.read_bytes()
     size = item.get("size")
-    if not isinstance(size, int) or size <= 0 or len(data) != size:
+    if not is_int(size) or size <= 0 or len(data) != size:
         fail(f"regular evidence size mismatch for {path}")
     git_blob = hashlib.sha1((f"blob {len(data)}\0").encode() + data).hexdigest()
     if git_blob != item["oid"]:
@@ -174,13 +221,14 @@ def tuple_from_regular_file(root: Path, item: dict, path: str, relative_root: st
 
 def validate_entry(entry: dict, expected_kind: str, expected_layout: str) -> None:
     required = {"kind", "layout", "path", "bytes", "sha256", "role", "component"}
-    if set(entry) != required and not (expected_kind == "whisper" and set(entry) == required | {"id", "displayName", "license", "languages"}):
-        fail(f"entry fields mismatch for {entry.get('path')}")
+    expected_keys = required | ({"id", "displayName", "license", "languages"} if expected_kind == "whisper" else set())
+    if not isinstance(entry, dict) or set(entry) != expected_keys:
+        fail(f"entry fields mismatch for {entry.get('path') if isinstance(entry, dict) else entry}")
     if entry.get("kind") != expected_kind or entry.get("layout") != expected_layout:
         fail(f"entry kind/layout mismatch for {entry.get('path')}")
     if not isinstance(entry.get("path"), str) or not entry["path"] or entry["path"].startswith("/") or ".." in entry["path"].split("/"):
         fail(f"unsafe provenance path: {entry.get('path')}")
-    if not isinstance(entry.get("bytes"), int) or entry["bytes"] <= 0:
+    if not is_int(entry.get("bytes")) or entry["bytes"] <= 0:
         fail(f"invalid byte count for {entry.get('path')}")
     if not isinstance(entry.get("sha256"), str) or not HEX64.fullmatch(entry["sha256"]):
         fail(f"sha256 must be lowercase 64-hex for {entry.get('path')}")
@@ -228,24 +276,35 @@ def expected_entries(root: Path) -> tuple[list[dict], list[dict], list[dict]]:
 
 
 def load_and_validate(root: Path) -> tuple[dict, list[dict], list[dict], list[dict]]:
-    canonical = read_json(root / "Config/ModelProvenance/model-provenance.v1.json")
-    if canonical.get("schema") != "mactalk.model-provenance.v1": fail("unsupported provenance schema")
+    canonical = require_exact_keys(read_json(root / "Config/ModelProvenance/model-provenance.v1.json"), CANONICAL_KEYS, "canonical top-level")
+    if canonical.get("schema") != "mactalk.model-provenance.v1":
+        fail("unsupported provenance schema")
     repositories = canonical.get("repositories")
-    if not isinstance(repositories, dict): fail("missing repositories")
+    if not isinstance(repositories, dict) or set(repositories) != {"whisper", "parakeet"}:
+        fail("canonical repositories fields mismatch")
     for key, name, revision in (("whisper", WHISPER_REPOSITORY, WHISPER_REVISION), ("parakeet", PARAKEET_REPOSITORY, PARAKEET_REVISION)):
-        value = repositories.get(key, {})
-        if value.get("name") != name: fail(f"wrong {key} repository")
+        value = require_exact_keys(repositories[key], REPOSITORY_KEYS, f"{key} repository")
+        if value.get("name") != name:
+            fail(f"wrong {key} repository")
         validate_revision(value.get("revision", ""), revision, key)
-        if not isinstance(value.get("sourceURL"), str) or revision not in value["sourceURL"]: fail(f"{key} source URL is not immutable")
-    fluid = canonical.get("fluidAudio", {})
-    if fluid != {"version":"0.15.5", "revision":FLUID_AUDIO_REVISION}: fail("FluidAudio pin mismatch")
-    actual = [*expected_entries(root)[0], *expected_entries(root)[1], *expected_entries(root)[2]]
+        expected_url = f"https://huggingface.co/{name}/tree/{revision}"
+        if value.get("sourceURL") != expected_url:
+            fail(f"{key} source URL mismatch: expected {expected_url}")
+    fluid = require_exact_keys(canonical.get("fluidAudio"), FLUID_AUDIO_KEYS, "fluidAudio")
+    if fluid != {"version":"0.15.5", "revision":FLUID_AUDIO_REVISION}:
+        fail("FluidAudio pin mismatch")
+    actual_parts = expected_entries(root)
+    actual = [*actual_parts[0], *actual_parts[1], *actual_parts[2]]
     entries = canonical.get("entries")
-    if not isinstance(entries, list): fail("canonical entries must be a list")
+    if not isinstance(entries, list):
+        fail("canonical entries must be a list")
     keys = [(x.get("kind"), x.get("layout"), x.get("path")) for x in entries]
-    if len(keys) != len(set(keys)): fail("duplicate canonical tuple")
-    for x in entries: validate_entry(x, x.get("kind"), x.get("layout"))
-    if entries != actual: fail("canonical tuples drift from immutable evidence")
+    if len(keys) != len(set(keys)):
+        fail("duplicate canonical tuple")
+    for x in entries:
+        validate_entry(x, x.get("kind"), x.get("layout"))
+    if entries != actual:
+        fail("canonical tuples drift from immutable evidence")
     return canonical, actual[:5], actual[5:26], actual[26:]
 
 
