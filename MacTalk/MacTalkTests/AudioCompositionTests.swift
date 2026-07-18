@@ -298,6 +298,59 @@ final class AudioCompositionTests: XCTestCase {
         XCTAssertTrue(composer.finish(sessionID: session).isEmpty)
     }
 
+    func test_microphoneTailFollowsElidedDiscontinuityExactlyOnce() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneOnly)
+        var output = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [0.1, 0.1]
+        ))
+        output += composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 100_000,
+            values: [0.2]
+        ))
+        output += composer.ingestTail(sessionID: session, source: .microphone, samples: [0.3])
+        output += composer.finish(sessionID: session)
+
+        XCTAssertEqual(output.count, 4_004)
+        XCTAssertEqual(output[0..<2], [0.1, 0.1])
+        XCTAssertTrue(output[2..<4_002].allSatisfy { abs($0) < 0.0001 })
+        XCTAssertEqual(output[4_002], 0.2, accuracy: 0.0001)
+        XCTAssertEqual(output[4_003], 0.3, accuracy: 0.0001)
+    }
+
+    func test_applicationTailFollowsElidedDiscontinuityThroughFallbackExactlyOnce() {
+        let session = UUID()
+        var composer = AudioTimelineComposer()
+        composer.reset(sessionID: session, mode: .microphoneAndApplication)
+        var output = composer.ingest(sessionID: session, chunk: chunk(
+            .microphone,
+            frame: 0,
+            values: [0.1, 0.1]
+        ))
+        output += composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 0,
+            values: [0.2, 0.2]
+        ))
+        _ = composer.ingest(sessionID: session, chunk: chunk(
+            .application,
+            frame: 100_000,
+            values: [0.4]
+        ))
+        _ = composer.ingestTail(sessionID: session, source: .application, samples: [0.5])
+        output += composer.deactivateApplication(sessionID: session)
+
+        XCTAssertEqual(output.count, 4_004)
+        XCTAssertEqual(output[0..<2], [0.15, 0.15])
+        XCTAssertTrue(output[2..<4_002].allSatisfy { abs($0) < 0.0001 })
+        XCTAssertEqual(output[4_002], 0.4, accuracy: 0.0001)
+        XCTAssertEqual(output[4_003], 0.5, accuracy: 0.0001)
+    }
+
     func test_finishIsExactlyOnceAndResetRejectsOldSession() {
         let first = UUID()
         let second = UUID()

@@ -236,8 +236,14 @@ struct AudioTimelineComposer: Sendable {
         guard self.sessionID == sessionID,
               !samples.isEmpty,
               let epoch,
-              let end = sources[source]?.latestPlacedEnd else { return [] }
-        let timestamp = AudioHostTimestamp(nanoseconds: frameTimestamp(end, epoch: epoch))
+              // Tail samples continue the source's raw converter stream. A
+              // discontinuity may have compressed its placed timeline, so
+              // latestPlacedEnd is not a valid raw PTS for the next packet:
+              // passing it through place would subtract discontinuityOffset a
+              // second time and drop the tail. expectedNextStart is retained
+              // in raw PTS frames specifically for this continuation.
+              let rawNextStart = sources[source]?.expectedNextStart else { return [] }
+        let timestamp = AudioHostTimestamp(nanoseconds: frameTimestamp(rawNextStart, epoch: epoch))
         return ingest(
             sessionID: sessionID,
             chunk: TimedAudioChunk(source: source, start: timestamp, samples: samples)
