@@ -432,6 +432,13 @@ final class StatusBarController {
                 hudController?.showWindow(nil)
             } else if finalizing || state.phase == .idle {
                 hudController?.close()
+                if state.phase == .idle {
+                    // Stop can invalidate a picker while its source list is
+                    // still loading. Closing it here also routes a user close
+                    // through the coordinator-owned cancellation callback.
+                    appPickerController?.close()
+                    appPickerController = nil
+                }
             }
         case let .requestAudioSource(requestID):
             showAppPicker(requestID: requestID)
@@ -1520,6 +1527,13 @@ final class StatusBarController {
     // MARK: - App Picker
 
     private func showAppPicker(requestID: UUID? = nil) {
+        // Coordinator-owned picker requests may only be presented while the
+        // matching request is still waiting for a source. The legacy path is
+        // intentionally left intact until the Stage 5 removal.
+        if let requestID {
+            guard isCurrentAudioSourceRequest(requestID) else { return }
+        }
+
         NSLog("🎬 [StatusBar] showAppPicker() - starting to load audio sources...")
 
         // Pattern 1: Preload → Inject → Then show
@@ -1528,7 +1542,18 @@ final class StatusBarController {
             do {
                 let sources = try await loadAudioSources()
 
-                guard !sources.isEmpty else {
+                if let requestID {
+                    // Stop can win while ScreenCaptureKit is suspended. Never
+                    // present a picker or touch picker state for that stale
+                    // completion.
+                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                    guard !sources.isEmpty else {
+                        NSLog("⚠️ [StatusBar] No audio sources available")
+                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+                        self.showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
+                        return
+                    }
+                } else if sources.isEmpty {
                     NSLog("⚠️ [StatusBar] No audio sources available")
                     abandonPendingStart()
                     showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
@@ -1544,11 +1569,16 @@ final class StatusBarController {
                 picker.onSelection = { [weak self] source in
                     NSLog("✅ [StatusBar] Audio source selected: \(source.name)")
                     guard let self else { return }
-                    self.selectedAudioSource = source
-                    self.appPickerController = nil
                     if let requestID {
+                        // A stale callback must not adopt a source or release a
+                        // picker belonging to a newer request.
+                        guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                        self.selectedAudioSource = source
+                        self.appPickerController = nil
                         self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: source)
                     } else {
+                        self.selectedAudioSource = source
+                        self.appPickerController = nil
                         self.startRecording()
                     }
                 }
@@ -1556,15 +1586,29 @@ final class StatusBarController {
                     guard let self else { return }
                     self.appPickerController = nil
                     if let requestID {
+                        // Empty, failed, revoked, and user-cancelled picker
+                        // requests all use the coordinator cancellation path.
                         self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
                     } else {
                         self.abandonPendingStart()
                     }
                 }
 
+                if let requestID {
+                    // Check again after constructing the window, before any
+                    // visible state or activation is changed.
+                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                }
+
                 // Force window load synchronously BEFORE showing
                 _ = picker.window
                 NSLog("🎬 [StatusBar] Window loaded - now showing...")
+
+                if let requestID {
+                    // Window loading itself can yield to Stop on future AppKit
+                    // implementations. Do not show a stale request.
+                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                }
 
                 // Now show the window (data is already loaded and injected)
                 picker.showWindow(nil)
@@ -1573,14 +1617,31 @@ final class StatusBarController {
 
             } catch let error as ScreenCaptureError {
                 NSLog("❌ [StatusBar] Screen capture error: \(error)")
-                abandonPendingStart()
+                if let requestID {
+                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                    self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+                } else {
+                    abandonPendingStart()
+                }
                 showError(error.localizedDescription ?? "Unknown screen capture error")
             } catch {
                 NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
-                abandonPendingStart()
+                if let requestID {
+                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
+                    self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+                } else {
+                    abandonPendingStart()
+                }
                 showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func isCurrentAudioSourceRequest(_ requestID: UUID) -> Bool {
+        let state = recordingSessionCoordinator.state
+        guard state.requestID == requestID else { return false }
+        guard case .selectingAudioSource = state.phase else { return false }
+        return true
     }
 
     private func loadAudioSources() async throws -> [AppPickerWindowController.AudioSource] {
@@ -1592,9 +1653,10 @@ final class StatusBarController {
 
         guard hasPermission else {
             NSLog("❌ [StatusBar] Screen recording permission NOT granted")
-            abandonPendingStart()
-            showError("Screen Recording permission is required.\n\nPlease enable it in:\nSystem Settings > Privacy & Security > Screen Recording > MacTalk\n\nThen restart MacTalk.")
-            return []
+            // The caller owns cancellation so coordinator-driven requests can
+            // invalidate exactly their request instead of abandoning unrelated
+            // legacy preparation state.
+            throw ScreenCaptureError.permissionDenied
         }
 
         NSLog("🔍 [StatusBar] Fetching shareable content with timeout protection...")

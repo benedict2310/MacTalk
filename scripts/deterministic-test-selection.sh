@@ -20,6 +20,7 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/OutputCoordinatorTests
   MacTalkTests/PermissionFlowCoordinatorTests
   MacTalkTests/PrivacyLoggingTests
+  MacTalkTests/RecordingSessionCoordinatorTests
   MacTalkTests/StatusBarControllerTests
   MacTalkTests/TranscriptionControllerTests
 )

@@ -8,6 +8,7 @@ source "$ROOT/scripts/deterministic-test-selection.sh"
 required_classes=(
   MacTalkTests/OutputCoordinatorTests
   MacTalkTests/PermissionFlowCoordinatorTests
+  MacTalkTests/RecordingSessionCoordinatorTests
   MacTalkTests/StatusBarControllerTests
   MacTalkTests/WhisperModelDownloadClientTests
 )

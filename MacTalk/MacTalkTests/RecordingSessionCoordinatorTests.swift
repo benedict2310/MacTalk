@@ -50,7 +50,7 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         harness.session.startSuspended = true
         harness.coordinator.requestStart(mode: .micOnly)
         await harness.waitFor { harness.coordinator.state.phase == .starting }
-        let id = try XCTUnwrap(harness.coordinator.state.requestID)
+        _ = try XCTUnwrap(harness.coordinator.state.requestID)
         harness.coordinator.stop()
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
         harness.session.releaseStart()
@@ -88,21 +88,74 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.output.cancelCount, 1)
     }
 
-    func test_deniedPermissionAndPickerCancelReturnIdleWithoutEngineWork() async throws {
-        let denied = RecordingHarness()
-        denied.permission.result = .deniedMicrophone
-        denied.coordinator.requestStart(mode: .micOnly)
-        await denied.waitFor { denied.coordinator.state.phase == .idle }
-        XCTAssertTrue(denied.engine.selections.isEmpty)
+    func test_deniedMicrophonePermissionReturnsIdleWithoutEngineWork() async throws {
+        let harness = RecordingHarness()
+        harness.permission.result = .deniedMicrophone
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .idle }
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+    }
 
-        let canceled = RecordingHarness()
-        canceled.snapshot = canceled.snapshot.withCaptureMode(.micPlusAppAudio)
-        canceled.coordinator.requestStart(mode: .micPlusAppAudio)
-        await canceled.waitFor { canceled.coordinator.state.phase == .selectingAudioSource }
-        let requestID = try XCTUnwrap(canceled.coordinator.state.requestID)
-        canceled.coordinator.provideAudioSource(requestID: requestID, source: nil)
-        XCTAssertEqual(canceled.coordinator.state.phase, .idle)
-        XCTAssertTrue(canceled.engine.selections.isEmpty)
+    func test_emptyAudioSourceListCancelsTheCurrentPickerRequest() async throws {
+        let harness = try await makeAudioSourceSelectionHarness()
+        let requestID = try XCTUnwrap(harness.coordinator.state.requestID)
+
+        // An empty ScreenCaptureKit result has no valid source to provide.
+        harness.coordinator.provideAudioSource(requestID: requestID, source: nil)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+        XCTAssertTrue(harness.session.starts.isEmpty)
+    }
+
+    func testAudioSourceLoadErrorCancelsTheCurrentPickerRequest() async throws {
+        let harness = try await makeAudioSourceSelectionHarness()
+        let requestID = try XCTUnwrap(harness.coordinator.state.requestID)
+
+        // Loader failures use the same nil-source cancellation contract as an
+        // empty result; they must not fall through to engine resolution.
+        harness.coordinator.provideAudioSource(requestID: requestID, source: nil)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+    }
+
+    func testPermissionRevocationCancelsTheCurrentPickerRequest() async throws {
+        let harness = try await makeAudioSourceSelectionHarness()
+        let requestID = try XCTUnwrap(harness.coordinator.state.requestID)
+
+        // A permission change while ScreenCaptureKit is loading is delivered as
+        // a failed picker request, never as a legacy start abandonment.
+        harness.coordinator.provideAudioSource(requestID: requestID, source: nil)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+    }
+
+    func test_pickerCancelReturnsIdleWithoutEngineWork() async throws {
+        let harness = try await makeAudioSourceSelectionHarness()
+        let requestID = try XCTUnwrap(harness.coordinator.state.requestID)
+        harness.coordinator.provideAudioSource(requestID: requestID, source: nil)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+    }
+
+    func test_stopBeforeSourceLoadCompletesIgnoresLateSource() async throws {
+        let harness = try await makeAudioSourceSelectionHarness()
+        let requestID = try XCTUnwrap(harness.coordinator.state.requestID)
+        harness.coordinator.stop()
+
+        // This models a delayed source-load completion arriving after Stop.
+        harness.coordinator.provideAudioSource(
+            requestID: requestID,
+            source: AppPickerWindowController.AudioSource(app: nil, display: nil, name: "Late", icon: nil)
+        )
+        await Task.yield()
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+        XCTAssertTrue(harness.session.starts.isEmpty)
     }
 
     func test_duplicateStartAndDownloadDeclineCannotCreateSecondSession() async throws {
@@ -115,6 +168,14 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         harness.coordinator.respondToDownloadPrompt(requestID: requestID, approved: false)
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
         XCTAssertTrue(harness.session.starts.isEmpty)
+    }
+
+    private func makeAudioSourceSelectionHarness() async throws -> RecordingHarness {
+        let harness = RecordingHarness()
+        harness.snapshot = harness.snapshot.withCaptureMode(.micPlusAppAudio)
+        harness.coordinator.requestStart(mode: .micPlusAppAudio)
+        await harness.waitFor { harness.coordinator.state.phase == .selectingAudioSource }
+        return harness
     }
 }
 
