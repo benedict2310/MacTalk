@@ -9,6 +9,7 @@ required_classes=(
   MacTalkTests/OutputCoordinatorTests
   MacTalkTests/PermissionFlowCoordinatorTests
   MacTalkTests/StatusBarControllerTests
+  MacTalkTests/WhisperModelDownloadClientTests
 )
 
 for required_class in "${required_classes[@]}"; do

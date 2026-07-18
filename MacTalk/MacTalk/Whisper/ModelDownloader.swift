@@ -120,6 +120,12 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
+    /// Every state emitted through this callback carries the operation that
+    /// produced it. Consumers must not infer ownership from callback order.
+    var onOperationState: (@MainActor @Sendable (UUID, State) -> Void)?
+
+    /// Legacy untagged callback retained for direct downloader users. Model
+    /// management adapters use `onOperationState` exclusively.
     var onState: (@MainActor (State) -> Void)?
 
     private let session: URLSession
@@ -131,6 +137,7 @@ final class ModelDownloader: @unchecked Sendable {
     private var operation: Task<Void, Never>?
     private var generation = 0
     private var cancelledGeneration: Int?
+    private var operationID: UUID?
 
     /// Roots and URLSession are injectable so tests never touch the user's
     /// model directory or the network. URLSession may use a custom URLProtocol.
@@ -157,11 +164,12 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
-    func start(spec: ModelSpec) {
+    func start(spec: ModelSpec, operationID: UUID = UUID()) {
         // URLSession's transfer is owned by this downloader, so replacing an
         // operation must cancel it rather than merely suppressing its result.
         operation?.cancel()
         generation += 1
+        self.operationID = operationID
         // Invalidate the old generation before URLSession invokes its
         // cancellation continuation, preventing stale resume bytes/state.
         delegate?.cancelAll()
@@ -170,11 +178,11 @@ final class ModelDownloader: @unchecked Sendable {
 
         guard ModelIntegrityVerifier.isValidDigest(spec.sha256), spec.sizeBytes > 0,
               !spec.revision.isEmpty, !spec.source.isEmpty else {
-            notifyState(.failed(ErrorType.badChecksum), generation: currentGeneration)
+            notifyState(.failed(ErrorType.badChecksum), generation: currentGeneration, operationID: operationID)
             return
         }
         guard !spec.urls.isEmpty else {
-            notifyState(.failed(ErrorType.noURLs), generation: currentGeneration)
+            notifyState(.failed(ErrorType.noURLs), generation: currentGeneration, operationID: operationID)
             return
         }
 
@@ -182,7 +190,7 @@ final class ModelDownloader: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: destination.path) {
             do {
                 try ModelIntegrityVerifier.validate(source: destination, spec: spec)
-                notifyState(.done(destination), generation: currentGeneration)
+                notifyState(.done(destination), generation: currentGeneration, operationID: operationID)
                 return
             } catch {
                 // Untrusted corrupt cache is removed, then downloaded afresh.
@@ -190,24 +198,25 @@ final class ModelDownloader: @unchecked Sendable {
             }
         }
 
-        notifyState(.running(progress: 0), generation: currentGeneration)
+        notifyState(.running(progress: 0), generation: currentGeneration, operationID: operationID)
         operation = Task { [weak self] in
-            await self?.run(spec: spec, destination: destination, generation: currentGeneration)
+            await self?.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
         }
     }
 
     func cancel() {
-        guard operation != nil else { return }
+        guard let operationID else { return }
         generation += 1
         let cancelled = generation
         delegate?.cancelAll()
         cancelledGeneration = cancelled
         operation?.cancel()
         operation = nil
-        notifyState(.failed(ErrorType.cancelled), generation: cancelled)
+        self.operationID = nil
+        notifyState(.failed(ErrorType.cancelled), generation: cancelled, operationID: operationID)
     }
 
-    private func run(spec: ModelSpec, destination: URL, generation: Int) async {
+    private func run(spec: ModelSpec, destination: URL, generation: Int, operationID: UUID) async {
         var lastError: Error?
         for (index, url) in spec.urls.enumerated() {
             guard isCurrent(generation), !Task.isCancelled else { return }
@@ -255,11 +264,12 @@ final class ModelDownloader: @unchecked Sendable {
                         throw ErrorType.httpStatus(http.statusCode)
                     }
 
-                    notifyState(.verifying, generation: generation)
+                    notifyState(.verifying, generation: generation, operationID: operationID)
                     try ModelIntegrityVerifier.verifyAndMove(source: temporaryURL, destination: destination, spec: spec)
                     clearResumeState(for: spec)
-                    notifyState(.done(destination), generation: generation)
+                    notifyState(.done(destination), generation: generation, operationID: operationID)
                     operation = nil
+                    self.operationID = nil
                     return
                 } catch {
                     lastError = error
@@ -296,17 +306,19 @@ final class ModelDownloader: @unchecked Sendable {
         } else {
             finalError = .noURLs
         }
-        notifyState(.failed(finalError), generation: generation)
+        notifyState(.failed(finalError), generation: generation, operationID: operationID)
         operation = nil
+        self.operationID = nil
     }
 
     private func isCurrent(_ generation: Int) -> Bool {
         self.generation == generation && cancelledGeneration != generation
     }
 
-    private func notifyState(_ state: State, generation: Int) {
+    private func notifyState(_ state: State, generation: Int, operationID: UUID) {
         Task { @MainActor [weak self] in
             guard let self, self.generation == generation else { return }
+            self.onOperationState?(operationID, state)
             self.onState?(state)
         }
     }

@@ -11,7 +11,8 @@ final class WhisperModelDownloadClientTests: XCTestCase {
             try await client.download(spec) { _ in }
         }
 
-        while !manager.didStart { await Task.yield() }
+        while manager.operations.isEmpty { await Task.yield() }
+        let operationID = try XCTUnwrap(manager.operations.first?.id)
         client.cancel()
         XCTAssertTrue(manager.didCancel)
 
@@ -22,34 +23,85 @@ final class WhisperModelDownloadClientTests: XCTestCase {
             // Expected.
         }
 
-        manager.emit(.failed(ModelDownloader.ErrorType.cancelled))
-        manager.emit(.done(URL(fileURLWithPath: "/tmp/late-model")))
-        manager.complete(.failure(ModelDownloader.ErrorType.cancelled))
+        manager.emit(.failed(ModelDownloader.ErrorType.cancelled), operationID: operationID)
+        manager.emit(.done(URL(fileURLWithPath: "/tmp/late-model")), operationID: operationID)
+        manager.complete(.failure(ModelDownloader.ErrorType.cancelled), operationID: operationID)
+    }
+
+    func test_replacementRejectsLateAAndCompletesOnlyFromB() async throws {
+        let manager = FakeWhisperModelManager()
+        let client = WhisperModelDownloadClient(manager: manager)
+        let specs = Array(ModelCatalog.bundled().prefix(2))
+        let first = try XCTUnwrap(specs.first)
+        let second = try XCTUnwrap(specs.dropFirst().first)
+        var events: [ModelDownloadClientEvent] = []
+
+        let firstTask = Task { @MainActor in
+            try await client.download(first) { events.append($0) }
+        }
+        while manager.operations.count < 1 { await Task.yield() }
+        let firstOperationID = try XCTUnwrap(manager.operations.first?.id)
+        client.cancel()
+        do {
+            try await firstTask.value
+            XCTFail("A must be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let secondTask = Task { @MainActor in
+            try await client.download(second) { events.append($0) }
+        }
+        while manager.operations.count < 2 { await Task.yield() }
+        let secondOperationID = try XCTUnwrap(manager.operations.last?.id)
+        XCTAssertNotEqual(firstOperationID, secondOperationID)
+
+        // A's terminal callback is deliberately delivered after B starts.
+        manager.emit(.done(URL(fileURLWithPath: "/tmp/a-late")), operationID: firstOperationID)
+        manager.complete(.success(URL(fileURLWithPath: "/tmp/a-late")), operationID: firstOperationID)
+        XCTAssertEqual(events, [])
+        XCTAssertFalse(secondTask.isCancelled)
+
+        manager.emit(.running(progress: 0.5), operationID: secondOperationID)
+        XCTAssertEqual(events, [.downloading(fraction: 0.5, fileIndex: nil, fileCount: nil)])
+        XCTAssertFalse(secondTask.isCancelled)
+        manager.emit(.done(URL(fileURLWithPath: "/tmp/b")), operationID: secondOperationID)
+        try await secondTask.value
+        XCTAssertEqual(events.last, .ready)
     }
 }
 
 @MainActor
 private final class FakeWhisperModelManager: ModelManaging {
-    var onDownloadState: (@MainActor @Sendable (ModelDownloader.State) -> Void)?
-    var didStart = false
-    var didCancel = false
-    private var completion: ((Result<URL, Error>) -> Void)?
-
-    func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
-        didStart = true
-        self.completion = completion
+    struct Operation {
+        let id: ModelDownloadOperationID
+        let onState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)?
+        let completion: @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void
     }
 
-    func cancelDownload() {
+    var onDownloadState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)?
+    var didCancel = false
+    private(set) var operations: [Operation] = []
+
+    func ensureAvailable(
+        _ spec: ModelSpec,
+        operationID: ModelDownloadOperationID,
+        onState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)?,
+        completion: @escaping @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void
+    ) {
+        operations.append(Operation(id: operationID, onState: onState, completion: completion))
+    }
+
+    func cancelDownload(operationID: ModelDownloadOperationID) {
         didCancel = true
     }
 
-    func emit(_ state: ModelDownloader.State) {
-        onDownloadState?(state)
+    func emit(_ state: ModelDownloader.State, operationID: ModelDownloadOperationID) {
+        operations.first { $0.id == operationID }?.onState?(operationID, state)
     }
 
-    func complete(_ result: Result<URL, Error>) {
-        completion?(result)
+    func complete(_ result: Result<URL, Error>, operationID: ModelDownloadOperationID) {
+        operations.first { $0.id == operationID }?.completion(operationID, result)
     }
 }
 

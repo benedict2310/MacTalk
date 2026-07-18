@@ -30,11 +30,13 @@ final class ProductionModelDownloadClient: ModelDownloadClient {
 
 private final class WhisperDownloadContinuationOwner: @unchecked Sendable {
     private let lock = NSLock()
+    private var operationID: ModelDownloadOperationID?
     private var continuation: CheckedContinuation<Void, Error>?
 
-    func install(_ continuation: CheckedContinuation<Void, Error>) {
+    func install(_ continuation: CheckedContinuation<Void, Error>, operationID: ModelDownloadOperationID) {
         lock.lock()
         let previous = self.continuation
+        self.operationID = operationID
         self.continuation = continuation
         lock.unlock()
 
@@ -45,26 +47,34 @@ private final class WhisperDownloadContinuationOwner: @unchecked Sendable {
     }
 
     @discardableResult
-    func finish(_ result: Result<Void, Error>) -> Bool {
+    func finish(_ result: Result<Void, Error>, operationID: ModelDownloadOperationID) -> Bool {
         lock.lock()
-        guard let continuation else {
+        guard self.operationID == operationID, let continuation else {
             lock.unlock()
             return false
         }
+        self.operationID = nil
         self.continuation = nil
         lock.unlock()
         continuation.resume(with: result)
         return true
     }
 
-    func cancel() {
-        _ = finish(.failure(CancellationError()))
+    func invalidate() -> ModelDownloadOperationID? {
+        lock.lock()
+        let operationID = self.operationID
+        self.operationID = nil
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+        return operationID
     }
 
-    func isActive() -> Bool {
+    func isActive(_ operationID: ModelDownloadOperationID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return continuation != nil
+        return self.operationID == operationID && continuation != nil
     }
 }
 
@@ -76,39 +86,39 @@ final class WhisperModelDownloadClient {
     init(manager: any ModelManaging = ModelManager.shared) { self.manager = manager }
 
     func download(_ spec: ModelSpec, onEvent: @escaping @MainActor (ModelDownloadClientEvent) -> Void) async throws {
+        let operationID = ModelDownloadOperationID()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            continuationOwner.install(continuation)
-            manager.onDownloadState = { [weak self] state in
-                guard let self, self.continuationOwner.isActive() else { return }
+            continuationOwner.install(continuation, operationID: operationID)
+            manager.ensureAvailable(spec, operationID: operationID, onState: { [weak self] callbackOperationID, state in
+                guard let self,
+                      callbackOperationID == operationID,
+                      self.continuationOwner.isActive(operationID) else { return }
                 switch state {
                 case let .running(progress):
                     onEvent(.downloading(fraction: progress, fileIndex: nil, fileCount: nil))
                 case .verifying:
                     onEvent(.verifying)
                 case .done:
-                    guard self.continuationOwner.finish(.success(())) else { return }
+                    guard self.continuationOwner.finish(.success(()), operationID: operationID) else { return }
                     onEvent(.ready)
-                case let .failed(error):
-                    _ = self.continuationOwner.finish(.failure(error))
-                case .idle:
+                case .failed, .idle:
                     break
                 }
-            }
-            manager.ensureAvailable(spec) { [weak self] result in
-                guard let self else { return }
+            }) { [weak self] callbackOperationID, result in
+                guard let self, callbackOperationID == operationID else { return }
                 if case let .failure(error) = result {
-                    _ = self.continuationOwner.finish(.failure(error))
+                    _ = self.continuationOwner.finish(.failure(error), operationID: operationID)
                 }
             }
         }
     }
 
     func cancel() {
-        // Claim and resume the continuation before asking ModelManager to
-        // cancel. Its cancellation callback may race or arrive synchronously;
-        // the owner makes every later result a no-op.
-        continuationOwner.cancel()
-        manager.cancelDownload()
+        // Invalidate the adapter operation before asking ModelManager to
+        // cancel. ModelManager performs the same synchronous invalidation
+        // before touching ModelDownloader, so a late A callback cannot reach B.
+        guard let operationID = continuationOwner.invalidate() else { return }
+        manager.cancelDownload(operationID: operationID)
     }
 }
 

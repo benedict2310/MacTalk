@@ -11,6 +11,7 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/EngineReloadCoordinatorTests
   MacTalkTests/EngineLifecycleCoordinatorTests
   MacTalkTests/ModelDownloadCoordinatorTests
+  MacTalkTests/WhisperModelDownloadClientTests
   MacTalkTests/ModelCatalogTests
   MacTalkTests/ModelIntegrityTests
   MacTalkTests/ModelProvenanceTests
