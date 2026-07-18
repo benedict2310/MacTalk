@@ -51,6 +51,9 @@ final class StatusBarController {
     private var autoPaste = false
     private var showNotifications = true  // Default to true
     private let notificationManager: NotificationManager
+    private let dependencies: StatusBarDependencies
+    private let permissionFlowCoordinator: PermissionFlowCoordinator
+    private let outputCoordinator: OutputCoordinator
     private var mode: TranscriptionController.Mode = .micOnly
     /// Explicit menu/hotkey intent survives settings edits and preparation retries.
     private var pendingStartMode: TranscriptionController.Mode?
@@ -83,11 +86,6 @@ final class StatusBarController {
     private let hotkeyManager = HotkeyManager()
     private var registeredHotkeyIDs: [String: UInt32] = [:]
 
-    // Permission prompt throttling (CR-03)
-    private var lastPermissionPromptTime: Date?
-    private var permissionPromptBackoffStep = 0
-    private let permissionPromptBackoffSchedule: [TimeInterval] = [30.0, 60.0, 120.0, 300.0]
-
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
     private var micPlusAppMenuItem: NSMenuItem?
@@ -95,8 +93,26 @@ final class StatusBarController {
     // Use nonisolated(unsafe) because deinit cannot access @MainActor-isolated properties
     private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
 
-    init(notificationManager: NotificationManager = .shared) {
+    init(
+        notificationManager: NotificationManager = .shared,
+        dependencies: StatusBarDependencies? = nil
+    ) {
         self.notificationManager = notificationManager
+        let resolvedDependencies = dependencies ?? StatusBarDependencies.live(notificationManager: notificationManager)
+        self.dependencies = resolvedDependencies
+        let permissionCoordinator = PermissionFlowCoordinator(
+            client: resolvedDependencies.permissionClient,
+            storedAutoPaste: AppSettings.shared.snapshot.autoPaste,
+            clock: resolvedDependencies.clock
+        )
+        self.permissionFlowCoordinator = permissionCoordinator
+        self.outputCoordinator = OutputCoordinator(
+            clipboardWriter: resolvedDependencies.clipboardWriter,
+            textInserter: resolvedDependencies.textInserter,
+            workspaceReader: resolvedDependencies.workspaceReader,
+            notifications: resolvedDependencies.notificationSubmitter,
+            permissionFlow: permissionCoordinator
+        )
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
 
@@ -439,6 +455,18 @@ final class StatusBarController {
         } else {
             autoPaste = false
             sender.state = .off
+            Task { @MainActor [weak self, weak sender] in
+                guard let self else { return }
+                let result = await self.permissionFlowCoordinator.requestEnableAutoPaste()
+                if result == .enabled {
+                    self.autoPaste = true
+                    sender?.state = .on
+                    AppSettings.shared.setAutoPaste(true)
+                } else {
+                    self.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
+                }
+            }
+            return
             let diagnostics = Permissions.getAccessibilityDiagnostics()
             DLOG("Auto-paste enable requested but Accessibility is not trusted; bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
             if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
@@ -932,8 +960,27 @@ final class StatusBarController {
 
         controller.onFinal = { [weak self] text in
             DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
-            self?.hudController?.updateFinal(text: text)
-
+            guard let owner = self else { return }
+            owner.hudController?.updateFinal(text: text)
+            let target = owner.recordingTargetApp.map { ApplicationIdentity($0) }
+            owner.outputCoordinator.setTarget(target)
+            let output = owner.outputCoordinator.handleFinal(
+                text: text,
+                context: OutputContext(
+                    target: target,
+                    autoPastePreference: owner.autoPaste,
+                    showNotifications: owner.showNotifications
+                )
+            )
+            owner.recordingTargetApp = nil
+            if let permissionEffect = output.permissionEffect {
+                owner.handle(permissionEffect)
+            }
+            if output.insertOutcome == .failed {
+                DebugLogger.shared.log(.error(description: "auto-insert failed"))
+            }
+            return
+            /*
             let accessibilityTrusted = Permissions.isAccessibilityTrusted()
             let autoPastePreference = self?.autoPaste ?? false
             let autoPasteEnabled = AutoPastePermissionPolicy.effectiveAutoPaste(
@@ -1007,6 +1054,7 @@ final class StatusBarController {
 
             NSLog("[StatusBar] Showing transcription completion notification")
             self?.notificationManager.submit(.transcriptionComplete, enabled: self?.showNotifications ?? false)
+            */
         }
 
         controller.onFinalizationComplete = { [weak self, weak controller] in
@@ -1033,16 +1081,19 @@ final class StatusBarController {
         }
 
         controller.onAppAudioLost = { [weak self] in
-            self?.notificationManager.submit(.appAudioLost, enabled: self?.showNotifications ?? false)
+            guard let self else { return }
+            self.outputCoordinator.handleAppAudioLost(showNotification: self.showNotifications)
         }
 
         controller.onFallbackToMicOnly = { [weak self] in
-            self?.notificationManager.submit(.fallbackToMicOnly, enabled: self?.showNotifications ?? false)
-            self?.hudController?.setAppMeterVisible(false)
+            guard let self else { return }
+            self.outputCoordinator.handleFallbackToMicOnly(showNotification: self.showNotifications)
+            self.hudController?.setAppMeterVisible(false)
         }
     }
 
     private func captureRecordingTargetApp() {
+        _ = outputCoordinator.captureTarget()
         let frontmost = NSWorkspace.shared.frontmostApplication
         let selfPID = ProcessInfo.processInfo.processIdentifier
 
@@ -1102,21 +1153,6 @@ final class StatusBarController {
     private func describeApplication(_ app: NSRunningApplication?) -> String {
         guard let app else { return "unknown" }
         return "\(app.localizedName ?? app.bundleIdentifier ?? "unknown") [pid=\(app.processIdentifier)]"
-    }
-
-    private func currentPermissionPromptCooldown() -> TimeInterval {
-        let index = max(permissionPromptBackoffStep - 1, 0)
-        return permissionPromptBackoffSchedule[min(index, permissionPromptBackoffSchedule.count - 1)]
-    }
-
-    private func recordPermissionPromptShown(at date: Date) {
-        lastPermissionPromptTime = date
-        permissionPromptBackoffStep = min(permissionPromptBackoffStep + 1, permissionPromptBackoffSchedule.count)
-    }
-
-    private func resetPermissionPromptBackoff() {
-        lastPermissionPromptTime = nil
-        permissionPromptBackoffStep = 0
     }
 
     private func startRecording() {
@@ -1680,13 +1716,22 @@ final class StatusBarController {
         refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
     }
 
+    private func handle(_ effect: PermissionEffect) {
+        switch effect {
+        case .requestAccessibility:
+            Permissions.requestAccessibilityPermission()
+        case .openAccessibilitySettings:
+            dependencies.permissionClient.openAccessibilitySettings()
+        case .resetStaleAccessibilityApproval:
+            _ = dependencies.permissionClient.resetAccessibilityApproval(reason: "stale local Accessibility approval")
+        }
+    }
+
     private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
         let storedAutoPaste = AppSettings.shared.snapshot.autoPaste
-        let accessibilityTrusted = Permissions.isAccessibilityTrusted()
-        let effectiveAutoPaste = AutoPastePermissionPolicy.effectiveAutoPaste(
-            storedPreference: storedAutoPaste,
-            accessibilityTrusted: accessibilityTrusted
-        )
+        let permissionState = permissionFlowCoordinator.refresh(storedAutoPaste: storedAutoPaste)
+        let accessibilityTrusted = permissionState.accessibilityTrusted
+        let effectiveAutoPaste = permissionState.effectiveAutoPaste
 
         if storedAutoPaste && !accessibilityTrusted {
             let diagnostics = Permissions.getAccessibilityDiagnostics()
@@ -1704,6 +1749,8 @@ final class StatusBarController {
     }
 
     private func abandonPendingStart() {
+        outputCoordinator.cancel()
+        recordingTargetApp = nil
         pendingSettingsLatch.clear()
         pendingStartMode = nil
         pendingParakeetStartRetry = false
@@ -1712,6 +1759,8 @@ final class StatusBarController {
     }
 
     private func invalidatePendingStart() {
+        outputCoordinator.cancel()
+        recordingTargetApp = nil
         startGeneration += 1
         pendingParakeetStartRetry = false
         pendingParakeetStartGeneration = nil
