@@ -44,7 +44,7 @@ fi
 cp "$ROOT/README.md" "$fixture/README.md"
 
 # Historical documents must not be presented as current guidance by the hub.
-sed -i.bak 's/Historical development status and progress tracking/Current status/' "$fixture/docs/README.md"
+sed -i.bak 's/- Historical: \*\*\[PROGRESS.md\](planning\/PROGRESS.md)\*\* - Historical development status and progress tracking/- **[PROGRESS.md](planning\/PROGRESS.md)** - Current status/' "$fixture/docs/README.md"
 rm -f "$fixture/docs/README.md.bak"
 if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
     echo "docs checker accepted a current PROGRESS label" >&2
@@ -55,6 +55,13 @@ sed -i.bak 's/Historical: \[XCODE_BUILD.md\]/[XCODE_BUILD.md]/' "$fixture/docs/R
 rm -f "$fixture/docs/README.md.bak"
 if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
     echo "docs checker accepted a current XCODE_BUILD label" >&2
+    exit 1
+fi
+cp "$ROOT/docs/README.md" "$fixture/docs/README.md"
+sed -i.bak 's/Historical: \*\*\[TEST_COVERAGE.md\]/[TEST_COVERAGE.md]/' "$fixture/docs/README.md"
+rm -f "$fixture/docs/README.md.bak"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted a current TEST_COVERAGE label" >&2
     exit 1
 fi
 

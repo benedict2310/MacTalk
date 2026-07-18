@@ -116,11 +116,13 @@ docs_hub = read("docs/README.md")
 for filename in ("development/SETUP.md", "development/ARCHITECTURE.md", "STATUS.md"):
     if not re.search(rf"\([^)]*{re.escape(filename)}\)", docs_hub):
         fail(f"docs/README.md does not link current {filename}")
-for filename in ("XCODE_BUILD.md", "PROGRESS.md"):
+if "scripts/coverage.sh" not in docs_hub:
+    fail("docs/README.md does not link the current coverage command")
+for filename in ("XCODE_BUILD.md", "PROGRESS.md", "TEST_COVERAGE.md"):
     lines = [line for line in docs_hub.splitlines() if filename in line]
     if not lines:
         fail(f"docs/README.md does not link historical {filename}")
-    if any(not re.search(r"historical", line, re.I) for line in lines):
+    if any(not re.search(r"historical", line.split(filename, 1)[0], re.I) for line in lines):
         fail(f"docs/README.md presents historical {filename} as current")
 
 # Check only current entry-point docs for stale root-level links; historical

@@ -25,7 +25,7 @@ Welcome to the MacTalk documentation hub. All technical documentation has been o
 Project requirements and progress tracking
 
 - **[PRD.md](planning/PRD.md)** - Product Requirements Document (what we're building)
-- **[PROGRESS.md](planning/PROGRESS.md)** - Historical development status and progress tracking
+- Historical: **[PROGRESS.md](planning/PROGRESS.md)** - Historical development status and progress tracking
 
 ### 🛠️ [Development](development/)
 Core technical documentation for developers
@@ -58,7 +58,8 @@ macOS permissions system (microphone, screen recording, accessibility)
 Testing strategy, coverage, and procedures
 
 - **[TESTING.md](testing/TESTING.md)** - Testing guide and how to run tests
-- **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Historical coverage report; use [STATUS.md](STATUS.md) for current measurements
+- **[STATUS.md](STATUS.md)** - Current verified test and coverage measurements; run `scripts/coverage.sh` to regenerate coverage artifacts
+- Historical: **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Historical coverage report; use [STATUS.md](STATUS.md) for current measurements
 
 ### 🚀 [Deployment](deployment/)
 Build, distribution, and release processes
@@ -88,7 +89,7 @@ Issue resolution, debugging, and known problems
 
 **Running tests:**
 1. See [TESTING.md](testing/TESTING.md)
-2. Check coverage in [TEST_COVERAGE.md](testing/TEST_COVERAGE.md)
+2. Run `scripts/coverage.sh` and check the current measurements in [STATUS.md](STATUS.md)
 
 **Debugging permission issues:**
 1. Start with [permissions/README.md](permissions/README.md)
