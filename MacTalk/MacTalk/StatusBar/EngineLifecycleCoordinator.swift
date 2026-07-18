@@ -232,23 +232,6 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
         state = .empty
     }
 
-    func isCurrent(requestID: UUID, selection: EngineSelection) -> Bool {
-        guard case let .ready(loadedSelection, _) = state,
-              loadedSelection == selection else { return false }
-        return isCurrentRequest(requestID: requestID, selection: selection)
-    }
-
-    func isCurrentRequest(requestID: UUID, selection: EngineSelection) -> Bool {
-        guard let completedOperationID,
-              requestOperations[requestID] == completedOperationID else { return false }
-        switch state {
-        case let .ready(loadedSelection, _), let .failed(loadedSelection, _):
-            return loadedSelection == selection
-        case .empty, .loading:
-            return false
-        }
-    }
-
     private func validated(
         _ result: EngineResolution,
         requestID: UUID,
