@@ -8,7 +8,6 @@ trap 'rm -rf "$bin_dir"' EXIT
 
 swiftc \
   MacTalk/MacTalk/Audio/ASREngine.swift \
-  MacTalk/MacTalk/Utilities/RecordingStartGate.swift \
   scripts/tests/parakeet_start_gate_tests.swift \
   -o "$bin_dir/parakeet-start-gate-tests"
 

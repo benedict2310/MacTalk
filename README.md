@@ -8,11 +8,11 @@
 
 [![macOS](https://img.shields.io/badge/macOS-26.0+-blue.svg)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-MacTalk is a privacy-focused, menu bar app that transcribes your voice in real-time. Choose between Whisper for accuracy or Parakeet for blazing-fast, real-time streaming transcription. All processing happens locally on your Mac with Metal-accelerated inference—no cloud, no network calls, no compromises.
+MacTalk is a menu-bar app with two local ASR providers: Whisper and Parakeet. After a model is provisioned, transcription runs on the Mac; model downloaders use network URLs and verify catalog SHA-256 values before installation. See the dated [verified status baseline](docs/STATUS.md) for command results and external release gates.
 
-The current signed release is notarized, launches correctly on macOS 26.2+, and includes improved first-run permission handling for microphone and auto-paste.
+The repository targets macOS 26.0, Swift 6.0, and FluidAudio 0.15.5 as declared in `project.yml`. This README does not claim notarization, hardware/TCC validation, or a universal offline installation.
 
 > 📝 **Read the full story:** [MacTalk Was My ASR Playground — and It Led to Ora](https://futurelab.studio/blog/mactalk-led-to-ora/) · [Project page on Futurelab Studio](https://futurelab.studio/mactalk/)
 
@@ -21,15 +21,15 @@ The current signed release is notarized, launches correctly on macOS 26.2+, and 
 ## Features
 
 - **Dual Engine Support** - Choose Whisper for accuracy or Parakeet for ultra-fast real-time streaming
-- **Real-time Transcription** - Streaming inference with live results as you speak
+- **Incremental transcription** - Whisper processes bounded chunks; Parakeet uses its provider-specific finalization path
 - **Dual Capture Modes** - Mic-only or mic + app audio (for calls/meetings)
-- **100% Local Processing** - Zero network calls, complete privacy
+- **Local Inference** - Captured audio is processed locally after model provisioning; model downloads are explicit network operations
 - **Metal Accelerated** - Optimized for Apple Silicon
 - **Swift 6 Concurrency** - Built with Swift 6 strict concurrency for thread-safe, responsive performance
 - **Menu Bar App** - Lightweight, always accessible
 - **Multiple Models** - Choose from tiny (fast) to large (accurate)
 - **Auto-Paste** - Transcripts copied to clipboard and optionally pasted
-- **Signed & Notarized Releases** - Ready-to-install DMG builds with working permissions on supported macOS 26 releases
+- **Release tooling** - Archive, signing, notarization, and verification scripts with explicit Apple/GitHub prerequisites
 - **Customizable Hotkeys** - Configure your own keyboard shortcuts for hands-free control
 
 ---
@@ -96,7 +96,7 @@ MacTalk supports two transcription engines:
 
 ### Parakeet (Recommended for speed)
 
-Ultra-fast streaming transcription with real-time results. Words appear instantly as you speak.
+FluidAudio-backed local transcription. Provider lifecycle and finalization are coordinated separately from Whisper; see `ASREngine.swift` and the status baseline for validated behavior.
 
 | Model | Size | Speed | Use Case |
 |-------|------|-------|----------|
@@ -120,7 +120,7 @@ Models download automatically when selected. No manual setup required.
 
 ## Privacy
 
-- **100% local processing** - No data ever leaves your Mac
+- **Local transcription path** - Captured audio is not sent to a cloud ASR provider by the transcription pipeline; model provisioning uses the documented downloaders
 - **No telemetry** - No analytics or tracking
 - **Open source** - Review the code yourself
 
@@ -131,10 +131,10 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 ## FAQ
 
 ### Q: Does MacTalk work offline?
-**A:** Yes. Once models are downloaded, no network connection is required for transcription.
+**A:** Once a model is downloaded and verified, the transcription path can run without a network connection. Model provisioning itself requires network access unless the artifact is already present.
 
 ### Q: Which engine should I use?
-**A:** Use **Parakeet** for real-time streaming where words appear instantly as you speak—ideal for live dictation. Use **Whisper** when you need maximum accuracy or multilingual support. Start with Whisper `small` for balanced speed and accuracy.
+**A:** Select the provider for your workload. Whisper exposes incremental chunk processing and multilingual catalog models; Parakeet is backed by FluidAudio. Do not infer latency or accuracy from this README—hardware/model measurements are not part of the current baseline.
 
 ### Q: Can I transcribe calls from Zoom/Teams/FaceTime?
 **A:** Yes, using Mode B (Mic + App Audio). Requires Screen Recording permission.
@@ -162,7 +162,7 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see the root [MIT License](./LICENSE) for details.
 
 ---
 

@@ -1,5 +1,10 @@
 # MacTalk Stabilization Implementation Plan
 
+> **Historical execution plan:** Dated planning material retained for audit
+> context. Check current source, generated configuration, and
+> [`docs/STATUS.md`](../../STATUS.md) before treating any task/API or checkbox
+> as current.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Every production behavior follows red/green/refactor: add one focused XCTest, run it to observe the expected failure, add the smallest implementation, and rerun the focused test before moving on.
 
 **Goal:** Make MacTalk’s audio, privacy, concurrency, settings, model delivery, build, test, signing, release, and documentation behavior deterministic and verifiable before any feature expansion.

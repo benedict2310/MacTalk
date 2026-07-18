@@ -1,5 +1,9 @@
 # MacTalk Development Progress
 
+> **Historical planning/status material:** This file contains earlier phase
+> checklists and measurements. It is not current evidence; use
+> [`docs/STATUS.md`](../STATUS.md) for reproducible results.
+
 **Project Start Date:** 2025-10-21
 **Current Phase:** Phase 6 - Release Preparation (In Progress)
 **Last Updated:** 2025-11-14

@@ -1,5 +1,9 @@
 # Parakeet UX - Story Index
 
+> **Historical planning material:** This index preserves prior Parakeet
+> investigations and proposals. It is not current API documentation; verify
+> FluidAudio behavior against the pinned source/config and `docs/STATUS.md`.
+
 **Epic:** Parakeet Integration & Real-Time Streaming UX
 **Last Updated:** 2025-12-23
 

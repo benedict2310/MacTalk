@@ -1,5 +1,10 @@
 # Dead API cleanup inventory
 
+> **Historical evidence:** This inventory records the cleanup performed on
+> 2026-07-18. It is not a current API reference; the current boundary is
+> `ASREngine.process` / `ASREngine.finalize`, and the generic `RingBuffer` API
+> is removed.
+
 Tracking evidence for `TODO-6fc5c73f` on `feat/stabilize-mactalk`.
 
 ## Baseline evidence (2026-07-18)
@@ -44,4 +49,4 @@ Each logical removal group was validated before its scoped commit:
 3. **Clipboard/Cmd-V, ScreenAudio, controller, and status dependency cleanup** (`97173be`): full XCTest suite, 230 tests / 1 skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
 4. **Obsolete engine status helpers** (`5bb1eef`): full XCTest suite, 230 tests / 1 skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
 
-The final compiler/build evidence is a successful signed Release build from `./build.sh run`; the compiler emitted no errors. Final `rg` over Swift sources reports no removed candidate symbols, and the generated Xcode project has no stale RingBuffer references. The Objective-C bridge symbols were scanned and retained unchanged. The TSan scheme was not run because the requested TSan lane is unavailable for this cleanup environment; no TSan result is claimed. No model download or network operation was used.
+The final compiler/build evidence is a successful signed Release build from `./build.sh run`; the compiler emitted no errors. Final `rg` over Swift sources reports no removed candidate symbols, and the generated Xcode project has no stale RingBuffer references. The Objective-C bridge symbols were scanned and retained unchanged. The TSan scheme was not run because the requested TSan lane is unavailable for this cleanup environment; no TSan result is claimed. No model download or network operation was used. Historical code snippets naming removed `RingBuffer`, `WhisperEngine` convenience methods, or `ASREngine.setPartialHandler` are intentionally not repeated here; use current source and `docs/development/ARCHITECTURE.md`.

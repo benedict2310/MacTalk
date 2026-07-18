@@ -1,5 +1,10 @@
 # MacTalk Test Coverage Report
 
+> **Historical report:** The percentages and file/API lists below are retained
+> for project history and were not regenerated for the current baseline. Use
+> [`docs/STATUS.md`](../STATUS.md) and `scripts/coverage.sh` for current
+> command/artifact evidence.
+
 **Generated:** 2025-10-22
 **Project Phase:** Phase 4 Complete, Phase 5 (Testing & Polish) In Progress
 **Test Framework:** XCTest

@@ -19,4 +19,4 @@ Independent ASR streams and transcript merging would duplicate engine lifecycle 
 
 ## Validation boundary
 
-Deterministic unit tests cover timestamp placement, lateness, bounded storage, gain, fallback, lifecycle, and callback serialization. A signed Release build must still receive manual validation with simultaneous acoustic/electronic impulses and an app-audio loss event on supported hardware; those checks validate framework/device timestamp behavior rather than pure integer math.
+Deterministic unit tests cover timestamp placement, lateness, bounded storage, gain, fallback, lifecycle, and callback serialization in `MacTalkTests/AudioCompositionTests.swift` and `AudioCaptureIntegrationTests.swift`. The signed Release build baseline passed, but manual validation with simultaneous acoustic/electronic impulses and an app-audio loss event was not run on this documentation baseline. Those checks validate framework/device timestamp behavior rather than pure integer math.

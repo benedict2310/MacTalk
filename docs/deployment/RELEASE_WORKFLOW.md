@@ -31,8 +31,9 @@ one. No phase downloads a model or retries notarization automatically.
 - The whisper.cpp submodule. `archive-release.sh` builds its libraries with
   Metal when `Vendor/whisper.cpp/build` is absent. It never downloads a
   transcription model.
-- A Developer ID Application certificate **and private key** in the login
-  keychain.
+- An active Apple Developer Program membership with the current Apple
+  Developer Program License Agreement accepted by the team, plus a Developer
+  ID Application certificate **and private key** in the login keychain.
 - Notarization credentials, either a `notarytool` keychain profile in
   `MACTALK_NOTARY_KEYCHAIN_PROFILE`, or the three environment variables
   `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_SPECIFIC_PASSWORD`.
@@ -84,9 +85,10 @@ cat release/MacTalk-*-manifest.txt
 Every signing, notarization, and publish job is bound to the GitHub Environment
 named exactly `release`. Repository administrators must create that environment,
 configure required reviewers, and configure protected-tag rules that forbid
-force-pushes and deletion for `v*.*.*`. Until those settings exist GitHub will
-fail the workflow (or hold it awaiting reviewer approval); a green job without
-those controls is not an authorized release. The workflow carries the
+force-pushes and deletion for `v*.*.*`. The Apple Developer Program License
+Agreement must also be current and accepted for the signing team. Until those
+settings exist GitHub will fail the workflow (or hold it awaiting reviewer
+approval); a green job without those controls is not an authorized release. The workflow carries the
 secret-free preflight's exact peeled commit through every checkout and compares
 it again before publish.
 

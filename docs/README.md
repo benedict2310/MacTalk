@@ -1,6 +1,10 @@
 # MacTalk Documentation
 
-> **Native macOS menu bar app for local voice transcription powered by Whisper**
+> **Native macOS menu bar app for local voice transcription powered by Whisper and Parakeet**
+>
+> Current evidence is dated in [`STATUS.md`](STATUS.md). Many story, roadmap,
+> and progress files are historical planning material and are not API/support
+> claims.
 
 Welcome to the MacTalk documentation hub. All technical documentation has been organized into logical categories for easy navigation.
 
@@ -21,7 +25,7 @@ Welcome to the MacTalk documentation hub. All technical documentation has been o
 Project requirements and progress tracking
 
 - **[PRD.md](planning/PRD.md)** - Product Requirements Document (what we're building)
-- **[PROGRESS.md](planning/PROGRESS.md)** - Current development status and progress tracking
+- **[PROGRESS.md](planning/PROGRESS.md)** - Historical development status and progress tracking
 
 ### 🛠️ [Development](development/)
 Core technical documentation for developers
@@ -54,7 +58,7 @@ macOS permissions system (microphone, screen recording, accessibility)
 Testing strategy, coverage, and procedures
 
 - **[TESTING.md](testing/TESTING.md)** - Testing guide and how to run tests
-- **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Detailed code coverage reports and metrics
+- **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Historical coverage report; use [STATUS.md](STATUS.md) for current measurements
 
 ### 🚀 [Deployment](deployment/)
 Build, distribution, and release processes
@@ -110,20 +114,20 @@ Issue resolution, debugging, and known problems
 
 ## Project Status
 
-**Current Phase:** Phase 5 Complete - Ready for Release Preparation
-**Last Updated:** 2025-11-14
+**Current evidence baseline:** 2026-07-18
 
-See [PROGRESS.md](planning/PROGRESS.md) for detailed milestone tracking.
+See [STATUS.md](STATUS.md) for reproducible command results and external blockers.
 
 ---
 
 ## Tech Stack
 
-- **Language:** Swift 5.9+ (macOS 14.0+)
-- **Frameworks:** AppKit, AVFoundation, ScreenCaptureKit
-- **Audio Engine:** whisper.cpp (Metal-accelerated)
-- **Build System:** XcodeGen
-- **Testing:** XCTest (85%+ coverage)
+- **Language:** Swift 6.0 with complete strict concurrency
+- **Platform:** macOS 26.0 deployment target
+- **Frameworks:** AppKit, AVFoundation, ScreenCaptureKit, Metal
+- **ASR:** Whisper via whisper.cpp and Parakeet via FluidAudio 0.15.5
+- **Build System:** XcodeGen 2.44.1
+- **Testing:** XCTest deterministic lanes; measured coverage is recorded in STATUS.md
 
 ---
 
@@ -138,13 +142,19 @@ See [PROGRESS.md](planning/PROGRESS.md) for detailed milestone tracking.
 
 ## Key Decisions
 
-See **Decisions Log** in [PROGRESS.md](planning/PROGRESS.md) for architectural decisions.
+Current accepted decisions are the ADRs in [development/adr](development/adr/):
+
+- [ADR-001](development/adr/ADR-001-timestamp-aligned-audio-composition.md) - timestamp-aligned audio composition
+- [ADR-002](development/adr/ADR-002-settings-and-state-ownership.md) - settings and recording state ownership
+- [ADR-003](development/adr/ADR-003-privacy-logging.md) - privacy-preserving diagnostics
+- [ADR-004](development/adr/ADR-004-dependency-pinning.md) - dependency/model pinning
+- [ADR-005](development/adr/ADR-005-signing-policy.md) - signing and release policy
 
 Notable choices:
-- whisper.cpp over CoreML (better performance, quantization support)
-- Menu bar app paradigm (minimal UI, quick access)
+- Provider-neutral ASREngine boundary for Whisper and Parakeet
+- Timestamp-aligned composition for microphone and app audio
 - XcodeGen for project management (declarative configuration)
-- Local-only processing (privacy-first, no cloud)
+- Local transcription after model provisioning; model downloaders remain explicit network code
 
 ---
 
