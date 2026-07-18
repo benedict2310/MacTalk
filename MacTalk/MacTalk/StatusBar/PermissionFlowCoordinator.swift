@@ -3,7 +3,7 @@ import Foundation
 /// Owns permission state and user-prompt policy. The coordinator never presents
 /// AppKit alerts and is consequently safe to exercise with a fake client.
 @MainActor
-final class PermissionFlowCoordinator: PermissionFlowCoordinating {
+final class PermissionFlowCoordinator: PermissionFlowCoordinating, RecordingPermissionAuthorizing {
     private let client: any PermissionClient
     private let now: @MainActor () -> Date
     private let backoff: [TimeInterval]

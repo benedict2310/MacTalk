@@ -38,6 +38,12 @@ enum ModelDownloadClientEvent: Equatable {
 }
 
 @MainActor
+protocol ModelRequirementDownloading: AnyObject {
+    func download(_ requirement: ModelRequirement, requestID: UUID) async throws
+    func cancel(requestID: UUID)
+}
+
+@MainActor
 protocol ModelDownloadClient: AnyObject {
     func download(
         _ requirement: ModelRequirement,
@@ -69,7 +75,7 @@ protocol ModelDownloadCoordinating: AnyObject {
 /// Owns one tagged download operation. Downloader callbacks are accepted only
 /// while both operation and request identifiers still match.
 @MainActor
-final class ModelDownloadCoordinator: ModelDownloadCoordinating {
+final class ModelDownloadCoordinator: ModelDownloadCoordinating, ModelRequirementDownloading {
     private let client: any ModelDownloadClient
     private let scheduler: any ModelDownloadScheduling
     private let autoHideDelay: TimeInterval

@@ -75,8 +75,58 @@ enum ModelRequirement: Equatable, Sendable {
 enum RecordingPhase: Equatable, Sendable {
     case idle
     case authorizing
+    case selectingAudioSource
+    case awaitingDownloadApproval(ModelRequirement)
+    case downloadingModel(ModelRequirement)
+    case resolvingEngine(EngineSelection)
+    case starting
     case recording
     case finalizing
+
+    var isStartPending: Bool {
+        switch self {
+        case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
+             .downloadingModel, .resolvingEngine, .starting: return true
+        case .idle, .recording, .finalizing: return false
+        }
+    }
+}
+
+struct RecordingSessionState: Equatable, Sendable {
+    let phase: RecordingPhase
+    let requestID: UUID?
+    let mode: TranscriptionController.Mode?
+    let selection: EngineSelection?
+
+    static let idle = RecordingSessionState(
+        phase: .idle,
+        requestID: nil,
+        mode: nil,
+        selection: nil
+    )
+}
+
+enum UserFacingError: Error, Equatable, Sendable {
+    case message(String)
+
+    var message: String {
+        if case let .message(value) = self { return value }
+        return "An unexpected recording error occurred."
+    }
+}
+
+enum RecordingSessionEvent {
+    case stateChanged(RecordingSessionState)
+    case requestAudioSource(requestID: UUID)
+    case confirmDownload(requestID: UUID, requirement: ModelRequirement)
+    case partial(String)
+    case finalText(String)
+    case finalOutput(OutputResult)
+    case micLevel(AudioLevelMonitor.LevelData)
+    case appLevel(AudioLevelMonitor.LevelData)
+    case appAudioLost
+    case fallbackToMicOnly
+    case error(UserFacingError)
 }
 
 struct StatusBarViewState: Equatable, Sendable {

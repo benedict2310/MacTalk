@@ -78,6 +78,20 @@ final class StatusBarController {
     private let dependencies: StatusBarDependencies
     private let permissionFlowCoordinator: PermissionFlowCoordinator
     private let outputCoordinator: OutputCoordinator
+    private lazy var recordingSessionCoordinator: RecordingSessionCoordinator = {
+        let coordinator = RecordingSessionCoordinator(
+            permission: permissionFlowCoordinator,
+            engine: engineLifecycleCoordinator,
+            download: modelDownloadCoordinator,
+            sessions: ProductionTranscriptionSessionFactory(),
+            output: outputCoordinator,
+            settingsSnapshot: { AppSettings.shared.snapshot }
+        )
+        coordinator.onEvent = { [weak self] event in
+            self?.handleRecordingSessionEvent(event)
+        }
+        return coordinator
+    }()
     private var mode: TranscriptionController.Mode = .micOnly
     /// Explicit menu/hotkey intent survives settings edits and preparation retries.
     private var pendingStartMode: TranscriptionController.Mode?
@@ -396,6 +410,9 @@ final class StatusBarController {
         modelDownloadCoordinator.onStateChanged = { [weak self] state in
             self?.handleModelDownloadState(state)
         }
+        recordingSessionCoordinator.onEvent = { [weak self] event in
+            self?.handleRecordingSessionEvent(event)
+        }
 
         // Load default model (async to avoid blocking menu bar icon)
         Task { @MainActor [weak self] in
@@ -403,73 +420,67 @@ final class StatusBarController {
         }
     }
 
+    private func handleRecordingSessionEvent(_ event: RecordingSessionEvent) {
+        switch event {
+        case let .stateChanged(state):
+            let active = state.phase == .recording
+            let finalizing = state.phase == .finalizing
+            setStartItemsEnabled(!active && !finalizing && !state.phase.isStartPending)
+            updateMenuBarIcon(recording: active)
+            if active {
+                hudController?.setAppMeterVisible(state.mode == .micPlusAppAudio)
+                hudController?.showWindow(nil)
+            } else if finalizing || state.phase == .idle {
+                hudController?.close()
+            }
+        case let .requestAudioSource(requestID):
+            showAppPicker(requestID: requestID)
+        case let .confirmDownload(requestID, requirement):
+            guard case let .whisper(spec) = requirement else {
+                showParakeetDownloadConfirmation { [weak self] approved in
+                    self?.recordingSessionCoordinator.respondToDownloadPrompt(requestID: requestID, approved: approved)
+                }
+                return
+            }
+            showDownloadConfirmationDialog(spec: spec) { [weak self] approved in
+                self?.recordingSessionCoordinator.respondToDownloadPrompt(requestID: requestID, approved: approved)
+            }
+        case let .partial(text): hudController?.updatePartial(text: text)
+        case let .finalText(text): hudController?.updateFinal(text: text)
+        case let .finalOutput(output):
+            if let effect = output.permissionEffect { handle(effect) }
+        case let .micLevel(level):
+            hudController?.updateMicLevel(rms: level.rms, peak: level.peak, peakHold: level.peakHold)
+        case let .appLevel(level):
+            hudController?.updateAppLevel(rms: level.rms, peak: level.peak, peakHold: level.peakHold)
+        case .appAudioLost:
+            outputCoordinator.handleAppAudioLost(showNotification: showNotifications)
+        case .fallbackToMicOnly:
+            outputCoordinator.handleFallbackToMicOnly(showNotification: showNotifications)
+            hudController?.setAppMeterVisible(false)
+        case let .error(error): showError(error.message)
+        }
+    }
+
     @objc private func statusBarButtonClicked() {
-        // Toggle HUD visibility
-        if isRecording {
+        if recordingSessionCoordinator.state.phase == .recording {
             hudController?.showWindow(nil)
         }
     }
 
     @objc private func startMicOnly() {
         mode = .micOnly
-        pendingStartMode = .micOnly
-        pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micOnly))
-        withMicrophonePermission(
-            onGranted: { [weak self] in
-                guard let self else { return }
-                self.captureRecordingTarget()
-                self.startRecording()
-            },
-            onAbandoned: { [weak self] in
-                self?.abandonPendingStart()
-            }
-        )
+        recordingSessionCoordinator.requestStart(mode: .micOnly)
     }
 
     @objc private func startMicPlusApp() {
         NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
         mode = .micPlusAppAudio
-        pendingStartMode = .micPlusAppAudio
-        pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(.micPlusAppAudio))
-
-        withMicrophonePermission(
-            onGranted: { [weak self] in
-                guard let self else { return }
-                self.captureRecordingTarget()
-
-                // Check screen recording permission
-                NSLog("🔍 [StatusBar] Checking screen recording permission...")
-                if Permissions.checkScreenRecordingPermission() {
-                    NSLog("✅ [StatusBar] Permission granted, showing app picker")
-                    self.showAppPicker()
-                } else {
-                    NSLog("❌ [StatusBar] Screen recording permission not granted")
-                    self.abandonPendingStart()
-                    // Show guide to help user enable permission
-                    Permissions.ensureScreenRecordingGuide()
-                }
-            },
-            onAbandoned: { [weak self] in
-                self?.abandonPendingStart()
-            }
-        )
+        recordingSessionCoordinator.requestStart(mode: .micPlusAppAudio)
     }
 
     @objc private func stopRecording() {
-        guard isRecording || isStartInFlight else { return }
-        let shouldFlushFinalTranscript = isRecording
-        invalidatePendingStart()
-        if shouldFlushFinalTranscript {
-            isFinalizing = true
-            setStartItemsEnabled(false)
-            transcriber?.stop()
-        } else {
-            transcriber?.cancelStart()
-            outputCoordinator.cancel()
-        }
-        isRecording = false
-        updateMenuBarIcon(recording: false)
-        hudController?.close()
+        recordingSessionCoordinator.stop()
     }
 
     @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
@@ -712,7 +723,7 @@ final class StatusBarController {
         }
     }
 
-    private func showDownloadConfirmationDialog(spec: ModelSpec) {
+    private func showDownloadConfirmationDialog(spec: ModelSpec, completion: ((Bool) -> Void)? = nil) {
         let alert = NSAlert()
         alert.messageText = "Model Not Available"
         alert.informativeText = """
@@ -731,15 +742,13 @@ final class StatusBarController {
 
         switch response {
         case .alertFirstButtonReturn:
-            // Download - user clicked "Download"
-            startModelDownload(spec: spec)
+            if let completion { completion(true) } else { startModelDownload(spec: spec) }
         case .alertSecondButtonReturn:
-            // Use Different Model - user clicked "Use Different Model"
             setStartItemsEnabled(true)
-            showInfo("Please select a different model from the Model menu.")
+            if let completion { completion(false) } else { showInfo("Please select a different model from the Model menu.") }
         default:
-            // Cancel
             setStartItemsEnabled(true)
+            completion?(false)
         }
     }
 
@@ -1454,10 +1463,8 @@ final class StatusBarController {
     }
 
     func cleanup() {
-        invalidatePendingStart()
+        recordingSessionCoordinator.cleanup()
         engineLifecycleCoordinator.clear()
-        transcriber?.stop()
-        isRecording = false
         hudController?.close()
     }
 
@@ -1512,7 +1519,7 @@ final class StatusBarController {
 
     // MARK: - App Picker
 
-    private func showAppPicker() {
+    private func showAppPicker(requestID: UUID? = nil) {
         NSLog("🎬 [StatusBar] showAppPicker() - starting to load audio sources...")
 
         // Pattern 1: Preload → Inject → Then show
@@ -1536,13 +1543,23 @@ final class StatusBarController {
 
                 picker.onSelection = { [weak self] source in
                     NSLog("✅ [StatusBar] Audio source selected: \(source.name)")
-                    self?.selectedAudioSource = source
-                    self?.appPickerController = nil  // Release after selection
-                    self?.startRecording()
+                    guard let self else { return }
+                    self.selectedAudioSource = source
+                    self.appPickerController = nil
+                    if let requestID {
+                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: source)
+                    } else {
+                        self.startRecording()
+                    }
                 }
                 picker.onCancel = { [weak self] in
-                    self?.appPickerController = nil
-                    self?.abandonPendingStart()
+                    guard let self else { return }
+                    self.appPickerController = nil
+                    if let requestID {
+                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+                    } else {
+                        self.abandonPendingStart()
+                    }
                 }
 
                 // Force window load synchronously BEFORE showing
@@ -1783,21 +1800,15 @@ final class StatusBarController {
     }
 
     private func toggleRecording() {
-        if isRecording || isStartInFlight {
+        if recordingSessionCoordinator.state.phase != .idle {
             stopRecording()
         } else {
-            // Use current mode
-            if mode == .micPlusAppAudio {
-                // Need to show app picker first
-                showAppPicker()
-            } else {
-                startRecording()
-            }
+            recordingSessionCoordinator.requestStart(mode: mode)
         }
     }
 
     private func toggleMicOnly() {
-        if isRecording || isStartInFlight {
+        if recordingSessionCoordinator.state.phase != .idle {
             stopRecording()
         } else {
             startMicOnly()
@@ -1805,7 +1816,7 @@ final class StatusBarController {
     }
 
     private func toggleMicPlusApp() {
-        if isRecording || isStartInFlight {
+        if recordingSessionCoordinator.state.phase != .idle {
             stopRecording()
         } else {
             startMicPlusApp()
