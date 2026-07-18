@@ -19,8 +19,29 @@ final class ShortcutCoordinatorTests: XCTestCase {
         XCTAssertEqual(registrar.operations, [.unregisterAll, .register(49), .register(36)])
         registrar.invoke(keyCode: 49)
         registrar.invoke(keyCode: 36)
-        XCTAssertEqual(intents, [.startMicOnly, .startMicPlusAppAudio])
+        XCTAssertEqual(intents, [.toggleMicOnly, .toggleMicPlusAppAudio])
         XCTAssertEqual(coordinator.configuration, reader.configuration)
+    }
+
+    func test_reloadMapsBothShortcutsToToggleIntentsWithoutChangingDisplayConfiguration() {
+        let registrar = HotkeyRegistrarFake()
+        let configuration = ShortcutConfiguration(
+            micOnly: KeyboardShortcut(keyCode: 49, modifierFlags: [.command, .shift]),
+            micPlusAppAudio: KeyboardShortcut(keyCode: 36, modifierFlags: [.command])
+        )
+        let coordinator = ShortcutCoordinator(
+            registrar: registrar,
+            reader: ShortcutReaderFake(configuration: configuration)
+        )
+        var intents: [StatusBarIntent] = []
+        coordinator.onIntent = { intents.append($0) }
+
+        coordinator.reload()
+        registrar.invoke(keyCode: 49)
+        registrar.invoke(keyCode: 36)
+
+        XCTAssertEqual(intents, [.toggleMicOnly, .toggleMicPlusAppAudio])
+        XCTAssertEqual(coordinator.configuration, configuration)
     }
 
     func test_cleanupUnregistersAll() {

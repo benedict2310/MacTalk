@@ -4,6 +4,73 @@ import XCTest
 
 @MainActor
 final class RecordingSessionCoordinatorTests: XCTestCase {
+    func test_toggleStartsRequestedMicOnlyModeWhenIdle() async throws {
+        let harness = RecordingHarness()
+
+        harness.coordinator.toggle(mode: .micOnly)
+
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        XCTAssertEqual(harness.coordinator.state.mode, .micOnly)
+        XCTAssertEqual(harness.session.starts.count, 1)
+    }
+
+    func test_toggleStopsActiveRecording() async throws {
+        let harness = RecordingHarness()
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+
+        harness.coordinator.toggle(mode: .micOnly)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
+        XCTAssertEqual(harness.session.stopCount, 1)
+    }
+
+    func test_toggleCancelsStartInProgress() async throws {
+        let harness = RecordingHarness()
+        harness.session.startSuspended = true
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .starting }
+
+        harness.coordinator.toggle(mode: .micOnly)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertEqual(harness.session.cancelStarts, 1)
+        harness.session.releaseStart()
+        await Task.yield()
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+    }
+
+    func test_toggleStartsBothShortcutModesUsingRequestedMode() async throws {
+        let micHarness = RecordingHarness()
+        micHarness.coordinator.toggle(mode: .micOnly)
+        await micHarness.waitFor { micHarness.coordinator.state.phase == .recording }
+        XCTAssertEqual(micHarness.coordinator.state.mode, .micOnly)
+
+        let appHarness = RecordingHarness()
+        appHarness.coordinator.toggle(mode: .micPlusAppAudio)
+        await appHarness.waitFor { appHarness.coordinator.state.phase == .selectingAudioSource }
+        let requestID = try XCTUnwrap(appHarness.coordinator.state.requestID)
+        XCTAssertEqual(appHarness.coordinator.state.mode, .micPlusAppAudio)
+        appHarness.coordinator.provideAudioSource(
+            requestID: requestID,
+            source: AppPickerWindowController.AudioSource(app: nil, display: nil, name: "System", icon: nil)
+        )
+        await appHarness.waitFor { appHarness.coordinator.state.phase == .recording }
+        XCTAssertEqual(appHarness.session.starts.first?.source?.name, "System")
+    }
+
+    func test_toggleDuringFinalizationLeavesFinalizationToOwnIdleTransition() async throws {
+        let harness = RecordingHarness()
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.coordinator.stop()
+
+        harness.coordinator.toggle(mode: .micOnly)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
+        XCTAssertEqual(harness.session.stopCount, 1)
+    }
+
     func test_micOnlyReachesRecordingWithOneImmutableSnapshot() async throws {
         let harness = RecordingHarness()
         let coordinator = harness.coordinator

@@ -26,6 +26,8 @@ struct ApplicationIdentity: Equatable, Sendable {
 enum StatusBarIntent: Equatable, Sendable {
     case startMicOnly
     case startMicPlusAppAudio
+    case toggleMicOnly
+    case toggleMicPlusAppAudio
     case stop
     case toggleAutoPaste
     case showSettings

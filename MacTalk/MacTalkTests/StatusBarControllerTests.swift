@@ -7,6 +7,8 @@ final class StatusBarControllerTests: XCTestCase {
         XCTAssertEqual(StatusBarIntent.startMicOnly, .startMicOnly)
         XCTAssertNotEqual(StatusBarIntent.startMicOnly, .startMicPlusAppAudio)
         XCTAssertEqual(StatusBarIntent.stop, .stop)
+        XCTAssertNotEqual(StatusBarIntent.startMicOnly, .toggleMicOnly)
+        XCTAssertNotEqual(StatusBarIntent.startMicPlusAppAudio, .toggleMicPlusAppAudio)
     }
 
     func test_applicationIdentityDoesNotRetainWorkspaceObjects() {

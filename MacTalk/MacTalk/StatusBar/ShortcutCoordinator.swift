@@ -94,10 +94,10 @@ final class ShortcutCoordinator: ShortcutCoordinating {
         configuration = reader.shortcuts()
 
         if let shortcut = configuration.micOnly {
-            register(shortcut, intent: .startMicOnly)
+            register(shortcut, intent: .toggleMicOnly)
         }
         if let shortcut = configuration.micPlusAppAudio {
-            register(shortcut, intent: .startMicPlusAppAudio)
+            register(shortcut, intent: .toggleMicPlusAppAudio)
         }
     }
 

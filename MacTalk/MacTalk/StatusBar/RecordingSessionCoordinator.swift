@@ -31,6 +31,7 @@ protocol RecordingSessionCoordinating: AnyObject {
     var onEvent: ((RecordingSessionEvent) -> Void)? { get set }
 
     func requestStart(mode: TranscriptionController.Mode)
+    func toggle(mode: TranscriptionController.Mode)
     func provideAudioSource(requestID: UUID, source: AppPickerWindowController.AudioSource?)
     func respondToDownloadPrompt(requestID: UUID, approved: Bool)
     func stop()
@@ -112,6 +113,20 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             case .deniedMicrophone, .deniedScreenRecording:
                 self.abort(id)
             }
+        }
+    }
+
+    func toggle(mode: TranscriptionController.Mode) {
+        switch state.phase {
+        case .idle:
+            requestStart(mode: mode)
+        case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
+             .downloadingModel, .resolvingEngine, .starting, .recording:
+            stop()
+        case .finalizing:
+            // Finalization owns the transition back to idle; a second toggle
+            // cannot legally stop or start another request in this phase.
+            return
         }
     }
 
@@ -252,15 +267,12 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
                     settingsSnapshot: context.settings
                 )
                 guard let self, self.owns(id), case .starting = self.state.phase else {
-                    session?.cancelStart()
                     return
                 }
                 self.transition(.recording, selection: selection)
             } catch is CancellationError {
-                session?.cancelStart()
                 self?.abort(id)
             } catch {
-                session?.cancelStart()
                 self?.fail(id, message: error.localizedDescription)
             }
         }

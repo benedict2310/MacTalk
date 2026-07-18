@@ -465,6 +465,12 @@ final class StatusBarController {
         case .startMicPlusAppAudio:
             mode = .micPlusAppAudio
             recordingSessionCoordinator.requestStart(mode: .micPlusAppAudio)
+        case .toggleMicOnly:
+            if recordingSessionCoordinator.state.phase == .idle { mode = .micOnly }
+            recordingSessionCoordinator.toggle(mode: .micOnly)
+        case .toggleMicPlusAppAudio:
+            if recordingSessionCoordinator.state.phase == .idle { mode = .micPlusAppAudio }
+            recordingSessionCoordinator.toggle(mode: .micPlusAppAudio)
         case .stop:
             recordingSessionCoordinator.stop()
         case .toggleAutoPaste:
