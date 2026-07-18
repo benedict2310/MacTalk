@@ -9,6 +9,8 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/ConcurrencyStressTests
   MacTalkTests/DeterministicHarnessTests
   MacTalkTests/EngineReloadCoordinatorTests
+  MacTalkTests/EngineLifecycleCoordinatorTests
+  MacTalkTests/ModelDownloadCoordinatorTests
   MacTalkTests/ModelCatalogTests
   MacTalkTests/ModelIntegrityTests
   MacTalkTests/ModelProvenanceTests

@@ -93,13 +93,17 @@ final class ModelDownloadCoordinator: ModelDownloadCoordinating {
     }
 
     func download(_ requirement: ModelRequirement, requestID: UUID) async throws {
-        if let activeRequirement, activeRequirement != requirement {
-            throw ModelDownloadCoordinatorError.anotherOperationInProgress
-        }
-        if activeOperationID != nil, activeRequestID == requestID, let operation {
-            return try await operation.value
+        if activeOperationID != nil, activeRequestID == requestID, activeRequirement == requirement, let operation {
+            try await operation.value
+            guard isCurrent(activeOperationID!, requestID, requirement) else {
+                throw ModelDownloadCoordinatorError.cancelled
+            }
+            return
         }
 
+        // A new exact selection owns the coordinator. Supersede the old
+        // operation instead of making the caller wait behind it; its late
+        // callbacks and completion are rejected by the operation tag checks.
         operation?.cancel()
         client.cancel()
         let operationID = UUID()
@@ -147,6 +151,9 @@ final class ModelDownloadCoordinator: ModelDownloadCoordinating {
             // error so recording state can decide whether to retry.
             throw error
         }
+        guard isCurrent(operationID, requestID, requirement) else {
+            throw ModelDownloadCoordinatorError.cancelled
+        }
     }
 
     func cancel(requestID: UUID) {
@@ -161,6 +168,11 @@ final class ModelDownloadCoordinator: ModelDownloadCoordinating {
         activeRequestID = nil
         activeRequirement = nil
         publish(operationID: operationID, requestID: requestID, requirement: requirement, phase: .failed(message: "Model download was cancelled."))
+    }
+
+    func isCurrent(requestID: UUID, requirement: ModelRequirement) -> Bool {
+        guard let operationID = activeOperationID else { return false }
+        return isCurrent(operationID, requestID, requirement)
     }
 
     private func isCurrent(_ operationID: UUID, _ requestID: UUID, _ requirement: ModelRequirement) -> Bool {

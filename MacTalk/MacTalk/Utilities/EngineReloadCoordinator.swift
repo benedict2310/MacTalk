@@ -39,10 +39,10 @@ extension EngineLifecycleCoordinator {
 
     func reconcile(
         pending: PendingSettingsSnapshot,
-        isRecording: Bool
+        isRecording: Bool,
+        requestID: UUID = UUID()
     ) async throws -> any ASREngine {
         if isRecording, let loadedEngine { return loadedEngine }
-        let requestID = UUID()
         switch await resolve(pending.engine, requestID: requestID) {
         case let .ready(engine): return engine
         case .requiresDownload:
@@ -52,6 +52,10 @@ extension EngineLifecycleCoordinator {
         case let .failed(message):
             throw NSError(domain: "MacTalk.EngineSelection", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: message
+            ])
+        case .stale, .cancelled:
+            throw NSError(domain: "MacTalk.EngineSelection", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "The selected engine request was superseded or cancelled."
             ])
         }
     }

@@ -115,6 +115,13 @@ final class StatusBarController {
     private var isStartInFlight = false
     private var startTask: Task<Void, Never>?
     private var startGeneration = 0
+    /// Request/selection ownership for work started by this controller. A
+    /// completion is never adopted based on provider alone.
+    private var activeEngineRequestID: UUID?
+    private var activeEngineSelection: EngineSelection?
+    private var activeDownloadRequestID: UUID?
+    private var activeDownloadRequirement: ModelRequirement?
+    private var selectedEngineSelection: EngineSelection?
 
     // Hotkeys
     private let hotkeyManager = HotkeyManager()
@@ -155,6 +162,7 @@ final class StatusBarController {
         refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
         provider = settingsSnapshot.provider
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
+        selectedEngineSelection = engineSelection(for: settingsSnapshot)
         mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
         showNotifications = settingsSnapshot.showNotifications
 
@@ -510,9 +518,11 @@ final class StatusBarController {
 
     @objc private func selectModel(_ sender: NSMenuItem) {
         guard let modelName = sender.representedObject as? String else { return }
+        cancelOwnedPreparation()
         currentWhisperModelName = modelName
         if let spec = ModelCatalog.findByFilename(modelName) {
             AppSettings.shared.setWhisperModelID(spec.id)
+            selectedEngineSelection = .whisper(spec)
         }
 
         requestProviderSwitch(to: .whisper, promptForDownload: false)
@@ -527,9 +537,11 @@ final class StatusBarController {
 
     @objc private func selectModelSpec(_ sender: NSMenuItem) {
         guard let spec = sender.representedObject as? ModelSpec else { return }
+        cancelOwnedPreparation()
         selectedModel = spec
         currentWhisperModelName = spec.filename
         AppSettings.shared.setWhisperModelID(spec.id)
+        selectedEngineSelection = .whisper(spec)
 
         requestProviderSwitch(to: .whisper, promptForDownload: false)
         updateProviderMenuState()
@@ -549,6 +561,7 @@ final class StatusBarController {
 
     private func requestProviderSwitch(to newProvider: ASRProvider, promptForDownload: Bool) {
         guard provider != newProvider else { return }
+        cancelOwnedPreparation()
 
         if newProvider == .parakeet, promptForDownload {
             if !ParakeetModelDownloader.modelsAvailable() {
@@ -556,12 +569,23 @@ final class StatusBarController {
                     guard let self = self else { return }
                     if approved {
                         AppSettings.shared.provider = .parakeet
+                        selectedEngineSelection = .parakeet
                         let requestID = UUID()
+                        activeDownloadRequestID = requestID
+                        activeDownloadRequirement = .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)
                         Task { @MainActor [weak self] in
                             guard let self else { return }
                             do {
                                 try await modelDownloadCoordinator.download(.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision), requestID: requestID)
+                                guard ownsCurrentDownloadRequest(requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)),
+                                      selectedEngineSelection == .parakeet,
+                                      modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)) else { return }
+                                activeDownloadRequestID = nil
+                                activeDownloadRequirement = nil
                             } catch {
+                                guard ownsCurrentDownloadRequest(requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)) else { return }
+                                activeDownloadRequestID = nil
+                                activeDownloadRequirement = nil
                                 showError("Parakeet download failed: \(error.localizedDescription)")
                             }
                         }
@@ -574,6 +598,7 @@ final class StatusBarController {
         }
 
         AppSettings.shared.provider = newProvider
+        selectedEngineSelection = newProvider == .parakeet ? .parakeet : engineSelection(for: AppSettings.shared.snapshot)
     }
 
     private func setStartItemsEnabled(_ enabled: Bool) {
@@ -668,11 +693,16 @@ final class StatusBarController {
         }
 
         let requestID = UUID()
+        activeEngineRequestID = requestID
+        activeEngineSelection = selection
         Task { @MainActor [weak self] in
             guard let self else { return }
             let resolution = await engineLifecycleCoordinator.resolve(selection, requestID: requestID)
-            guard provider == .whisper else { return }
-            if case let .ready(loadedEngine) = resolution {
+            guard ownsCurrentEngineRequest(requestID, selection: selection) else { return }
+            activeEngineRequestID = nil
+            activeEngineSelection = nil
+            if case let .ready(loadedEngine) = resolution,
+               engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: selection) {
                 adoptLoadedEngine(loadedEngine, selection: selection)
                 setStartItemsEnabled(true)
             } else if case let .failed(message) = resolution {
@@ -715,16 +745,37 @@ final class StatusBarController {
 
     private func startModelDownload(spec: ModelSpec) {
         let requestID = UUID()
+        let requirement = ModelRequirement.whisper(spec)
+        let selection = EngineSelection.whisper(spec)
+        activeDownloadRequestID = requestID
+        activeDownloadRequirement = requirement
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await modelDownloadCoordinator.download(.whisper(spec), requestID: requestID)
-                let resolution = await engineLifecycleCoordinator.resolve(.whisper(spec), requestID: requestID)
-                if case let .ready(loadedEngine) = resolution {
-                    adoptLoadedEngine(loadedEngine, selection: .whisper(spec))
+                try await modelDownloadCoordinator.download(requirement, requestID: requestID)
+                guard ownsCurrentDownloadRequest(requestID, requirement: requirement),
+                      selectedEngineSelection == selection,
+                      modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: requirement) else { return }
+                activeDownloadRequestID = nil
+                activeDownloadRequirement = nil
+                activeEngineRequestID = requestID
+                activeEngineSelection = selection
+                let resolution = await engineLifecycleCoordinator.resolve(selection, requestID: requestID)
+                guard selectedEngineSelection == selection,
+                      engineLifecycleCoordinator.isCurrentRequest(requestID: requestID, selection: selection) else { return }
+                if case let .ready(loadedEngine) = resolution,
+                   engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: selection) {
+                    adoptLoadedEngine(loadedEngine, selection: selection)
+                } else if case let .failed(message) = resolution {
+                    showError("Failed to load the selected engine: \(message)")
                 }
+                activeEngineRequestID = nil
+                activeEngineSelection = nil
                 setStartItemsEnabled(true)
             } catch {
+                guard ownsCurrentDownloadRequest(requestID, requirement: requirement) else { return }
+                activeDownloadRequestID = nil
+                activeDownloadRequirement = nil
                 setStartItemsEnabled(true)
                 showError("Failed to load model: \(error.localizedDescription)")
             }
@@ -890,6 +941,8 @@ final class StatusBarController {
     @MainActor
     private func providerDidChange(_ newProvider: ASRProvider) {
         guard provider != newProvider else { return }
+        cancelOwnedPreparation()
+        selectedEngineSelection = newProvider == .parakeet ? .parakeet : engineSelection(for: AppSettings.shared.snapshot)
 
         // Settings are session-scoped. Do not tear down or replace an engine
         // while a recording (or its start) is active; the next start reads the
@@ -1109,6 +1162,7 @@ final class StatusBarController {
         provider = settingsSnapshot.provider
         mode = requestedMode
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
+        selectedEngineSelection = engineSelection(for: settingsSnapshot)
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
 
         // Reconcile the complete engine identity before each new recording.
@@ -1120,21 +1174,33 @@ final class StatusBarController {
                 isStartInFlight = true
                 startGeneration += 1
                 let reconciliationGeneration = startGeneration
+                let requestID = UUID()
+                activeEngineRequestID = requestID
+                activeEngineSelection = pendingSelection
                 Task { [weak self] in
                     guard let self else { return }
                     do {
                         let loaded = try await self.engineLifecycleCoordinator.reconcile(
                             pending: PendingSettingsSnapshot(engine: pendingSelection),
-                            isRecording: false
+                            isRecording: false,
+                            requestID: requestID
                         )
-                        guard self.startGeneration == reconciliationGeneration, !self.isRecording else {
+                        guard self.startGeneration == reconciliationGeneration,
+                              !self.isRecording,
+                              self.ownsCurrentEngineRequest(requestID, selection: pendingSelection),
+                              self.engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: pendingSelection) else {
                             return
                         }
+                        self.activeEngineRequestID = nil
+                        self.activeEngineSelection = nil
                         self.adoptLoadedEngine(loaded, selection: pendingSelection)
                         self.isStartInFlight = false
                         self.startRecording(allowParakeetPrepare: allowParakeetPrepare)
                     } catch {
-                        guard self.startGeneration == reconciliationGeneration else { return }
+                        guard self.startGeneration == reconciliationGeneration,
+                              self.ownsCurrentEngineRequest(requestID, selection: pendingSelection) else { return }
+                        self.activeEngineRequestID = nil
+                        self.activeEngineSelection = nil
                         self.isStartInFlight = false
                         self.pendingSettingsLatch.clear()
                         self.pendingStartMode = nil
@@ -1181,12 +1247,23 @@ final class StatusBarController {
                 guard let self = self else { return }
                 if approved {
                     let requestID = UUID()
+                    let requirement = ModelRequirement.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)
+                    self.activeDownloadRequestID = requestID
+                    self.activeDownloadRequirement = requirement
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         do {
-                            try await modelDownloadCoordinator.download(.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision), requestID: requestID)
+                            try await modelDownloadCoordinator.download(requirement, requestID: requestID)
+                            guard ownsCurrentDownloadRequest(requestID, requirement: requirement),
+                                  selectedEngineSelection == .parakeet,
+                                  modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: requirement) else { return }
+                            activeDownloadRequestID = nil
+                            activeDownloadRequirement = nil
                             startRecording(allowParakeetPrepare: false)
                         } catch {
+                            guard ownsCurrentDownloadRequest(requestID, requirement: requirement) else { return }
+                            activeDownloadRequestID = nil
+                            activeDownloadRequirement = nil
                             pendingSettingsLatch.clear()
                             pendingStartMode = nil
                             showError("Parakeet download failed: \(error.localizedDescription)")
@@ -1378,6 +1455,7 @@ final class StatusBarController {
 
     func cleanup() {
         invalidatePendingStart()
+        engineLifecycleCoordinator.clear()
         transcriber?.stop()
         isRecording = false
         hudController?.close()
@@ -1599,13 +1677,21 @@ final class StatusBarController {
         refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
         showNotifications = settingsSnapshot.showNotifications
 
-        // Runtime settings are session-scoped. Edits during capture are stored
-        // now but become authoritative only on the next recording.
+        // A changed provider/model supersedes idle preparation immediately.
+        // Runtime settings remain session-scoped for an active recording.
+        let newSelection = engineSelection(for: settingsSnapshot)
+        if newSelection != selectedEngineSelection {
+            cancelOwnedPreparation()
+            selectedEngineSelection = newSelection
+        }
         guard !isRecording, !isStartInFlight, !isFinalizing else { return }
         provider = settingsSnapshot.provider
         mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
         currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
+        if engineLifecycleCoordinator.loadedSelection != newSelection {
+            engineLifecycleCoordinator.clearLoadedEngine()
+        }
         if engine?.provider != provider {
             engine = nil
             engineLifecycleCoordinator.clearLoadedEngine()
@@ -1649,7 +1735,32 @@ final class StatusBarController {
         }
     }
 
+    private func ownsCurrentEngineRequest(_ requestID: UUID, selection: EngineSelection) -> Bool {
+        activeEngineRequestID == requestID && activeEngineSelection == selection && selectedEngineSelection == selection
+    }
+
+    private func ownsCurrentDownloadRequest(_ requestID: UUID, requirement: ModelRequirement) -> Bool {
+        activeDownloadRequestID == requestID && activeDownloadRequirement == requirement
+    }
+
+    /// Cancel all work owned by this controller before changing selection or
+    /// abandoning a start. Coordinator callbacks may still arrive, but their
+    /// request and selection tags can no longer pass adoption checks.
+    private func cancelOwnedPreparation() {
+        if let requestID = activeEngineRequestID {
+            engineLifecycleCoordinator.cancel(requestID: requestID)
+        }
+        if let requestID = activeDownloadRequestID {
+            modelDownloadCoordinator.cancel(requestID: requestID)
+        }
+        activeEngineRequestID = nil
+        activeEngineSelection = nil
+        activeDownloadRequestID = nil
+        activeDownloadRequirement = nil
+    }
+
     private func abandonPendingStart() {
+        cancelOwnedPreparation()
         outputCoordinator.cancel()
         pendingSettingsLatch.clear()
         pendingStartMode = nil
@@ -1659,6 +1770,7 @@ final class StatusBarController {
     }
 
     private func invalidatePendingStart() {
+        cancelOwnedPreparation()
         outputCoordinator.cancel()
         startGeneration += 1
         pendingParakeetStartRetry = false

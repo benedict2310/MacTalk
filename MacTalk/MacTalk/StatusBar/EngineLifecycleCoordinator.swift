@@ -10,6 +10,10 @@ enum EngineResolution {
     case ready(any ASREngine)
     case requiresDownload(ModelRequirement)
     case failed(String)
+    /// The request was superseded by a newer selection.
+    case stale
+    /// The request was explicitly cancelled or abandoned.
+    case cancelled
 }
 
 enum EngineLifecycleState {
@@ -46,6 +50,10 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
     private var operationID: UUID?
     private var operationSelection: EngineSelection?
     private var requestOperations: [UUID: UUID] = [:]
+    private var completedOperationID: UUID?
+    private var supersededOperationIDs: Set<UUID> = []
+    private var cancelledOperationIDs: Set<UUID> = []
+    private var cancelledRequestIDs: Set<UUID> = []
     private var deferredSelection: EngineSelection?
     private var recordingActive = false
 
@@ -58,6 +66,7 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
     }
 
     func resolve(_ selection: EngineSelection, requestID: UUID) async -> EngineResolution {
+        cancelledRequestIDs.remove(requestID)
         requestOperations[requestID] = operationID
 
         if recordingActive,
@@ -68,6 +77,12 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
         }
 
         if case let .ready(loadedSelection, engine) = state, loadedSelection == selection {
+            // Preserve an operation tag even after the task has completed. This
+            // lets callers reject a result if a newer selection is installed
+            // before their continuation resumes.
+            let completedID = completedOperationID ?? UUID()
+            completedOperationID = completedID
+            requestOperations[requestID] = completedID
             return .ready(engine)
         }
 
@@ -81,10 +96,15 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
            operationSelection == selection,
            let operationID {
             requestOperations[requestID] = operationID
-            return await operation.value
+            let result = await operation.value
+            return validated(result, requestID: requestID, operationID: operationID, selection: selection)
         }
 
+        if let oldOperationID = operationID {
+            supersededOperationIDs.insert(oldOperationID)
+        }
         operation?.cancel()
+        completedOperationID = nil
         let newID = UUID()
         operationID = newID
         operationSelection = selection
@@ -99,6 +119,8 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
                     return .failed("Loaded engine provider does not match the selected provider.")
                 }
                 return .ready(engine)
+            } catch is CancellationError {
+                return .cancelled
             } catch {
                 return .failed(error.localizedDescription)
             }
@@ -108,26 +130,32 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
 
         guard operationID == newID,
               operationSelection == selection else {
-            return result
+            return validated(result, requestID: requestID, operationID: newID, selection: selection)
         }
         operation = nil
         operationID = nil
         operationSelection = nil
+        completedOperationID = newID
         switch result {
         case let .ready(engine): state = .ready(selection: selection, engine: engine)
         case .requiresDownload: break
         case let .failed(message): state = .failed(selection: selection, message: message)
+        case .stale, .cancelled: break
         }
-        return result
+        return validated(result, requestID: requestID, operationID: newID, selection: selection)
     }
 
     func cancel(requestID: UUID) {
+        cancelledRequestIDs.insert(requestID)
         requestOperations.removeValue(forKey: requestID)
-        guard requestOperations.values.allSatisfy({ $0 != operationID }) else { return }
+        guard let currentOperationID = operationID,
+              requestOperations.values.allSatisfy({ $0 != currentOperationID }) else { return }
+        cancelledOperationIDs.insert(currentOperationID)
         operation?.cancel()
         operation = nil
         operationID = nil
         operationSelection = nil
+        completedOperationID = nil
         if case let .loading(_, selection) = state {
             state = .failed(selection: selection, message: "Engine loading was cancelled.")
         }
@@ -156,13 +184,50 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
     }
 
     func clear() {
+        if let currentOperationID = operationID {
+            cancelledOperationIDs.insert(currentOperationID)
+        }
         operation?.cancel()
         operation = nil
         operationID = nil
         operationSelection = nil
+        completedOperationID = nil
         requestOperations.removeAll()
+        cancelledRequestIDs.removeAll()
         deferredSelection = nil
         state = .empty
+    }
+
+    func isCurrent(requestID: UUID, selection: EngineSelection) -> Bool {
+        guard case let .ready(loadedSelection, _) = state,
+              loadedSelection == selection else { return false }
+        return isCurrentRequest(requestID: requestID, selection: selection)
+    }
+
+    func isCurrentRequest(requestID: UUID, selection: EngineSelection) -> Bool {
+        guard let completedOperationID,
+              requestOperations[requestID] == completedOperationID else { return false }
+        switch state {
+        case let .ready(loadedSelection, _), let .failed(loadedSelection, _):
+            return loadedSelection == selection
+        case .empty, .loading:
+            return false
+        }
+    }
+
+    private func validated(
+        _ result: EngineResolution,
+        requestID: UUID,
+        operationID: UUID,
+        selection: EngineSelection
+    ) -> EngineResolution {
+        guard !cancelledRequestIDs.contains(requestID),
+              requestOperations[requestID] == operationID,
+              (self.operationID == operationID || completedOperationID == operationID),
+              (operationSelection == selection || completedOperationID == operationID) else {
+            return cancelledOperationIDs.contains(operationID) ? .cancelled : .stale
+        }
+        return result
     }
 
     private func selection(for snapshot: SettingsSnapshot) -> EngineSelection? {

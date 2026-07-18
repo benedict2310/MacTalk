@@ -17,16 +17,71 @@ final class EngineLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(loader.selections, [first])
     }
 
-    func test_unverifiedLocalAvailabilityRequiresDownloadAndNeverLoads() async {
-        let selection = EngineSelection(provider: .whisper, modelID: "missing", revision: "bad")
+    func test_unverifiedLocalAvailabilityRequiresDownloadAndNeverLoads() async throws {
+        let spec = try XCTUnwrap(ModelCatalog.bundled().first)
+        let selection = EngineSelection.whisper(spec)
         let loader = LifecycleLoader()
         let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in false })
 
         let result = await coordinator.resolve(selection, requestID: UUID())
-        guard case .requiresDownload = result else {
-            return XCTFail("unavailable catalog identity should require a tagged download")
+        guard case .requiresDownload(.whisper(let requirement)) = result else {
+            return XCTFail("known but unavailable catalog identity should require a tagged download")
+        }
+        XCTAssertEqual(requirement, spec)
+        XCTAssertTrue(loader.selections.isEmpty)
+    }
+
+    func test_unknownIdentityFailsInsteadOfRequestingDownload() async {
+        let selection = EngineSelection(provider: .whisper, modelID: "unknown", revision: "bad")
+        let loader = LifecycleLoader()
+        let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in false })
+
+        let result = await coordinator.resolve(selection, requestID: UUID())
+        guard case .failed = result else {
+            return XCTFail("unknown catalog identity must fail without an untagged download")
         }
         XCTAssertTrue(loader.selections.isEmpty)
+    }
+
+    func test_supersededDelayedLoadIsStaleAndCannotBecomeReady() async throws {
+        let first = EngineSelection(provider: .whisper, modelID: "a", revision: "1")
+        let second = EngineSelection(provider: .whisper, modelID: "b", revision: "2")
+        let loader = DelayedLifecycleLoader()
+        let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in true })
+        let firstID = UUID()
+        let secondID = UUID()
+
+        let firstTask = Task { await coordinator.resolve(first, requestID: firstID) }
+        await loader.waitUntilStarted(first)
+        let secondTask = Task { await coordinator.resolve(second, requestID: secondID) }
+        await loader.waitUntilStarted(second)
+        loader.release(first, engine: TestEngine(provider: .whisper))
+        loader.release(second, engine: TestEngine(provider: .whisper))
+
+        guard case .stale = await firstTask.value else {
+            return XCTFail("superseded load must be typed stale")
+        }
+        guard case .ready = await secondTask.value else {
+            return XCTFail("current selection should be ready")
+        }
+        guard case let .ready(selection, _) = coordinator.state else {
+            return XCTFail("superseded result must not alter lifecycle state")
+        }
+        XCTAssertEqual(selection, second)
+    }
+
+    func test_cancelledDelayedLoadCannotBeAdopted() async {
+        let selection = EngineSelection(provider: .whisper, modelID: "a", revision: "1")
+        let loader = DelayedLifecycleLoader()
+        let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in true })
+        let requestID = UUID()
+        let task = Task { await coordinator.resolve(selection, requestID: requestID) }
+        await loader.waitUntilStarted(selection)
+        coordinator.cancel(requestID: requestID)
+        loader.release(selection, engine: TestEngine(provider: .whisper))
+        guard case .cancelled = await task.value else {
+            return XCTFail("cancelled load must remain cancelled")
+        }
     }
 
     func test_settingsChangeWhileRecordingDoesNotReplaceReadyEngine() async throws {
@@ -50,6 +105,31 @@ final class EngineLifecycleCoordinatorTests: XCTestCase {
 
     private func snapshot(provider: ASRProvider) -> SettingsSnapshot {
         SettingsSnapshot(provider: provider, whisperModelID: "unused", language: nil, captureMode: .micOnly, showNotifications: true, autoPaste: false)
+    }
+}
+
+@MainActor
+private final class DelayedLifecycleLoader: EngineSelectionLoader {
+    var started: Set<String> = []
+    var waiters: [String: CheckedContinuation<any ASREngine, Error>] = [:]
+
+    func load(selection: EngineSelection) async throws -> any ASREngine {
+        started.insert(key(selection))
+        return try await withCheckedThrowingContinuation { continuation in
+            waiters[key(selection)] = continuation
+        }
+    }
+
+    func waitUntilStarted(_ selection: EngineSelection) async {
+        while !started.contains(key(selection)) { await Task.yield() }
+    }
+
+    func release(_ selection: EngineSelection, engine: any ASREngine) {
+        waiters.removeValue(forKey: key(selection))?.resume(returning: engine)
+    }
+
+    private func key(_ selection: EngineSelection) -> String {
+        "\(selection.provider.rawValue):\(selection.modelID):\(selection.revision)"
     }
 }
 
