@@ -1,0 +1,16 @@
+{
+  "devicesAndConfigurations": [
+    {
+      "device": {"architecture": "arm64", "platform": "macOS"},
+      "passedTests": 147,
+      "failedTests": 0,
+      "skippedTests": 0
+    }
+  ],
+  "expectedFailures": 0,
+  "failedTests": 0,
+  "passedTests": 147,
+  "result": "Passed",
+  "skippedTests": 0,
+  "totalTestCount": 147
+}

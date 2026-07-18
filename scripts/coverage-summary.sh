@@ -13,27 +13,21 @@ status='unavailable'
 executed='unavailable'
 failed='unavailable'
 skipped='unavailable'
+summary_status=0
 if [ -d "$RESULT" ]; then
     test_summary="$OUT/test-results-summary.json"
-    if xcrun xcresulttool get test-results summary --path "$RESULT" --format json > "$test_summary"; then
-        IFS=$'\t' read -r status executed failed skipped < <(python3 - "$test_summary" <<'PY'
-import json
-import sys
-payload = json.load(open(sys.argv[1]))
-def first(*names):
-    for name in names:
-        value = payload.get(name)
-        if value is not None:
-            return value
-    return 'unavailable'
-print('\t'.join(str(first(name)) for name in (
-    'result', 'totalTestCount', 'failedTests', 'skippedTests'
-)))
-PY
-)
-    else
+    parsed_summary="$OUT/test-results-summary.parsed"
+    if ! xcrun xcresulttool get test-results summary --path "$RESULT" --compact > "$test_summary"; then
         echo 'Coverage summary unavailable: xcresult test summary could not be read' >&2
+        summary_status=1
+    elif ! python3 "$ROOT/scripts/coverage-summary-parser.py" "$test_summary" > "$parsed_summary"; then
+        summary_status=1
+    else
+        IFS=$'\t' read -r status executed failed skipped < "$parsed_summary"
     fi
+else
+    echo "Coverage summary unavailable: result bundle does not exist: $RESULT" >&2
+    summary_status=1
 fi
 
 production='unavailable'
@@ -69,3 +63,4 @@ printf '%s\n' "${lines[@]}"
 if [ -n "$SUMMARY_FILE" ]; then
     printf '%s\n' "${lines[@]}" >> "$SUMMARY_FILE"
 fi
+exit "$summary_status"

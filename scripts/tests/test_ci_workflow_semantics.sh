@@ -29,15 +29,18 @@ unit_runs = step_runs.call('unit').join("\n")
 raise 'unit lane is not the blocking deterministic test command' unless unit_runs.include?('scripts/test-lanes.sh unit')
 raise 'unit lane does not verify reproducible generation' unless unit_runs.include?('test_reproducible_project_generation.sh')
 raise 'unit lane does not generate the pinned project' unless unit_runs.include?('xcodegen generate')
+raise 'unit lane does not test coverage summary schema' unless unit_runs.include?('test_coverage_summary.sh')
 forbidden_unit = %w[real-model hardware-validation appkit HUDWindow SettingsWindow StatusBarController]
 raise 'unit lane includes an opt-in/non-deterministic test' if forbidden_unit.any? { |word| unit_runs.include?(word) }
 
 coverage_runs = step_runs.call('coverage').join("\n")
 coverage_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/coverage.sh'))
-coverage_runs = "#{coverage_runs}\n#{coverage_implementation}"
-%w[scripts/coverage.sh xccov --report --json xccov --report].each do |needle|
+coverage_summary_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/coverage-summary.sh'))
+coverage_runs = "#{coverage_runs}\n#{coverage_implementation}\n#{coverage_summary_implementation}"
+%w[scripts/coverage.sh xccov --report --json xccov --report --compact].each do |needle|
   raise "coverage job missing #{needle}" unless coverage_runs.include?(needle)
 end
+raise 'coverage summary must not use the removed xcresulttool --format json option' if coverage_runs.include?('--format json')
 raise 'coverage job must use an explicit result bundle' unless coverage_runs.include?('MacTalk.xcresult')
 raise 'coverage job must publish an executed/failed/skipped summary' unless coverage_runs.include?('coverage-summary.sh') && coverage_runs.include?('GITHUB_STEP_SUMMARY')
 coverage_uploads = steps.call('coverage').select { |step| step.is_a?(Hash) && step['uses'].to_s.start_with?('actions/upload-artifact@') }
