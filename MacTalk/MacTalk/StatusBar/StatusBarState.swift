@@ -30,6 +30,9 @@ enum StatusBarIntent: Equatable, Sendable {
     case toggleMicPlusAppAudio
     case stop
     case toggleAutoPaste
+    case selectModel(ModelSpec)
+    case selectParakeet
+    case checkPermissions
     case showSettings
     case showAbout
     case quit
@@ -139,6 +142,66 @@ struct StatusBarViewState: Equatable, Sendable {
     let provider: ASRProvider
     let whisperModelID: String
     let effectiveAutoPaste: Bool
+    let download: ModelDownloadViewState
+    let shortcuts: ShortcutConfiguration
+    let appMeterVisible: Bool
+
+    init(
+        recordingPhase: RecordingPhase,
+        startEnabled: Bool,
+        stopEnabled: Bool,
+        recordingIcon: Bool,
+        provider: ASRProvider,
+        whisperModelID: String,
+        effectiveAutoPaste: Bool,
+        download: ModelDownloadViewState = .idle,
+        shortcuts: ShortcutConfiguration = .empty,
+        appMeterVisible: Bool = false
+    ) {
+        self.recordingPhase = recordingPhase
+        self.startEnabled = startEnabled
+        self.stopEnabled = stopEnabled
+        self.recordingIcon = recordingIcon
+        self.provider = provider
+        self.whisperModelID = whisperModelID
+        self.effectiveAutoPaste = effectiveAutoPaste
+        self.download = download
+        self.shortcuts = shortcuts
+        self.appMeterVisible = appMeterVisible
+    }
+}
+
+struct StatusBarViewStateReducer {
+    static func reduce(
+        recording: RecordingSessionState,
+        settings: SettingsSnapshot,
+        permission: PermissionViewState,
+        download: ModelDownloadViewState,
+        shortcuts: ShortcutConfiguration
+    ) -> StatusBarViewState {
+        let blockingDownload: Bool = switch download.phase {
+        case .downloading, .verifying: true
+        case .idle, .ready, .failed: false
+        }
+        let startEnabled = recording.phase == .idle && !blockingDownload
+        let stopEnabled: Bool = switch recording.phase {
+        case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
+             .downloadingModel, .resolvingEngine, .starting, .recording: true
+        case .idle, .finalizing: false
+        }
+        return StatusBarViewState(
+            recordingPhase: recording.phase,
+            startEnabled: startEnabled,
+            stopEnabled: stopEnabled,
+            recordingIcon: recording.phase == .recording,
+            provider: settings.provider,
+            whisperModelID: settings.whisperModelID,
+            effectiveAutoPaste: permission.effectiveAutoPaste,
+            download: download,
+            shortcuts: shortcuts,
+            appMeterVisible: recording.mode == .micPlusAppAudio && recording.phase == .recording
+        )
+    }
 }
 
 enum StartPermissionResult: Equatable, Sendable {

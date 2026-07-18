@@ -41,6 +41,14 @@ protocol NotificationSubmitting: AnyObject {
 }
 
 @MainActor
+protocol StatusBarSettingsReading: AnyObject {
+    var snapshot: SettingsSnapshot { get }
+    func setAutoPaste(_ enabled: Bool)
+    func setWhisperModelID(_ id: String)
+    func setProvider(_ provider: ASRProvider)
+}
+
+@MainActor
 final class SystemPermissionClient: PermissionClient {
     typealias AccessibilityPromptRequester = @MainActor (
         @escaping @MainActor @Sendable (Bool) -> Void
@@ -189,25 +197,92 @@ final class SystemNotificationSubmitter: NotificationSubmitting {
 }
 
 @MainActor
+final class SystemStatusBarSettings: StatusBarSettingsReading {
+    private let settings: AppSettings
+
+    init(settings: AppSettings = .shared) {
+        self.settings = settings
+    }
+
+    var snapshot: SettingsSnapshot { settings.snapshot }
+    func setAutoPaste(_ enabled: Bool) { settings.setAutoPaste(enabled) }
+    func setWhisperModelID(_ id: String) { settings.setWhisperModelID(id) }
+    func setProvider(_ provider: ASRProvider) { settings.provider = provider }
+}
+
+@MainActor
 struct StatusBarDependencies {
+    let settings: any StatusBarSettingsReading
+    let permissionFlow: any (PermissionFlowCoordinating & RecordingPermissionAuthorizing)
+    let output: any OutputCoordinating
+    let appAudioSource: any AppAudioSourceCoordinating
+    let shortcut: any ShortcutCoordinating
+    let engine: any EngineLifecycleCoordinating
+    let download: any (ModelDownloadCoordinating & ModelRequirementDownloading)
+    let sessions: any TranscriptionSessionFactory
     let permissionClient: any PermissionClient
-    let clipboardWriter: any ClipboardWriting
-    let textInserter: any TextInserting
-    let workspaceReader: any WorkspaceReading
-    let notificationSubmitter: any NotificationSubmitting
-    let shareableContentClient: any ShareableContentClient
-    let hotkeyRegistrar: any HotkeyRegistering
     let clock: @MainActor () -> Date
 
+    init(
+        settings: any StatusBarSettingsReading,
+        permissionFlow: any (PermissionFlowCoordinating & RecordingPermissionAuthorizing),
+        output: any OutputCoordinating,
+        appAudioSource: any AppAudioSourceCoordinating,
+        shortcut: any ShortcutCoordinating,
+        engine: any EngineLifecycleCoordinating,
+        download: any (ModelDownloadCoordinating & ModelRequirementDownloading),
+        sessions: any TranscriptionSessionFactory,
+        permissionClient: any PermissionClient,
+        clock: @escaping @MainActor () -> Date
+    ) {
+        self.settings = settings
+        self.permissionFlow = permissionFlow
+        self.output = output
+        self.appAudioSource = appAudioSource
+        self.shortcut = shortcut
+        self.engine = engine
+        self.download = download
+        self.sessions = sessions
+        self.permissionClient = permissionClient
+        self.clock = clock
+    }
+
     static func live(notificationManager: NotificationManager) -> StatusBarDependencies {
-        StatusBarDependencies(
-            permissionClient: SystemPermissionClient(),
+        let settings = SystemStatusBarSettings()
+        let permissionClient = SystemPermissionClient()
+        let permissionFlow = PermissionFlowCoordinator(
+            client: permissionClient,
+            storedAutoPaste: settings.snapshot.autoPaste
+        )
+        let output = OutputCoordinator(
             clipboardWriter: SystemClipboardWriter(),
             textInserter: SystemTextInserter(),
             workspaceReader: SystemWorkspaceReader(),
-            notificationSubmitter: SystemNotificationSubmitter(manager: notificationManager),
-            shareableContentClient: SystemShareableContentClient(),
-            hotkeyRegistrar: SystemHotkeyRegistrar(),
+            notifications: SystemNotificationSubmitter(manager: notificationManager),
+            permissionFlow: permissionFlow
+        )
+        let engine = EngineLifecycleCoordinator(
+            loader: DefaultEngineSelectionLoader(),
+            availability: { selection in
+                switch selection.provider {
+                case .whisper:
+                    guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
+                    return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
+                case .parakeet:
+                    return ParakeetModelDownloader.modelsAvailable()
+                }
+            }
+        )
+        return StatusBarDependencies(
+            settings: settings,
+            permissionFlow: permissionFlow,
+            output: output,
+            appAudioSource: AppAudioSourceCoordinator(client: SystemShareableContentClient()),
+            shortcut: ShortcutCoordinator(registrar: SystemHotkeyRegistrar(), reader: UserDefaultsShortcutConfigurationReader()),
+            engine: engine,
+            download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
+            sessions: ProductionTranscriptionSessionFactory(),
+            permissionClient: permissionClient,
             clock: { Date() }
         )
     }

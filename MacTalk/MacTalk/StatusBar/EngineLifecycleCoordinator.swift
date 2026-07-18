@@ -1,5 +1,22 @@
 import Foundation
 
+/// Immutable provider/model/revision identity for one engine lifecycle.
+struct EngineSelection: Equatable, Sendable {
+    let provider: ASRProvider
+    let modelID: String
+    let revision: String
+
+    static func whisper(_ spec: ModelSpec) -> EngineSelection {
+        EngineSelection(provider: .whisper, modelID: spec.id, revision: spec.sha256)
+    }
+
+    static let parakeet = EngineSelection(
+        provider: .parakeet,
+        modelID: "parakeet-tdt-0.6b-v3",
+        revision: "aed02740059203c4a87495924f685de3722ae9ce"
+    )
+}
+
 protocol EngineSelectionLoader: Sendable {
     func load(selection: EngineSelection) async throws -> any ASREngine
 }

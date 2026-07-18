@@ -1,434 +1,197 @@
-//
-//  StatusBarController.swift
-//  MacTalk
-//
-//  Menu bar controller for MacTalk application
-//
-
 import AppKit
 
+/// AppKit composition root for the status bar. Business state and system side
+/// effects belong to the injected coordinators; this type only routes intents,
+/// owns windows, and renders coordinator events.
 @MainActor
 final class StatusBarController {
-    // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
-    private var statusItem: NSStatusItem!
-    /// Compatibility accessors for the recording adapter. Storage and identity
-    /// live exclusively in EngineLifecycleCoordinator.
-    private var engine: (any ASREngine)? {
-        get { engineLifecycleCoordinator.loadedEngine }
-        set {
-            guard let newValue else {
-                engineLifecycleCoordinator.clearLoadedEngine()
-                return
-            }
-            let selection = engineSelection(for: AppSettings.shared.snapshot)
-            engineLifecycleCoordinator.adoptLoadedEngine(newValue, selection: selection ?? EngineSelection(provider: newValue.provider, modelID: "active", revision: "active"))
-        }
-    }
-    private let engineLifecycleCoordinator = EngineLifecycleCoordinator(
-        loader: DefaultEngineSelectionLoader(),
-        availability: { selection in
-            switch selection.provider {
-            case .whisper:
-                guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
-                return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
-            case .parakeet:
-                return ParakeetModelDownloader.modelsAvailable()
-            }
-        }
-    )
-    private let modelDownloadCoordinator = ModelDownloadCoordinator(client: ProductionModelDownloadClient())
-    private var transcriber: TranscriptionController?
+    private var statusItem: NSStatusItem?
+    private var menuPresenter: StatusMenuPresenter?
     private var hudController: HUDWindowController?
     private var settingsController: SettingsWindowController?
-
-    private var provider: ASRProvider = AppSettings.shared.provider
-    private var autoPaste = false
-    private var showNotifications = true  // Default to true
-    private let notificationManager: NotificationManager
+    private var appPickerController: AppPickerWindowController?
     private let dependencies: StatusBarDependencies
-    private let permissionFlowCoordinator: PermissionFlowCoordinator
-    private let outputCoordinator: OutputCoordinator
-    private let appAudioSourceCoordinator: AppAudioSourceCoordinator
-    private let shortcutCoordinator: ShortcutCoordinator
-    private lazy var recordingSessionCoordinator: RecordingSessionCoordinator = {
+    private lazy var recording: RecordingSessionCoordinator = {
+        let settingsReader = self.dependencies.settings
         let coordinator = RecordingSessionCoordinator(
-            permission: permissionFlowCoordinator,
-            engine: engineLifecycleCoordinator,
-            download: modelDownloadCoordinator,
-            sessions: ProductionTranscriptionSessionFactory(),
-            output: outputCoordinator,
-            settingsSnapshot: { AppSettings.shared.snapshot },
-            audioSources: appAudioSourceCoordinator
+            permission: dependencies.permissionFlow,
+            engine: dependencies.engine,
+            download: dependencies.download,
+            sessions: dependencies.sessions,
+            output: dependencies.output,
+            settingsSnapshot: { settingsReader.snapshot },
+            audioSources: dependencies.appAudioSource
         )
-        coordinator.onEvent = { [weak self] event in
-            self?.handleRecordingSessionEvent(event)
-        }
+        coordinator.onEvent = { [weak self] event in self?.handle(event) }
         return coordinator
     }()
-    private var mode: TranscriptionController.Mode = .micOnly
-    /// Explicit menu/hotkey intent survives settings edits and preparation retries.
-    private var pendingStartMode: TranscriptionController.Mode?
-    /// The settings captured when a start request begins. It remains stable
-    /// through permission prompts, app picking, downloads, and engine retries.
-    private var pendingSettingsLatch = RecordingStartSnapshotLatch()
-    private var isRecording = false
-    private var isFinalizing = false
-    private var currentWhisperModelName = "ggml-large-v3-turbo-q5_0.bin"
-    private var selectedAudioSource: AppPickerWindowController.AudioSource?
-    // FIX P0: Retain app picker to keep callbacks alive
-    private var appPickerController: AppPickerWindowController?
-
-    // Auto-download feature
-    private var catalog = ModelCatalog.bundled()
-    private var selectedModel: ModelSpec?
-    private var progressItem: NSMenuItem?
-    private var parakeetMenuItem: NSMenuItem?
-    private var whisperModelItems: [NSMenuItem] = []
-    /// Lazy Parakeet access remains a view of the lifecycle coordinator, not a
-    /// second engine cache.
-    private var parakeetEngine: ParakeetEngine? {
-        get { engineLifecycleCoordinator.loadedEngine as? ParakeetEngine }
-        set {
-            if let newValue {
-                engineLifecycleCoordinator.adoptLoadedEngine(newValue, selection: .parakeet)
-            } else if engineLifecycleCoordinator.loadedSelection?.provider == .parakeet {
-                engineLifecycleCoordinator.clearLoadedEngine()
-            }
-        }
-    }
-    private var isParakeetPreparationInFlight = false
-    private var pendingParakeetStartRetry = false
-    private var pendingParakeetStartGeneration: Int?
-    private var isStartInFlight = false
-    private var startTask: Task<Void, Never>?
-    private var startGeneration = 0
-    /// Request/selection ownership for work started by this controller. A
-    /// completion is never adopted based on provider alone.
-    private var activeEngineRequestID: UUID?
-    private var activeEngineSelection: EngineSelection?
-    private var activeDownloadRequestID: UUID?
-    private var activeDownloadRequirement: ModelRequirement?
-    private var selectedEngineSelection: EngineSelection?
-
-    // Menu items for shortcut display
-    private var micOnlyMenuItem: NSMenuItem?
-    private var micPlusAppMenuItem: NSMenuItem?
-    private var autoPasteMenuItem: NSMenuItem?
-    // Use nonisolated(unsafe) because deinit cannot access @MainActor-isolated properties
     private nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
+    private var lastSettingsSnapshot: SettingsSnapshot?
+    private var isShown = false
 
     init(
         notificationManager: NotificationManager = .shared,
         dependencies: StatusBarDependencies? = nil
     ) {
-        self.notificationManager = notificationManager
-        let resolvedDependencies = dependencies ?? StatusBarDependencies.live(notificationManager: notificationManager)
-        self.dependencies = resolvedDependencies
-        let permissionCoordinator = PermissionFlowCoordinator(
-            client: resolvedDependencies.permissionClient,
-            storedAutoPaste: AppSettings.shared.snapshot.autoPaste,
-            clock: resolvedDependencies.clock
-        )
-        self.permissionFlowCoordinator = permissionCoordinator
-        self.outputCoordinator = OutputCoordinator(
-            clipboardWriter: resolvedDependencies.clipboardWriter,
-            textInserter: resolvedDependencies.textInserter,
-            workspaceReader: resolvedDependencies.workspaceReader,
-            notifications: resolvedDependencies.notificationSubmitter,
-            permissionFlow: permissionCoordinator
-        )
-        self.appAudioSourceCoordinator = AppAudioSourceCoordinator(client: resolvedDependencies.shareableContentClient)
-        self.shortcutCoordinator = ShortcutCoordinator(
-            registrar: resolvedDependencies.hotkeyRegistrar,
-            reader: UserDefaultsShortcutConfigurationReader()
-        )
-        self.shortcutCoordinator.onIntent = { [weak self] intent in
-            self?.handle(intent)
-        }
-        DLOG("=== StatusBarController.init() START ===")
-        NSLog("🔧 [MacTalk] StatusBarController.init() called")
-
-        // Load the authoritative settings snapshot.
-        let settingsSnapshot = AppSettings.shared.snapshot
-        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-        provider = settingsSnapshot.provider
-        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
-        selectedEngineSelection = engineSelection(for: settingsSnapshot)
-        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
-        showNotifications = settingsSnapshot.showNotifications
-
-        NSLog("🔧 [MacTalk] Loaded auto-paste setting: \(autoPaste)")
-        NSLog("🔧 [MacTalk] Loaded show-notifications setting: \(showNotifications)")
-        NSLog("📋 [MacTalk] Clipboard copy: Always enabled (required for transcription)")
-
-        // Listen for shortcut changes
-        notificationTokens.append(
-            NotificationCenter.default.addObserver(
-                forName: .shortcutsDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.shortcutsDidChange()
-                }
-            }
-        )
-
-        // Listen for settings changes (including showNotifications)
-        notificationTokens.append(
-            NotificationCenter.default.addObserver(
-                forName: .settingsDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.settingsDidChange()
-                }
-            }
-        )
-
-        // Listen for provider changes
-        notificationTokens.append(
-            NotificationCenter.default.addObserver(
-                forName: .providerDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let provider = notification.object as? ASRProvider else { return }
-                Task { @MainActor in
-                    self?.providerDidChange(provider)
-                }
-            }
-        )
-
-        // Listen for permission changes so stale Accessibility grants do not leave Auto-paste visually enabled.
-        notificationTokens.append(
-            NotificationCenter.default.addObserver(
-                forName: .permissionsDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.permissionsDidChange()
-                }
-            }
-        )
-
-        DLOG("=== StatusBarController.init() END ===")
+        self.dependencies = dependencies ?? .live(notificationManager: notificationManager)
+        installObservers()
+        self.dependencies.shortcut.onIntent = { [weak self] intent in self?.handle(intent) }
     }
 
     deinit {
-        for token in notificationTokens {
-            NotificationCenter.default.removeObserver(token)
-        }
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
     }
 
     func show() {
-        DLOG("=== StatusBarController.show() START ===")
-        NSLog("🔧 [MacTalk] StatusBarController.show() called")
+        guard !isShown else { return }
+        isShown = true
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = item
+        item.isVisible = true
+        if let button = item.button {
+            StatusBarIconPresenter.installDefault(on: button)
+            button.toolTip = "MacTalk - Voice Transcription"
+            button.action = #selector(statusBarButtonClicked)
+            button.target = self
+        }
+        let presenter = StatusMenuPresenter(target: self)
+        menuPresenter = presenter
+        item.menu = presenter.menu
+        hudController = HUDWindowController()
+        hudController?.onStop = { [weak self] in self?.handle(.stop) }
+        dependencies.shortcut.reload()
+        dependencies.download.onStateChanged = { [weak self] _ in self?.render() }
+        render()
+    }
 
-        // MUST be called from main thread (applicationDidFinishLaunching)
-        assert(Thread.isMainThread, "StatusBarController.show() must be called from main thread")
-        NSLog("🔧 [MacTalk] Thread check passed - on main thread")
+    func cleanup() {
+        recording.cleanup()
+        dependencies.appAudioSource.cleanup()
+        dependencies.shortcut.cleanup()
+        dependencies.shortcut.onIntent = nil
+        dependencies.download.onStateChanged = nil
+        dependencies.engine.clear()
+        dependencies.output.cancel()
+        appPickerController?.close()
+        appPickerController = nil
+        hudController?.close()
+        hudController = nil
+        settingsController?.close()
+        settingsController = nil
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
+        notificationTokens.removeAll()
+        statusItem?.menu = nil
+        statusItem = nil
+        menuPresenter = nil
+        isShown = false
+    }
 
-        // Create status item on main thread (critical for macOS 26 Tahoe)
-        // Use squareLength as recommended in the checklist
-        NSLog("🔧 [MacTalk] Creating status item...")
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        NSLog("🔧 [MacTalk] Status item created: %@", statusItem)
+    @objc func statusBarButtonClicked() {
+        guard recording.state.phase == .recording else { return }
+        hudController?.showWindow(nil)
+    }
 
-        // Make status item visible (macOS 26.0.1 workaround)
-        statusItem.isVisible = true
-        NSLog("🔧 [MacTalk] Status item visibility set to true")
+    @objc func startMicOnly() { handle(.startMicOnly) }
+    @objc func startMicPlusApp() { handle(.startMicPlusAppAudio) }
+    @objc func stopRecording() { handle(.stop) }
 
-        guard let button = statusItem.button else {
-            NSLog("❌ [MacTalk] ERROR: Status item button is nil!")
+    @objc func toggleAutoPaste() {
+        let currentlyEnabled = dependencies.permissionFlow.effectiveAutoPaste
+        guard !currentlyEnabled else {
+            dependencies.settings.setAutoPaste(false)
+            render()
             return
         }
-        NSLog("🔧 [MacTalk] Status item button obtained: %@", button)
-
-        // Set menu bar icon with custom waveform icon
-        if let image = NSImage(named: "MenuBarIcon") {
-            image.isTemplate = true  // Critical for visibility with Tahoe's transparent menu bar
-            button.image = image
-            button.imagePosition = .imageOnly
-            NSLog("✅ [MacTalk] Set custom MenuBarIcon (template: %d)", image.isTemplate)
-        } else {
-            // Fallback to SF Symbol if custom icon not found
-            if let fallback = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
-                fallback.isTemplate = true
-                button.image = fallback
-                button.imagePosition = .imageOnly
-                NSLog("⚠️ [MacTalk] Using mic.fill fallback icon")
-            } else {
-                button.title = "🎙️"
-                NSLog("✅ [MacTalk] Set emoji icon as fallback")
-            }
-        }
-
-        button.toolTip = "MacTalk - Voice Transcription"
-        button.action = #selector(statusBarButtonClicked)
-        button.target = self
-
-        // Force the button to be visible
-        button.isHidden = false
-        NSLog("🔧 [MacTalk] Button isHidden set to false")
-
-        NSLog("🔧 [MacTalk] About to call setupMenu()...")
-        setupMenu()
-        NSLog("🔧 [MacTalk] setupMenu() completed")
-
-        // Register global shortcuts through the typed shortcut coordinator.
-        shortcutCoordinator.reload()
-        updateMenuShortcuts()
-        NSLog("🔧 [MacTalk] Shortcuts registered")
-
-        NSLog("✅ [MacTalk] Status bar setup complete. Button frame: %@", NSStringFromRect(button.frame))
-        NSLog("✅ [MacTalk] Status item isVisible: %d", statusItem.isVisible)
-        NSLog("✅ [MacTalk] Status item length: %f", statusItem.length)
-    }
-
-    private func createModelSubmenu() -> NSMenuItem {
-        let modelMenu = NSMenu()
-
-        let parakeetItem = NSMenuItem(title: "Parakeet (Core ML)", action: #selector(selectParakeet), keyEquivalent: "")
-        parakeetItem.target = self
-        parakeetItem.state = provider == .parakeet ? .on : .off
-        modelMenu.addItem(parakeetItem)
-        modelMenu.addItem(NSMenuItem.separator())
-        parakeetMenuItem = parakeetItem
-
-        whisperModelItems.removeAll()
-
-        // Use ModelCatalog for model selection with display names
-        for spec in catalog {
-            let item = NSMenuItem(title: spec.displayName, action: #selector(selectModelSpec(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = spec
-            item.state = (provider == .whisper && spec.filename == currentWhisperModelName) ? .on : .off
-            modelMenu.addItem(item)
-            whisperModelItems.append(item)
-        }
-
-        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
-        modelItem.submenu = modelMenu
-        return modelItem
-    }
-
-    private func setupMenu() {
-        // Create menu
-        let menu = NSMenu()
-
-        // Recording controls
-        micOnlyMenuItem = NSMenuItem(title: "Start (Mic Only)", action: #selector(startMicOnly), keyEquivalent: "")
-        micOnlyMenuItem?.target = self
-        menu.addItem(micOnlyMenuItem!)
-
-        micPlusAppMenuItem = NSMenuItem(title: "Start (Mic + App Audio)", action: #selector(startMicPlusApp), keyEquivalent: "")
-        micPlusAppMenuItem?.target = self
-        menu.addItem(micPlusAppMenuItem!)
-
-        menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "").target = self
-        menu.addItem(NSMenuItem.separator())
-
-        // Update menu shortcuts with current values
-        updateMenuShortcuts()
-
-        // Settings
-        let autoPasteItem = NSMenuItem(
-            title: "Auto-paste on Stop",
-            action: #selector(toggleAutoPaste),
-            keyEquivalent: "p"
-        )
-        autoPasteItem.state = autoPaste ? .on : .off
-        autoPasteItem.target = self
-        autoPasteMenuItem = autoPasteItem
-        menu.addItem(autoPasteItem)
-        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Model selection
-        menu.addItem(createModelSubmenu())
-
-        // Download progress indicator (hidden by default)
-        progressItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        progressItem?.isHidden = true
-        menu.addItem(progressItem!)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Settings
-        menu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",").target = self
-
-        // Permissions
-        let permissionsItem = menu.addItem(
-            withTitle: "Check Permissions",
-            action: #selector(checkPermissions),
-            keyEquivalent: ""
-        )
-        permissionsItem.target = self
-
-        menu.addItem(NSMenuItem.separator())
-
-        // About and Quit
-        menu.addItem(withTitle: "About MacTalk", action: #selector(showAbout), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Quit MacTalk", action: #selector(quit), keyEquivalent: "q").target = self
-
-        statusItem.menu = menu
-
-        // Initialize HUD
-        hudController = HUDWindowController()
-        hudController?.onStop = { [weak self] in
-            self?.stopRecording()
-        }
-
-        // Download state is normalized and tagged by the coordinator. The
-        // controller only renders its value state and presents any alert.
-        modelDownloadCoordinator.onStateChanged = { [weak self] state in
-            self?.handleModelDownloadState(state)
-        }
-        recordingSessionCoordinator.onEvent = { [weak self] event in
-            self?.handleRecordingSessionEvent(event)
-        }
-
-        // Load default model (async to avoid blocking menu bar icon)
         Task { @MainActor [weak self] in
-            await self?.prepareEngineForCurrentProvider()
+            guard let self else { return }
+            let result = await dependencies.permissionFlow.requestEnableAutoPaste()
+            if result == .enabled {
+                dependencies.settings.setAutoPaste(true)
+            }
+            render()
         }
     }
 
-    private func handleRecordingSessionEvent(_ event: RecordingSessionEvent) {
+    @objc func selectModelSpec(_ sender: NSMenuItem) {
+        guard let spec = sender.representedObject as? ModelSpec else { return }
+        dependencies.settings.setWhisperModelID(spec.id)
+        dependencies.settings.setProvider(.whisper)
+        dependencies.engine.settingsChanged(to: dependencies.settings.snapshot, recordingActive: recording.state.phase != .idle)
+        render()
+    }
+
+    @objc func selectParakeet() {
+        dependencies.settings.setProvider(.parakeet)
+        dependencies.engine.settingsChanged(to: dependencies.settings.snapshot, recordingActive: recording.state.phase != .idle)
+        render()
+    }
+
+    @objc func checkPermissions() {
+        StatusBarAlertPresenter.showPermissions(dependencies.permissionFlow.statusReport())
+    }
+
+    @objc func showSettings() {
+        if settingsController == nil { settingsController = SettingsWindowController() }
+        settingsController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func showAbout() { StatusBarAlertPresenter.showAbout() }
+
+    @objc func quit() { NSApp.terminate(nil) }
+
+    private func handle(_ intent: StatusBarIntent) {
+        switch intent {
+        case .startMicOnly:
+            recording.requestStart(mode: .micOnly)
+        case .startMicPlusAppAudio:
+            recording.requestStart(mode: .micPlusAppAudio)
+        case .toggleMicOnly:
+            recording.toggle(mode: .micOnly)
+        case .toggleMicPlusAppAudio:
+            recording.toggle(mode: .micPlusAppAudio)
+        case .stop:
+            recording.stop()
+        case .toggleAutoPaste:
+            toggleAutoPaste()
+        case let .selectModel(spec):
+            dependencies.settings.setWhisperModelID(spec.id)
+            dependencies.settings.setProvider(.whisper)
+        case .selectParakeet:
+            dependencies.settings.setProvider(.parakeet)
+        case .checkPermissions:
+            checkPermissions()
+        case .showSettings:
+            showSettings()
+        case .showAbout:
+            showAbout()
+        case .quit:
+            quit()
+        }
+        render()
+    }
+
+    private func handle(_ event: RecordingSessionEvent) {
         switch event {
         case let .stateChanged(state):
-            let active = state.phase == .recording
-            let finalizing = state.phase == .finalizing
-            setStartItemsEnabled(!active && !finalizing && !state.phase.isStartPending)
-            updateMenuBarIcon(recording: active)
-            if active {
+            let recordingNow = state.phase == .recording
+            if recordingNow {
                 hudController?.setAppMeterVisible(state.mode == .micPlusAppAudio)
                 hudController?.showWindow(nil)
-            } else if finalizing || state.phase == .idle {
+            } else if state.phase == .idle || state.phase == .finalizing {
                 hudController?.close()
                 if state.phase == .idle {
-                    // Stop can invalidate a picker while its source list is
-                    // still loading. Closing it here also routes a user close
-                    // through the coordinator-owned cancellation callback.
                     appPickerController?.close()
                     appPickerController = nil
                 }
             }
+            updateIcon(recording: recordingNow)
+            render()
         case let .requestAudioSource(requestID, sources):
             showAppPicker(requestID: requestID, sources: sources)
         case let .confirmDownload(requestID, requirement):
-            guard case let .whisper(spec) = requirement else {
-                showParakeetDownloadConfirmation { [weak self] approved in
-                    self?.recordingSessionCoordinator.respondToDownloadPrompt(requestID: requestID, approved: approved)
-                }
-                return
-            }
-            showDownloadConfirmationDialog(spec: spec) { [weak self] approved in
-                self?.recordingSessionCoordinator.respondToDownloadPrompt(requestID: requestID, approved: approved)
+            showDownloadConfirmation(requirement: requirement) { [weak self] approved in
+                self?.recording.respondToDownloadPrompt(requestID: requestID, approved: approved)
             }
         case let .partial(text): hudController?.updatePartial(text: text)
         case let .finalText(text): hudController?.updateFinal(text: text)
@@ -439,1156 +202,18 @@ final class StatusBarController {
         case let .appLevel(level):
             hudController?.updateAppLevel(rms: level.rms, peak: level.peak, peakHold: level.peakHold)
         case .appAudioLost:
-            outputCoordinator.handleAppAudioLost(showNotification: showNotifications)
+            dependencies.output.handleAppAudioLost(showNotification: dependencies.settings.snapshot.showNotifications)
         case .fallbackToMicOnly:
-            outputCoordinator.handleFallbackToMicOnly(showNotification: showNotifications)
+            dependencies.output.handleFallbackToMicOnly(showNotification: dependencies.settings.snapshot.showNotifications)
             hudController?.setAppMeterVisible(false)
         case let .error(error): showError(error.message)
         }
     }
 
-    @objc private func statusBarButtonClicked() {
-        if recordingSessionCoordinator.state.phase == .recording {
-            hudController?.showWindow(nil)
-        }
-    }
-
-    @objc private func startMicOnly() { handle(.startMicOnly) }
-
-    @objc private func startMicPlusApp() { handle(.startMicPlusAppAudio) }
-
-    private func handle(_ intent: StatusBarIntent) {
-        switch intent {
-        case .startMicOnly:
-            mode = .micOnly
-            recordingSessionCoordinator.requestStart(mode: .micOnly)
-        case .startMicPlusAppAudio:
-            mode = .micPlusAppAudio
-            recordingSessionCoordinator.requestStart(mode: .micPlusAppAudio)
-        case .toggleMicOnly:
-            if recordingSessionCoordinator.state.phase == .idle { mode = .micOnly }
-            recordingSessionCoordinator.toggle(mode: .micOnly)
-        case .toggleMicPlusAppAudio:
-            if recordingSessionCoordinator.state.phase == .idle { mode = .micPlusAppAudio }
-            recordingSessionCoordinator.toggle(mode: .micPlusAppAudio)
-        case .stop:
-            recordingSessionCoordinator.stop()
-        case .toggleAutoPaste:
-            break
-        case .showSettings, .showAbout, .quit:
-            break
-        }
-    }
-
-    @objc private func stopRecording() {
-        recordingSessionCoordinator.stop()
-    }
-
-    @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
-        if autoPaste {
-            autoPaste = false
-            sender.state = .off
-            AppSettings.shared.setAutoPaste(false)
-        } else if Permissions.isAccessibilityTrusted() {
-            autoPaste = true
-            sender.state = .on
-            AppSettings.shared.setAutoPaste(true)
-        } else {
-            autoPaste = false
-            sender.state = .off
-            Task { @MainActor [weak self, weak sender] in
-                guard let self else { return }
-                let result = await self.permissionFlowCoordinator.requestEnableAutoPaste()
-                if result == .enabled {
-                    self.autoPaste = true
-                    sender?.state = .on
-                    AppSettings.shared.setAutoPaste(true)
-                } else {
-                    self.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-                }
-            }
-            return
-            let diagnostics = Permissions.getAccessibilityDiagnostics()
-            DLOG("Auto-paste enable requested but Accessibility is not trusted; bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
-            if AutoPastePermissionPolicy.shouldResetStaleAccessibilityApproval(
-                accessibilityTrusted: diagnostics.isAccessibilityTrusted,
-                diagnostics: diagnostics
-            ) {
-                DLOG("System Settings may show MacTalk enabled for a stale local build; resetting Accessibility approval before re-requesting")
-                Permissions.resetAccessibilityApproval(reason: "Menu auto-paste enable saw stale/untrusted local build")
-            }
-            Permissions.requestAccessibilityPermission { [weak self, weak sender] in
-                DLOG("Auto-paste Accessibility grant callback received; enabling preference")
-                self?.autoPaste = true
-                sender?.state = .on
-                AppSettings.shared.setAutoPaste(true)
-            }
-        }
-
-        NSLog("🔧 [MacTalk] Auto-paste setting changed to: \(autoPaste)")
-    }
-
-    @objc private func selectModel(_ sender: NSMenuItem) {
-        guard let modelName = sender.representedObject as? String else { return }
-        cancelOwnedPreparation()
-        currentWhisperModelName = modelName
-        if let spec = ModelCatalog.findByFilename(modelName) {
-            AppSettings.shared.setWhisperModelID(spec.id)
-            selectedEngineSelection = .whisper(spec)
-        }
-
-        requestProviderSwitch(to: .whisper, promptForDownload: false)
-        updateProviderMenuState()
-
-        // A recording owns its engine. The selected model is reconciled at the
-        // next start rather than replacing an engine underneath that recording.
-        if !isRecording && !isStartInFlight && !isFinalizing {
-            prepareWhisperModel()
-        }
-    }
-
-    @objc private func selectModelSpec(_ sender: NSMenuItem) {
-        guard let spec = sender.representedObject as? ModelSpec else { return }
-        cancelOwnedPreparation()
-        selectedModel = spec
-        currentWhisperModelName = spec.filename
-        AppSettings.shared.setWhisperModelID(spec.id)
-        selectedEngineSelection = .whisper(spec)
-
-        requestProviderSwitch(to: .whisper, promptForDownload: false)
-        updateProviderMenuState()
-
-        // Prepare model with auto-download only while idle. During a recording
-        // this selection is persisted for the next session and menu state stays
-        // owned by the active recording.
-        if !isRecording && !isStartInFlight && !isFinalizing {
-            setStartItemsEnabled(false)
-            prepareWhisperModelWithAutoDownload(spec: spec)
-        }
-    }
-
-    @objc private func selectParakeet() {
-        requestProviderSwitch(to: .parakeet, promptForDownload: true)
-    }
-
-    private func requestProviderSwitch(to newProvider: ASRProvider, promptForDownload: Bool) {
-        guard provider != newProvider else { return }
-        cancelOwnedPreparation()
-
-        if newProvider == .parakeet, promptForDownload {
-            if !ParakeetModelDownloader.modelsAvailable() {
-                showParakeetDownloadConfirmation { [weak self] approved in
-                    guard let self = self else { return }
-                    if approved {
-                        AppSettings.shared.provider = .parakeet
-                        selectedEngineSelection = .parakeet
-                        let requestID = UUID()
-                        activeDownloadRequestID = requestID
-                        activeDownloadRequirement = .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)
-                        Task { @MainActor [weak self] in
-                            guard let self else { return }
-                            do {
-                                try await modelDownloadCoordinator.download(.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision), requestID: requestID)
-                                guard ownsCurrentDownloadRequest(requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)),
-                                      selectedEngineSelection == .parakeet,
-                                      modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)) else { return }
-                                activeDownloadRequestID = nil
-                                activeDownloadRequirement = nil
-                            } catch {
-                                guard ownsCurrentDownloadRequest(requestID, requirement: .parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)) else { return }
-                                activeDownloadRequestID = nil
-                                activeDownloadRequirement = nil
-                                showError("Parakeet download failed: \(error.localizedDescription)")
-                            }
-                        }
-                    } else {
-                        self.updateProviderMenuState()
-                    }
-                }
-                return
-            }
-        }
-
-        AppSettings.shared.provider = newProvider
-        selectedEngineSelection = newProvider == .parakeet ? .parakeet : engineSelection(for: AppSettings.shared.snapshot)
-    }
-
-    private func setStartItemsEnabled(_ enabled: Bool) {
-        guard let menu = statusItem.menu else { return }
-        for item in menu.items {
-            if item.title.hasPrefix("Start") {
-                item.isEnabled = enabled
-            }
-        }
-    }
-
-    private func withMicrophonePermission(
-        onGranted: @escaping @MainActor () -> Void,
-        onAbandoned: @escaping @MainActor () -> Void
-    ) {
-        switch PermissionFlowGate.microphoneAction(for: Permissions.microphonePermissionState()) {
-        case .proceed:
-            onGranted()
-        case .requestPermission:
-            Permissions.ensureMic { granted in
-                if granted {
-                    onGranted()
-                } else {
-                    onAbandoned()
-                    Permissions.showMicrophonePermissionGuidance()
-                }
-            }
-        case .openSettings:
-            onAbandoned()
-            Permissions.showMicrophonePermissionGuidance()
-        }
-    }
-
-    @objc private func checkPermissions() {
-        let micStatus = Permissions.isMicrophoneAuthorized() ? "✅ Granted" : "❌ Denied"
-        let screenStatus = Permissions.checkScreenRecordingPermission() ? "✅ Granted" : "❌ Denied"
-        let accessibilityStatus = Permissions.isAccessibilityTrusted() ? "✅ Granted" : "❌ Denied"
-
-        let alert = NSAlert()
-        alert.messageText = "Permissions Status"
-        alert.informativeText = """
-        Microphone: \(micStatus)
-        Screen Recording: \(screenStatus)
-        Accessibility: \(accessibilityStatus)
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    @objc private func showSettings() {
-        if settingsController == nil {
-            settingsController = SettingsWindowController()
-        }
-        settingsController?.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "MacTalk v1.0"
-        alert.informativeText = """
-            A native macOS app for local voice transcription powered by Whisper.
-
-            100% on-device processing. No cloud, no network calls.
-            """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
-    }
-
-    private func prepareWhisperModel() {
-        // Find model spec from catalog
-        if let spec = ModelCatalog.findByFilename(currentWhisperModelName) {
-            prepareWhisperModelWithAutoDownload(spec: spec)
-        } else {
-            // Only catalog entries carry immutable provenance. Never fall back
-            // to an existence-only legacy path for native model loading.
-            showError("The selected Whisper model has no verified integrity metadata.")
-        }
-    }
-
-    private func prepareWhisperModelWithAutoDownload(spec: ModelSpec) {
-        let selection = EngineSelection.whisper(spec)
-        guard isEngineAvailableLocally(selection) else {
-            showDownloadConfirmationDialog(spec: spec)
-            return
-        }
-
-        let requestID = UUID()
-        activeEngineRequestID = requestID
-        activeEngineSelection = selection
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let resolution = await engineLifecycleCoordinator.resolve(selection, requestID: requestID)
-            guard ownsCurrentEngineRequest(requestID, selection: selection) else { return }
-            activeEngineRequestID = nil
-            activeEngineSelection = nil
-            if case let .ready(loadedEngine) = resolution,
-               engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: selection) {
-                adoptLoadedEngine(loadedEngine, selection: selection)
-                setStartItemsEnabled(true)
-            } else if case let .failed(message) = resolution {
-                setStartItemsEnabled(true)
-                showError("Failed to load the selected engine: \(message)")
-            }
-        }
-    }
-
-    private func showDownloadConfirmationDialog(spec: ModelSpec, completion: ((Bool) -> Void)? = nil) {
-        let alert = NSAlert()
-        alert.messageText = "Model Not Available"
-        alert.informativeText = """
-        The model '\(spec.displayName)' is not downloaded yet.
-
-        Size: \(ByteCountFormatter.string(fromByteCount: spec.sizeBytes, countStyle: .file))
-
-        Would you like to download this model now?
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Use Different Model")
-        alert.addButton(withTitle: "Cancel")
-
-        let response = alert.runModal()
-
-        switch response {
-        case .alertFirstButtonReturn:
-            if let completion { completion(true) } else { startModelDownload(spec: spec) }
-        case .alertSecondButtonReturn:
-            setStartItemsEnabled(true)
-            if let completion { completion(false) } else { showInfo("Please select a different model from the Model menu.") }
-        default:
-            setStartItemsEnabled(true)
-            completion?(false)
-        }
-    }
-
-    private func startModelDownload(spec: ModelSpec) {
-        let requestID = UUID()
-        let requirement = ModelRequirement.whisper(spec)
-        let selection = EngineSelection.whisper(spec)
-        activeDownloadRequestID = requestID
-        activeDownloadRequirement = requirement
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await modelDownloadCoordinator.download(requirement, requestID: requestID)
-                guard ownsCurrentDownloadRequest(requestID, requirement: requirement),
-                      selectedEngineSelection == selection,
-                      modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: requirement) else { return }
-                activeDownloadRequestID = nil
-                activeDownloadRequirement = nil
-                activeEngineRequestID = requestID
-                activeEngineSelection = selection
-                let resolution = await engineLifecycleCoordinator.resolve(selection, requestID: requestID)
-                guard selectedEngineSelection == selection,
-                      engineLifecycleCoordinator.isCurrentRequest(requestID: requestID, selection: selection) else { return }
-                if case let .ready(loadedEngine) = resolution,
-                   engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: selection) {
-                    adoptLoadedEngine(loadedEngine, selection: selection)
-                } else if case let .failed(message) = resolution {
-                    showError("Failed to load the selected engine: \(message)")
-                }
-                activeEngineRequestID = nil
-                activeEngineSelection = nil
-                setStartItemsEnabled(true)
-            } catch {
-                guard ownsCurrentDownloadRequest(requestID, requirement: requirement) else { return }
-                activeDownloadRequestID = nil
-                activeDownloadRequirement = nil
-                setStartItemsEnabled(true)
-                showError("Failed to load model: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func handleModelDownloadState(_ state: ModelDownloadViewState) {
-        let parakeet = if case .parakeet = state.requirement { true } else { false }
-        switch state.phase {
-        case let .downloading(fraction, index, count):
-            if parakeet, let index, let count {
-                progressItem?.title = String(format: "Downloading Parakeet… %.0f%% (%d/%d)", fraction * 100, index, count)
-            } else {
-                progressItem?.title = String(format: "Downloading model… %.0f%%", fraction * 100)
-            }
-            progressItem?.isHidden = false
-        case .verifying:
-            progressItem?.title = parakeet ? "Verifying Parakeet…" : "Verifying model…"
-            progressItem?.isHidden = false
-        case .failed(let message):
-            progressItem?.title = parakeet ? "Parakeet download failed: \(message)" : "Download failed: \(message)"
-            progressItem?.isHidden = false
-        case .ready:
-            progressItem?.title = parakeet ? "Parakeet ready ✓" : "Model ready ✓"
-            progressItem?.isHidden = false
-        case .idle:
-            progressItem?.isHidden = true
-        }
-    }
-
-    private func showParakeetDownloadConfirmation(completion: @escaping (Bool) -> Void) {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Download Parakeet Model?"
-        alert.informativeText = "This will download approximately 600MB of model files."
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Cancel")
-
-        if let window = settingsController?.window {
-            alert.beginSheetModal(for: window) { response in
-                completion(response == .alertFirstButtonReturn)
-            }
-        } else {
-            let response = alert.runModal()
-            completion(response == .alertFirstButtonReturn)
-        }
-    }
-
-    private func updateProviderMenuState() {
-        parakeetMenuItem?.state = provider == .parakeet ? .on : .off
-        for item in whisperModelItems {
-            guard let spec = item.representedObject as? ModelSpec else {
-                item.state = .off
-                continue
-            }
-            item.state = (provider == .whisper && spec.filename == currentWhisperModelName) ? .on : .off
-        }
-    }
-
-    private func engineSelection(for settings: SettingsSnapshot) -> EngineSelection? {
-        switch settings.provider {
-        case .whisper:
-            guard let spec = ModelCatalog.findById(settings.whisperModelID) else { return nil }
-            return .whisper(spec)
-        case .parakeet:
-            return .parakeet
-        }
-    }
-
-    private func isEngineAvailableLocally(_ selection: EngineSelection) -> Bool {
-        switch selection.provider {
-        case .whisper:
-            guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
-            return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
-        case .parakeet:
-            return ParakeetModelDownloader.modelsAvailable()
-        }
-    }
-
-    private func adoptLoadedEngine(_ engine: any ASREngine, selection: EngineSelection?) {
-        self.engine = engine
-        if let selection {
-            engineLifecycleCoordinator.adoptLoadedEngine(engine, selection: selection)
-        }
-    }
-
-    @MainActor
-    private func prepareEngineForCurrentProvider() async {
-        switch provider {
-        case .whisper:
-            prepareWhisperModel()
-        case .parakeet:
-            guard ParakeetModelDownloader.modelsAvailable() else { return }
-            await prepareParakeetEngine()
-        }
-    }
-
-    @MainActor
-    @discardableResult
-    private func beginParakeetPreparation() -> Bool {
-        guard !isParakeetPreparationInFlight else { return false }
-        isParakeetPreparationInFlight = true
-        return true
-    }
-
-    @MainActor
-    private func prepareParakeetEngine() async {
-        guard beginParakeetPreparation() else { return }
-        await prepareParakeetEngineAssumingInFlight()
-    }
-
-    @MainActor
-    private func finishParakeetPreparation(triggerRetry: Bool) {
-        let shouldRetry = triggerRetry && pendingParakeetStartRetry
-        let pendingGeneration = pendingParakeetStartGeneration
-        let hasPendingStart = pendingSettingsLatch.snapshot != nil
-        pendingParakeetStartRetry = false
-        pendingParakeetStartGeneration = nil
-        isParakeetPreparationInFlight = false
-
-        guard let pendingGeneration, pendingGeneration == startGeneration else {
-            if !triggerRetry || !hasPendingStart {
-                pendingSettingsLatch.clear()
-            }
-            return
-        }
-
-        isStartInFlight = false
-
-        if shouldRetry {
-            // Keep the latched snapshot until the retried start either succeeds
-            // or reports failure. Settings edits during preparation are for the
-            // next recording and must not alter this request.
-            startRecording(allowParakeetPrepare: false)
-        } else {
-            pendingSettingsLatch.clear()
-        }
-    }
-
-    @MainActor
-    private func prepareParakeetEngineAssumingInFlight() async {
-        setStartItemsEnabled(false)
-
-        let engine = parakeetEngine ?? ParakeetEngine()
-        do {
-            try await engine.prepare()
-            guard provider == .parakeet else {
-                setStartItemsEnabled(true)
-                finishParakeetPreparation(triggerRetry: false)
-                return
-            }
-            parakeetEngine = engine
-            adoptLoadedEngine(engine, selection: .parakeet)
-            setStartItemsEnabled(true)
-            finishParakeetPreparation(triggerRetry: true)
-        } catch {
-            setStartItemsEnabled(true)
-            finishParakeetPreparation(triggerRetry: false)
-            showError("Failed to load Parakeet engine: \(error.localizedDescription)")
-        }
-    }
-
-    @MainActor
-    private func providerDidChange(_ newProvider: ASRProvider) {
-        guard provider != newProvider else { return }
-        cancelOwnedPreparation()
-        selectedEngineSelection = newProvider == .parakeet ? .parakeet : engineSelection(for: AppSettings.shared.snapshot)
-
-        // Settings are session-scoped. Do not tear down or replace an engine
-        // while a recording (or its start) is active; the next start reads the
-        // authoritative snapshot and reconciles it below.
-        guard !isRecording, !isStartInFlight, !isFinalizing else { return }
-
-        provider = newProvider
-        engine = nil
-        engineLifecycleCoordinator.clearLoadedEngine()
-        if newProvider == .whisper {
-            parakeetEngine = nil
-        }
-        updateProviderMenuState()
-
-        Task { [weak self] in
-            guard let self else { return }
-            await self.prepareEngineForCurrentProvider()
-        }
-    }
-
-    private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
-        controller.onPartial = { [weak self] text in
-            // Route partial text to HUD for live streaming display
-            self?.hudController?.updatePartial(text: text)
-        }
-
-        controller.onFinal = { [weak self] text in
-            DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
-            guard let owner = self else { return }
-            owner.hudController?.updateFinal(text: text)
-            let target = owner.outputCoordinator.currentTarget
-            let output = owner.outputCoordinator.handleFinal(
-                text: text,
-                context: OutputContext(
-                    target: target,
-                    autoPastePreference: owner.autoPaste,
-                    showNotifications: owner.showNotifications
-                )
-            )
-            if let permissionEffect = output.permissionEffect {
-                owner.handle(permissionEffect)
-            }
-            if output.insertOutcome == .failed {
-                DebugLogger.shared.log(.error(description: "auto-insert failed"))
-            }
-            return
-            /*
-            let accessibilityTrusted = Permissions.isAccessibilityTrusted()
-            let autoPastePreference = self?.autoPaste ?? false
-            let autoPasteEnabled = AutoPastePermissionPolicy.effectiveAutoPaste(
-                storedPreference: autoPastePreference,
-                accessibilityTrusted: accessibilityTrusted
-            )
-            if self?.autoPaste == true, !accessibilityTrusted {
-                DLOG("Auto-paste preference is enabled, but Accessibility is not trusted at paste time; disabling effective auto-paste")
-                self?.refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-            }
-            NSLog("[StatusBar] autoPaste setting: \(autoPasteEnabled) (Accessibility trusted: \(accessibilityTrusted))")
-            DLOG("[AutoPaste] legacy output path removed")
-
-            // Always copy to clipboard first
-            NSLog("[StatusBar] Copying text to clipboard...")
-            DLOG("[AutoPaste] copying final text to clipboard")
-            ClipboardManager.setClipboard(text)
-
-            var message = "Text copied to clipboard"
-
-            // Auto-insert if enabled (uses AX SetValue first, then Cmd+V fallback)
-            if autoPasteEnabled, let self {
-                DLOG("[AutoPaste] effective auto-paste enabled; checking target/frontmost match")
-                if self.isRecordingTargetAppStillFrontmost() {
-                    NSLog("[StatusBar] Auto-paste is enabled - using AutoInsertManager...")
-                    DLOG("[AutoPaste] target/frontmost check passed; invoking AutoInsertManager")
-                    let result = AutoInsertManager.insertText(text)
-                    NSLog("[StatusBar] Auto-insert operation completed")
-                    DLOG("[AutoPaste] AutoInsertManager returned: \(result.description)")
-
-                    switch result {
-                    case .axSetValueSuccess, .cmdVFallback:
-                        message = "Text pasted"
-                        self.resetPermissionPromptBackoff()
-                    case .permissionDenied:
-                        let now = Date()
-                        let cooldown = self.currentPermissionPromptCooldown()
-                        let shouldPrompt: Bool
-
-                        if let lastPrompt = self.lastPermissionPromptTime {
-                            let elapsed = now.timeIntervalSince(lastPrompt)
-                            shouldPrompt = elapsed >= cooldown
-                            if !shouldPrompt {
-                                NSLog("[StatusBar] Permission prompt throttled (last prompt \(Int(elapsed))s ago, cooldown \(Int(cooldown))s)")
-                                DLOG("[AutoPaste] permission prompt throttled: elapsed=\(Int(elapsed))s, cooldown=\(Int(cooldown))s")
-                            }
-                        } else {
-                            shouldPrompt = true
-                        }
-
-                        if shouldPrompt {
-                            NSLog("[StatusBar] Permission denied - requesting accessibility permission...")
-                            DLOG("[AutoPaste] permission denied; requesting Accessibility permission")
-                            self.recordPermissionPromptShown(at: now)
-                            Permissions.requestAccessibilityPermission()
-                        }
-                    case .failed:
-                        DebugLogger.shared.log(.error(description: "auto-insert failed"))
-                        self.resetPermissionPromptBackoff()
-                    }
-                } else {
-                    NSLog("⚠️ [StatusBar] Frontmost app changed during recording - skipping auto-paste and leaving text on clipboard")
-                    DLOG("[AutoPaste] skipped because target/frontmost check failed")
-                }
-            } else {
-                DLOG("[AutoPaste] effective auto-paste disabled; leaving text on clipboard")
-            }
-
-            DLOG("[AutoPaste] legacy output target cleanup removed")
-
-            NSLog("[StatusBar] Showing transcription completion notification")
-            self?.notificationManager.submit(.transcriptionComplete, enabled: self?.showNotifications ?? false)
-            */
-        }
-
-        controller.onFinalizationComplete = { [weak self, weak controller] in
-            guard let self, let controller, self.transcriber === controller else { return }
-            self.isFinalizing = false
-            self.setStartItemsEnabled(true)
-            DLOG("Transcription finalization completed; recording controls re-enabled")
-        }
-
-        controller.onMicLevel = { [weak self] levelData in
-            self?.hudController?.updateMicLevel(
-                rms: levelData.rms,
-                peak: levelData.peak,
-                peakHold: levelData.peakHold
-            )
-        }
-
-        controller.onAppLevel = { [weak self] levelData in
-            self?.hudController?.updateAppLevel(
-                rms: levelData.rms,
-                peak: levelData.peak,
-                peakHold: levelData.peakHold
-            )
-        }
-
-        controller.onAppAudioLost = { [weak self] in
-            guard let self else { return }
-            self.outputCoordinator.handleAppAudioLost(showNotification: self.showNotifications)
-        }
-
-        controller.onFallbackToMicOnly = { [weak self] in
-            guard let self else { return }
-            self.outputCoordinator.handleFallbackToMicOnly(showNotification: self.showNotifications)
-            self.hudController?.setAppMeterVisible(false)
-        }
-    }
-
-    private func captureRecordingTarget() {
-        _ = outputCoordinator.captureTarget()
-    }
-
-    private func startRecording() {
-        startRecording(allowParakeetPrepare: true, requestedMode: nil)
-    }
-
-    private func startRecording(
-        allowParakeetPrepare: Bool,
-        requestedMode: TranscriptionController.Mode? = nil
-    ) {
-        if let requestedMode {
-            pendingStartMode = requestedMode
-            mode = requestedMode
-            if pendingSettingsLatch.snapshot == nil {
-                pendingSettingsLatch.captureIfNeeded(AppSettings.shared.snapshotAtRecordingStart().withCaptureMode(
-                    requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
-                ))
-            }
-        }
-        NSLog("🎬 [StatusBar] startRecording() called")
-        if outputCoordinator.currentTarget == nil {
-            captureRecordingTarget()
-        }
-        NSLog("🎬 [StatusBar] Mode: \(mode)")
-        if let source = selectedAudioSource {
-            NSLog("🎬 [StatusBar] Audio source: \(source.name)")
-        } else {
-            NSLog("🎬 [StatusBar] Audio source: nil (mic-only mode)")
-        }
-
-        if isRecording || isStartInFlight || isFinalizing {
-            NSLog("⚠️ [StatusBar] Ignoring start request while recording is active, starting, or finalizing")
-            return
-        }
-
-        // Take one authoritative snapshot for this recording session. Explicit
-        // menu/hotkey intent overrides the configured default mode, but all
-        // other provider/model/language values come from this one snapshot.
-        let requestedMode = pendingStartMode ?? mode
-        let settingsSnapshot: SettingsSnapshot
-        if let pendingSettingsSnapshot = pendingSettingsLatch.snapshot {
-            settingsSnapshot = pendingSettingsSnapshot
-        } else {
-            let configuredSnapshot = AppSettings.shared.snapshotAtRecordingStart()
-            settingsSnapshot = configuredSnapshot.withCaptureMode(
-                requestedMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
-            )
-            pendingSettingsLatch.captureIfNeeded(settingsSnapshot)
-        }
-        provider = settingsSnapshot.provider
-        mode = requestedMode
-        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
-        selectedEngineSelection = engineSelection(for: settingsSnapshot)
-        selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
-
-        // Reconcile the complete engine identity before each new recording.
-        // Provider-only checks are insufficient when the selected Whisper model
-        // changes. Availability is checked locally; this path never downloads.
-        if let pendingSelection = engineSelection(for: settingsSnapshot),
-           engineLifecycleCoordinator.loadedSelection != pendingSelection || engineLifecycleCoordinator.loadedEngine == nil {
-            if isEngineAvailableLocally(pendingSelection) {
-                isStartInFlight = true
-                startGeneration += 1
-                let reconciliationGeneration = startGeneration
-                let requestID = UUID()
-                activeEngineRequestID = requestID
-                activeEngineSelection = pendingSelection
-                Task { [weak self] in
-                    guard let self else { return }
-                    do {
-                        let loaded = try await self.engineLifecycleCoordinator.reconcile(
-                            pending: PendingSettingsSnapshot(engine: pendingSelection),
-                            isRecording: false,
-                            requestID: requestID
-                        )
-                        guard self.startGeneration == reconciliationGeneration,
-                              !self.isRecording,
-                              self.ownsCurrentEngineRequest(requestID, selection: pendingSelection),
-                              self.engineLifecycleCoordinator.isCurrent(requestID: requestID, selection: pendingSelection) else {
-                            return
-                        }
-                        self.activeEngineRequestID = nil
-                        self.activeEngineSelection = nil
-                        self.adoptLoadedEngine(loaded, selection: pendingSelection)
-                        self.isStartInFlight = false
-                        self.startRecording(allowParakeetPrepare: allowParakeetPrepare)
-                    } catch {
-                        guard self.startGeneration == reconciliationGeneration,
-                              self.ownsCurrentEngineRequest(requestID, selection: pendingSelection) else { return }
-                        self.activeEngineRequestID = nil
-                        self.activeEngineSelection = nil
-                        self.isStartInFlight = false
-                        self.pendingSettingsLatch.clear()
-                        self.pendingStartMode = nil
-                        self.showError("Failed to load the selected engine: \(error.localizedDescription)")
-                    }
-                }
-                return
-            } else if pendingSelection.provider == .whisper {
-                engine = nil
-                engineLifecycleCoordinator.clearLoadedEngine()
-                pendingSettingsLatch.clear()
-                pendingStartMode = nil
-                showError("The selected Whisper model is not available locally.")
-                return
-            }
-        }
-
-        let parakeetModelsAvailable = provider == .parakeet ? ParakeetModelDownloader.modelsAvailable() : false
-        if provider == .parakeet, parakeetModelsAvailable, engine?.provider != .parakeet {
-            let immediateEngine = parakeetEngine ?? ParakeetEngine()
-            parakeetEngine = immediateEngine
-            engine = immediateEngine
-            DLOG("Created Parakeet engine immediately so microphone capture can start before model preparation finishes")
-            NSLog("✅ [StatusBar] Created Parakeet engine immediately; preparation will happen after mic capture starts")
-        }
-
-        let preparationDecision = RecordingStartGate.decision(
-            provider: provider,
-            engineProvider: engine?.provider,
-            modelsAvailable: parakeetModelsAvailable,
-            allowParakeetPrepare: allowParakeetPrepare,
-            isPreparingParakeetEngine: isParakeetPreparationInFlight
-        )
-
-        if preparationDecision.clearMismatchedEngine, let engine {
-            NSLog("⚠️ [StatusBar] Engine/provider mismatch (\(engine.provider) vs \(provider)) - clearing")
-            self.engine = nil
-            engineLifecycleCoordinator.clearLoadedEngine()
-        }
-
-        switch preparationDecision.action {
-        case .promptForParakeetDownload:
-            showParakeetDownloadConfirmation { [weak self] approved in
-                guard let self = self else { return }
-                if approved {
-                    let requestID = UUID()
-                    let requirement = ModelRequirement.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision)
-                    self.activeDownloadRequestID = requestID
-                    self.activeDownloadRequirement = requirement
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            try await modelDownloadCoordinator.download(requirement, requestID: requestID)
-                            guard ownsCurrentDownloadRequest(requestID, requirement: requirement),
-                                  selectedEngineSelection == .parakeet,
-                                  modelDownloadCoordinator.isCurrent(requestID: requestID, requirement: requirement) else { return }
-                            activeDownloadRequestID = nil
-                            activeDownloadRequirement = nil
-                            startRecording(allowParakeetPrepare: false)
-                        } catch {
-                            guard ownsCurrentDownloadRequest(requestID, requirement: requirement) else { return }
-                            activeDownloadRequestID = nil
-                            activeDownloadRequirement = nil
-                            pendingSettingsLatch.clear()
-                            pendingStartMode = nil
-                            showError("Parakeet download failed: \(error.localizedDescription)")
-                        }
-                    }
-                } else {
-                    self.pendingSettingsLatch.clear()
-                    self.pendingStartMode = nil
-                }
-            }
-            return
-        case .prepareParakeetEngineAndRetry:
-            NSLog("⏳ [StatusBar] Preparing Parakeet engine before starting recording")
-            pendingParakeetStartRetry = true
-            if pendingParakeetStartGeneration == nil {
-                startGeneration += 1
-                pendingParakeetStartGeneration = startGeneration
-            }
-            isStartInFlight = true
-            guard beginParakeetPreparation() else {
-                NSLog("⏳ [StatusBar] Parakeet engine preparation already in flight; waiting for retry")
-                return
-            }
-            Task { [weak self] in
-                guard let self else { return }
-                await self.prepareParakeetEngineAssumingInFlight()
-            }
-            return
-        case .waitForParakeetEnginePreparation:
-            pendingParakeetStartRetry = true
-            if pendingParakeetStartGeneration == nil {
-                startGeneration += 1
-                pendingParakeetStartGeneration = startGeneration
-            }
-            isStartInFlight = true
-            NSLog("⏳ [StatusBar] Parakeet engine preparation already in flight; waiting for retry")
-            return
-        case .none:
-            break
-        }
-
-        guard let engine = engine, engine.provider == provider else {
-            NSLog("❌ [StatusBar] Engine not loaded or provider mismatch!")
-            pendingSettingsLatch.clear()
-            pendingStartMode = nil
-            showError("Engine not loaded. Check that the \(provider.displayName) models are available.")
-            return
-        }
-
-        let transcriptionController: TranscriptionController
-        if let existing = transcriber,
-           existing.provider == provider,
-           existing.isUsingEngine(engine) {
-            transcriptionController = existing
-            DLOG("Reusing TranscriptionController and microphone engine for provider=\(provider.rawValue)")
-            NSLog("✅ [StatusBar] Reusing existing TranscriptionController")
-        } else {
-            NSLog("✅ [StatusBar] Engine available, creating TranscriptionController...")
-            transcriptionController = TranscriptionController(engine: engine)
-            setupTranscriptionCallbacks(transcriptionController)
-            transcriber = transcriptionController
-            NSLog("🎬 [StatusBar] TranscriptionController created")
-        }
-        transcriptionController.autoPasteEnabled = autoPaste
-        NSLog("🎬 [StatusBar] TranscriptionController configured with autoPaste=\(autoPaste)")
-        isStartInFlight = true
-        startGeneration += 1
-        let startGeneration = self.startGeneration
-
-        startTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                if let source = selectedAudioSource {
-                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=\(source.name)")
-                } else {
-                    NSLog("🚀 [StatusBar] Starting transcription with mode=\(mode), source=nil")
-                }
-                try await transcriptionController.start(
-                    mode: mode,
-                    audioSource: selectedAudioSource,
-                    settingsSnapshot: settingsSnapshot
-                )
-                await MainActor.run {
-                    guard startGeneration == self.startGeneration else {
-                        NSLog("⚠️ [StatusBar] Ignoring stale transcription start success for generation \(startGeneration)")
-                        transcriptionController.stop()
-                        return
-                    }
-                    NSLog("✅ [StatusBar] Transcription started successfully")
-                    self.startTask = nil
-                    self.isStartInFlight = false
-                    self.isRecording = true
-                    self.pendingStartMode = nil
-                    self.pendingSettingsLatch.clear()
-                    self.updateMenuBarIcon(recording: true)
-                    self.hudController?.setAppMeterVisible(self.mode == .micPlusAppAudio)
-                    self.hudController?.showWindow(nil)
-                }
-            } catch is CancellationError {
-                transcriptionController.cancelStart()
-                await MainActor.run {
-                    guard startGeneration == self.startGeneration else { return }
-                    self.startTask = nil
-                    self.isStartInFlight = false
-                    self.pendingSettingsLatch.clear()
-                    self.pendingStartMode = nil
-                    NSLog("ℹ️ [StatusBar] Recording start cancelled")
-                }
-            } catch {
-                transcriptionController.cancelStart()
-                NSLog("❌ [StatusBar] Failed to start recording: \(error.localizedDescription)")
-                await MainActor.run {
-                    guard startGeneration == self.startGeneration else { return }
-                    self.startTask = nil
-                    self.isStartInFlight = false
-                    self.pendingSettingsLatch.clear()
-                    self.pendingStartMode = nil
-                    self.outputCoordinator.cancel()
-                    self.showError("Failed to start recording: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-
-    private func updateMenuBarIcon(recording: Bool) {
-        guard let button = statusItem.button else { return }
-
-        if recording {
-            if let image = NSImage(named: "MenuBarIconRecording") {
-                image.isTemplate = true
-                button.image = image
-                button.imagePosition = .imageOnly
-            } else if let fallback = NSImage(systemSymbolName: "mic.fill.badge.plus", accessibilityDescription: "Recording") {
-                fallback.isTemplate = true
-                button.image = fallback
-                button.imagePosition = .imageOnly
-            } else {
-                button.title = "🔴"
-            }
-        } else {
-            if let image = NSImage(named: "MenuBarIcon") {
-                image.isTemplate = true
-                button.image = image
-                button.imagePosition = .imageOnly
-            } else if let fallback = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "MacTalk") {
-                fallback.isTemplate = true
-                button.image = fallback
-                button.imagePosition = .imageOnly
-            } else {
-                button.title = "🎙️"
-            }
-        }
-    }
-
-    private func showModelMissingAlert(modelName: String, path: String) {
-        let alert = NSAlert()
-        alert.messageText = "Model File Not Found"
-        alert.informativeText = """
-        The model file '\(modelName)' was not found.
-
-        Please download the model and place it at:
-        \(path)
-
-        You can download Whisper models from:
-        https://huggingface.co/ggerganov/whisper.cpp
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    private func showError(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Error"
-        alert.informativeText = message
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    private func showInfo(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Information"
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    func cleanup() {
-        recordingSessionCoordinator.cleanup()
-        appAudioSourceCoordinator.cleanup()
-        shortcutCoordinator.cleanup()
-        engineLifecycleCoordinator.clear()
-        hudController?.close()
-    }
-
-    // MARK: - Menu Shortcut Display
-
-    private func updateMenuShortcuts() {
-        updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcutCoordinator.configuration.micOnly)
-        updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcutCoordinator.configuration.micPlusAppAudio)
-    }
-
-    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut?) {
-        guard let menuItem else { return }
-        let baseTitle = menuItem.title.components(separatedBy: "\t").first ?? menuItem.title
-        guard let shortcut else {
-            menuItem.title = baseTitle
-            menuItem.attributedTitle = nil
-            return
-        }
-
-        // Create attributed string with tab-separated shortcut
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.tabStops = [NSTextTab(textAlignment: .right, location: 260)]
-
-        let attributedTitle = NSMutableAttributedString(string: "\(baseTitle)\t\(shortcut.displayString)")
-        attributedTitle.addAttribute(
-            .paragraphStyle,
-            value: paragraphStyle,
-            range: NSRange(location: 0, length: attributedTitle.length)
-        )
-
-        // Make the shortcut text grey
-        let shortcutRange = NSRange(
-            location: baseTitle.count + 1,
-            length: shortcut.displayString.count
-        )
-        attributedTitle.addAttribute(
-            .foregroundColor,
-            value: NSColor.tertiaryLabelColor,
-            range: shortcutRange
-        )
-
-        menuItem.attributedTitle = attributedTitle
-    }
-
-    // MARK: - App Picker
-
-    private func showAppPicker(
-        requestID: UUID,
-        sources: [AppPickerWindowController.AudioSource]
-    ) {
-        guard isCurrentAudioSourceRequest(requestID) else { return }
-        NSLog("🎬 [StatusBar] showAppPicker() - presenting preloaded audio sources...")
-
-        guard !sources.isEmpty else {
-            recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-            showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
-            return
-        }
-
-        let picker = AppPickerWindowController(sources: sources)
-        appPickerController = picker
-        picker.onSelection = { [weak self] source in
-            guard let self, self.isCurrentAudioSourceRequest(requestID) else { return }
-            self.appPickerController = nil
-            self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: source)
-        }
-        picker.onCancel = { [weak self] in
-            guard let self else { return }
-            self.appPickerController = nil
-            self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-        }
-
-        // Re-check request ownership after constructing the retained window.
-        guard isCurrentAudioSourceRequest(requestID) else { return }
-        _ = picker.window
-        picker.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        NSLog("✅ [StatusBar] App picker window shown successfully")
-    }
-
-    private func isCurrentAudioSourceRequest(_ requestID: UUID) -> Bool {
-        let state = recordingSessionCoordinator.state
-        guard state.requestID == requestID else { return false }
-        guard case .selectingAudioSource = state.phase else { return false }
-        return true
-    }
-
-    // MARK: - Hotkeys
-
-    @objc private func shortcutsDidChange() {
-        shortcutCoordinator.reload()
-        updateMenuShortcuts()
-    }
-
-    @objc private func settingsDidChange() {
-        let settingsSnapshot = AppSettings.shared.snapshot
-        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-        showNotifications = settingsSnapshot.showNotifications
-
-        // A changed provider/model supersedes idle preparation immediately.
-        // Runtime settings remain session-scoped for an active recording.
-        let newSelection = engineSelection(for: settingsSnapshot)
-        if newSelection != selectedEngineSelection {
-            cancelOwnedPreparation()
-            selectedEngineSelection = newSelection
-        }
-        guard !isRecording, !isStartInFlight, !isFinalizing else { return }
-        provider = settingsSnapshot.provider
-        mode = settingsSnapshot.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
-        currentWhisperModelName = ModelCatalog.findById(settingsSnapshot.whisperModelID)?.filename ?? currentWhisperModelName
-        selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
-        if engineLifecycleCoordinator.loadedSelection != newSelection {
-            engineLifecycleCoordinator.clearLoadedEngine()
-        }
-        if engine?.provider != provider {
-            engine = nil
-            engineLifecycleCoordinator.clearLoadedEngine()
-        }
-        updateProviderMenuState()
-    }
-
-    @objc private func permissionsDidChange() {
-        refreshAutoPasteStateFromPermissions(updateStoredPreference: false)
-    }
-
     private func handle(_ effect: PermissionEffect) {
         switch effect {
         case .requestAccessibility:
-            Permissions.requestAccessibilityPermission()
+            Task { @MainActor in _ = await dependencies.permissionClient.requestAccessibilitySystemPrompt() }
         case .openAccessibilitySettings:
             dependencies.permissionClient.openAccessibilitySettings()
         case .resetStaleAccessibilityApproval:
@@ -1596,105 +221,83 @@ final class StatusBarController {
         }
     }
 
-    private func refreshAutoPasteStateFromPermissions(updateStoredPreference: Bool) {
-        let storedAutoPaste = AppSettings.shared.snapshot.autoPaste
-        let permissionState = permissionFlowCoordinator.refresh(storedAutoPaste: storedAutoPaste)
-        let accessibilityTrusted = permissionState.accessibilityTrusted
-        let effectiveAutoPaste = permissionState.effectiveAutoPaste
-
-        if storedAutoPaste && !accessibilityTrusted {
-            let diagnostics = Permissions.getAccessibilityDiagnostics()
-            DLOG("Auto-paste preference is on, but Accessibility is not trusted for this build; showing Auto-paste as off. bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath). If System Settings shows MacTalk enabled, that row is likely stale for a previous code signature/CDHash.")
-            NSLog("⚠️ [MacTalk] Auto-paste preference is on, but Accessibility is not trusted for this build")
-        }
-
-        autoPaste = effectiveAutoPaste
-        transcriber?.autoPasteEnabled = effectiveAutoPaste
-        autoPasteMenuItem?.state = effectiveAutoPaste ? .on : .off
-
-        if updateStoredPreference && storedAutoPaste != effectiveAutoPaste {
-            AppSettings.shared.setAutoPaste(effectiveAutoPaste)
-        }
+    private func render() {
+        guard let presenter = menuPresenter else { return }
+        let settings = dependencies.settings.snapshot
+        let permission = dependencies.permissionFlow.refresh(storedAutoPaste: settings.autoPaste)
+        let state = StatusBarViewStateReducer.reduce(
+            recording: recording.state,
+            settings: settings,
+            permission: permission,
+            download: dependencies.download.state,
+            shortcuts: dependencies.shortcut.configuration
+        )
+        presenter.render(state)
+        updateIcon(recording: state.recordingIcon)
+        lastSettingsSnapshot = settings
     }
 
-    private func ownsCurrentEngineRequest(_ requestID: UUID, selection: EngineSelection) -> Bool {
-        activeEngineRequestID == requestID && activeEngineSelection == selection && selectedEngineSelection == selection
-    }
-
-    private func ownsCurrentDownloadRequest(_ requestID: UUID, requirement: ModelRequirement) -> Bool {
-        activeDownloadRequestID == requestID && activeDownloadRequirement == requirement
-    }
-
-    /// Cancel all work owned by this controller before changing selection or
-    /// abandoning a start. Coordinator callbacks may still arrive, but their
-    /// request and selection tags can no longer pass adoption checks.
-    private func cancelOwnedPreparation() {
-        if let requestID = activeEngineRequestID {
-            engineLifecycleCoordinator.cancel(requestID: requestID)
-        }
-        if let requestID = activeDownloadRequestID {
-            modelDownloadCoordinator.cancel(requestID: requestID)
-        }
-        activeEngineRequestID = nil
-        activeEngineSelection = nil
-        activeDownloadRequestID = nil
-        activeDownloadRequirement = nil
-    }
-
-    private func abandonPendingStart() {
-        cancelOwnedPreparation()
-        outputCoordinator.cancel()
-        pendingSettingsLatch.clear()
-        pendingStartMode = nil
-        pendingParakeetStartRetry = false
-        pendingParakeetStartGeneration = nil
-        isStartInFlight = false
-    }
-
-    private func invalidatePendingStart() {
-        cancelOwnedPreparation()
-        outputCoordinator.cancel()
-        startGeneration += 1
-        pendingParakeetStartRetry = false
-        pendingParakeetStartGeneration = nil
-        pendingSettingsLatch.clear()
-        pendingStartMode = nil
-        isStartInFlight = false
-        startTask?.cancel()
-        startTask = nil
-    }
-
-    private func toggleRecording() {
-        if recordingSessionCoordinator.state.phase != .idle {
-            stopRecording()
-        } else {
-            recordingSessionCoordinator.requestStart(mode: mode)
-        }
-    }
-
-    private func toggleMicOnly() {
-        if recordingSessionCoordinator.state.phase != .idle {
-            stopRecording()
-        } else {
-            startMicOnly()
-        }
-    }
-
-    private func toggleMicPlusApp() {
-        if recordingSessionCoordinator.state.phase != .idle {
-            stopRecording()
-        } else {
-            startMicPlusApp()
-        }
-    }
-
-    private func toggleHUD() {
-        if let hud = hudController {
-            if hud.window?.isVisible == true {
-                hud.close()
-            } else {
-                hud.showWindow(nil)
+    private func installObservers() {
+        let center = NotificationCenter.default
+        notificationTokens.append(center.addObserver(forName: .settingsDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.settingsChanged() }
+        })
+        notificationTokens.append(center.addObserver(forName: .providerDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.settingsChanged() }
+        })
+        notificationTokens.append(center.addObserver(forName: .permissionsDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.render() }
+        })
+        notificationTokens.append(center.addObserver(forName: .shortcutsDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.dependencies.shortcut.reload()
+                self?.render()
             }
+        })
+    }
+
+    private func settingsChanged() {
+        let settings = dependencies.settings.snapshot
+        guard settings != lastSettingsSnapshot else {
+            render()
+            return
         }
+        dependencies.engine.settingsChanged(to: settings, recordingActive: recording.state.phase != .idle)
+        render()
+    }
+
+    private func showAppPicker(requestID: UUID, sources: [AppPickerWindowController.AudioSource]) {
+        guard recording.state.requestID == requestID, recording.state.phase == .selectingAudioSource else { return }
+        guard !sources.isEmpty else {
+            recording.provideAudioSource(requestID: requestID, source: nil)
+            showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
+            return
+        }
+        let picker = AppPickerWindowController(sources: sources)
+        appPickerController = picker
+        picker.onSelection = { [weak self] source in
+            guard let self, self.recording.state.requestID == requestID else { return }
+            self.appPickerController = nil
+            self.recording.provideAudioSource(requestID: requestID, source: source)
+        }
+        picker.onCancel = { [weak self] in
+            guard let self else { return }
+            self.appPickerController = nil
+            self.recording.provideAudioSource(requestID: requestID, source: nil)
+        }
+        _ = picker.window
+        picker.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showDownloadConfirmation(requirement: ModelRequirement, completion: @escaping (Bool) -> Void) {
+        completion(StatusBarAlertPresenter.confirmDownload(requirement))
+    }
+
+    private func showError(_ message: String) { StatusBarAlertPresenter.showError(message) }
+
+    private func updateIcon(recording: Bool) {
+        guard let button = statusItem?.button else { return }
+        StatusBarIconPresenter.render(recording: recording, on: button)
     }
 }

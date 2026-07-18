@@ -21,4 +21,16 @@ for pattern in "${forbidden[@]}"; do
     exit 1
   fi
 done
+CONTROLLER="$ROOT/MacTalk/MacTalk/StatusBarController.swift"
+line_count=$(wc -l < "$CONTROLLER" | tr -d ' ')
+if [ "$line_count" -gt 350 ]; then
+  echo "STATUSBAR SOURCE GUARD FAILED: controller is $line_count lines (maximum 350)" >&2
+  exit 1
+fi
+for legacy in 'isRecording' 'isStartInFlight' 'startGeneration' 'pendingSettingsLatch' 'transcriber' 'parakeetEngine' 'progressItem'; do
+  if grep -n "$legacy" "$CONTROLLER"; then
+    echo "STATUSBAR SOURCE GUARD FAILED: legacy controller state $legacy remains" >&2
+    exit 1
+  fi
+done
 echo "STATUSBAR SOURCE GUARD PASSED"

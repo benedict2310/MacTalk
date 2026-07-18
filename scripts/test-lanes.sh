@@ -51,6 +51,7 @@ appkit|window)
     -only-testing:MacTalkTests/HUDWindowControllerTests \
     -only-testing:MacTalkTests/SettingsWindowControllerTests \
     -only-testing:MacTalkTests/StatusBarControllerTests \
+    -only-testing:MacTalkTests/StatusMenuPresenterTests \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_THREAD_SANITIZER=NO
   ;;
 hardware|tcc)
