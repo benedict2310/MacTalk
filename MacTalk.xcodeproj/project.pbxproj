@@ -98,6 +98,7 @@
 		DB47CCD04FB7C1B3419C7F33 /* ModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6A14DF13BE05A8263A8449 /* ModelManager.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		DFFE8483B6228AAECF551FF2 /* ModelDownloadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEBF2DAAD3C5BAB9F33E30E2 /* ModelDownloadCoordinatorTests.swift */; };
+		E053BCB67524A287ED05D15B /* GeneratedModelProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49E15763ACA20452A4EEDB3 /* GeneratedModelProvenance.swift */; };
 		E0E3BD7B773ECE54B518C2C8 /* EngineSelectionLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1711734B0AD4FDB46A70A1 /* EngineSelectionLoaderTests.swift */; };
 		E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3BD2E91B633537326157C2EC /* AVFoundation.framework */; };
 		E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */; };
@@ -190,6 +191,7 @@
 		B0E20ACCFC1E31B87A935F7D /* OutputCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputCoordinator.swift; sourceTree = "<group>"; };
 		B1DFB8FB82C42012D63E1919 /* NativeWhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWhisperEngine.swift; sourceTree = "<group>"; };
 		B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionController.swift; sourceTree = "<group>"; };
+		B49E15763ACA20452A4EEDB3 /* GeneratedModelProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneratedModelProvenance.swift; sourceTree = "<group>"; };
 		B5D86C8AAAE5F0F4E180A81F /* StatusBarSystemClients.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarSystemClients.swift; sourceTree = "<group>"; };
 		B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloader.swift; sourceTree = "<group>"; };
 		B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManagerTests.swift; sourceTree = "<group>"; };
@@ -423,6 +425,7 @@
 		EC102091F95F4F22C506A66B /* Whisper */ = {
 			isa = PBXGroup;
 			children = (
+				B49E15763ACA20452A4EEDB3 /* GeneratedModelProvenance.swift */,
 				A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */,
 				B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */,
 				2AFD8BE26638F615B5F70CE6 /* ModelIntegrityVerifier.swift */,
@@ -605,6 +608,7 @@
 				0462E9547F556371A242B595 /* DebugLogger.swift in Sources */,
 				6D91D3F129A5432C90AFDA36 /* EngineLifecycleCoordinator.swift in Sources */,
 				416496001FD72456227393F3 /* EngineSelectionLoader.swift in Sources */,
+				E053BCB67524A287ED05D15B /* GeneratedModelProvenance.swift in Sources */,
 				7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */,
 				4743AF96C26282668AE7107A /* HotkeyManager.swift in Sources */,
 				8C730F7115014CA1B0A7A91C /* ModelCatalog.swift in Sources */,

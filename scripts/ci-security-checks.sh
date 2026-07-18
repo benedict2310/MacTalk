@@ -17,4 +17,6 @@ if grep -RInE --include='*.yml' --include='*.yaml' 'MACTALK_EXISTING_MODEL_PATH|
     exit 1
 fi
 
+python3 scripts/generate-model-provenance.py --check
+
 echo 'blocking security checks passed'
