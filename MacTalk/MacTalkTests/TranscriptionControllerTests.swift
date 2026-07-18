@@ -14,6 +14,92 @@ import os
 @testable import MacTalk
 
 final class TranscriptionControllerTests: XCTestCase {
+    func test_deterministicEngineRecordsPreparationChunkLanguageAndFinalSamples() async throws {
+        let isolatedDefaults = makeIsolatedTestDefaults()
+        let defaults = isolatedDefaults.defaults
+        defer { defaults.removePersistentDomain(forName: isolatedDefaults.suiteName) }
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+        let capture = DeterministicCaptureSession()
+        let partial = ASRPartial(text: "partial result", words: [])
+        let final = ASRFinalSegment(text: "final result", words: [])
+        let engine = DeterministicASREngine(script: DeterministicASRScript(partials: [partial], finals: [final]))
+        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings)
+        controller.language = "en"
+
+        let finalExpectation = expectation(description: "final callback")
+        let finalText = DeterministicValueBox("")
+        controller.onFinal = { text in
+            finalText.set(text)
+            finalExpectation.fulfill()
+        }
+
+        try await controller.start(mode: .micOnly)
+        let samples = [Float](repeating: 0.25, count: 16_000)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: samples,
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: samples,
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
+        ))
+        for _ in 0..<100 where engine.processCalls.isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(engine.processCalls.count, 1)
+        let processCall = try XCTUnwrap(engine.processCalls.first)
+        XCTAssertEqual(processCall.samples.count, 24_000)
+        XCTAssertEqual(processCall.language, "en")
+
+        controller.stop()
+        await fulfillment(of: [finalExpectation], timeout: 2)
+        XCTAssertEqual(finalText.get(), "Final result.")
+        XCTAssertEqual(engine.finalizeCalls.map(\.samples), [samples + samples])
+        XCTAssertEqual(engine.events.compactMap { event -> String? in
+            switch event {
+            case .prepare: return "prepare"
+            case .reset: return "reset"
+            case .process: return "process"
+            case .finalize: return "finalize"
+            case .cancelled: return "cancelled"
+            }
+        }, ["prepare", "reset", "process", "finalize"])
+    }
+
+    func test_startPreparationFailureStopsCaptureAndReportsError() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(prepareError: .prepare))
+        let controller = TranscriptionController(engine: engine, captureSession: capture)
+
+        do {
+            try await controller.start(mode: .micOnly)
+            XCTFail("Expected preparation to fail")
+        } catch let error as DeterministicASRError {
+            XCTAssertEqual(error, .prepare)
+        }
+        XCTAssertEqual(capture.stopCount, 2)
+        XCTAssertEqual(engine.events, [.prepare])
+    }
+
+    func test_deterministicSilenceDoesNotInvokeIncrementalOrFinalInference() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine()
+        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: DeterministicAudioFixtures.silence(count: 24_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
+        ))
+        controller.stop()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(engine.processCalls.isEmpty)
+        XCTAssertTrue(engine.finalizeCalls.isEmpty)
+        XCTAssertEqual(engine.events.filter { $0 == .prepare || $0 == .reset }, [.prepare, .reset])
+    }
+
     func test_whisperUsesIncrementalChunkProcessing() {
         XCTAssertTrue(ASRProvider.whisper.usesIncrementalChunkProcessing)
     }
