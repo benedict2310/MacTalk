@@ -31,6 +31,21 @@ final class EngineLifecycleCoordinatorTests: XCTestCase {
         XCTAssertTrue(loader.selections.isEmpty)
     }
 
+    func test_idlePrewarmSurfacesDownloadRequirementWithoutDownloading() async throws {
+        let spec = try XCTUnwrap(ModelCatalog.bundled().first)
+        let selection = EngineSelection.whisper(spec)
+        let loader = LifecycleLoader()
+        var effects: [StatusBarEffect] = []
+        let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in false })
+        coordinator.onEffect = { effects.append($0) }
+
+        coordinator.prewarm(selection)
+        while effects.isEmpty { await Task.yield() }
+
+        XCTAssertEqual(effects, [.confirmDownload(.whisper(spec))])
+        XCTAssertTrue(loader.selections.isEmpty)
+    }
+
     func test_unknownIdentityFailsInsteadOfRequestingDownload() async {
         let selection = EngineSelection(provider: .whisper, modelID: "unknown", revision: "bad")
         let loader = LifecycleLoader()
@@ -96,6 +111,33 @@ final class EngineLifecycleCoordinatorTests: XCTestCase {
         let result = await coordinator.resolve(second, requestID: UUID())
         guard case .failed = result else { return XCTFail("active engine was replaced") }
         XCTAssertEqual(ObjectIdentifier(firstEngine as AnyObject), ObjectIdentifier(loader.engines[0]))
+    }
+
+    func test_activeSettingsChangeFinalizationAndNextStartUseExactDeferredSelection() async throws {
+        let first = EngineSelection(provider: .whisper, modelID: "a", revision: "1")
+        let second = EngineSelection.parakeet
+        let loader = LifecycleLoader()
+        var effects: [StatusBarEffect] = []
+        let coordinator = EngineLifecycleCoordinator(loader: loader, availability: { _ in true })
+        coordinator.onEffect = { effects.append($0) }
+
+        _ = await coordinator.resolve(first, requestID: UUID())
+        coordinator.recordingActivityChanged(true)
+        coordinator.settingsChanged(to: snapshot(provider: .parakeet), recordingActive: true)
+        guard case .failed = await coordinator.resolve(second, requestID: UUID()) else {
+            return XCTFail("active recording must retain its original engine")
+        }
+
+        // Finalization owns the engine until the transition back to idle.
+        coordinator.recordingActivityChanged(false)
+        while loader.selections.count < 2 { await Task.yield() }
+        let nextStart = await coordinator.resolve(second, requestID: UUID())
+        guard case let .ready(engine) = nextStart else {
+            return XCTFail("the next start should resolve the deferred provider/model")
+        }
+        XCTAssertEqual(engine.provider, ASRProvider.parakeet)
+        XCTAssertEqual(loader.selections, [first, second])
+        XCTAssertTrue(effects.isEmpty)
     }
 
     private func ready(_ result: EngineResolution) -> (any ASREngine)? {

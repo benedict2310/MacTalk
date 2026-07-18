@@ -15,10 +15,18 @@ final class PermissionFlowCoordinatorTests: XCTestCase {
                 XCTAssertEqual(result, .granted)
                 XCTAssertEqual(client.microphoneRequests, 1)
             case .denied, .restricted, .unknown:
-                XCTAssertEqual(result, .deniedMicrophone)
-                XCTAssertEqual(client.openedMicrophoneSettings, 1)
+                XCTAssertEqual(result, .deniedMicrophoneAlreadyDenied)
+                XCTAssertEqual(client.openedMicrophoneSettings, 0)
             }
         }
+    }
+
+    func test_deniedMicrophoneAfterPromptReturnsDedicatedResultWithoutOpeningSettings() async {
+        let client = PermissionFake(microphone: .notDetermined, microphoneRequestResult: false)
+        let coordinator = PermissionFlowCoordinator(client: client)
+        let result = await coordinator.authorizeStart(mode: .micOnly)
+        XCTAssertEqual(result, .deniedMicrophoneAfterRequest)
+        XCTAssertEqual(client.openedMicrophoneSettings, 0)
     }
 
     func test_screenPermissionIsRequiredOnlyForMicAndApp() async {
@@ -28,7 +36,7 @@ final class PermissionFlowCoordinatorTests: XCTestCase {
         let micAndAppResult = await coordinator.authorizeStart(mode: .micPlusAppAudio)
         XCTAssertEqual(micOnlyResult, .granted)
         XCTAssertEqual(micAndAppResult, .deniedScreenRecording)
-        XCTAssertEqual(client.openedScreenSettings, 1)
+        XCTAssertEqual(client.openedScreenSettings, 0)
     }
 
     func test_effectiveAutoPasteRequiresAccessibility() {
@@ -101,17 +109,20 @@ private final class PermissionFake: PermissionClient {
     var screenRecordingGranted: Bool
     var accessibility: Bool
     var microphoneRequests = 0
+    var microphoneRequestResult: Bool
     var openedMicrophoneSettings = 0
     var openedScreenSettings = 0
 
     init(
         microphone: MicrophonePermissionState = .granted,
         screenGranted: Bool = true,
-        accessibility: Bool = true
+        accessibility: Bool = true,
+        microphoneRequestResult: Bool = true
     ) {
         self.microphoneState = microphone
         self.screenRecordingGranted = screenGranted
         self.accessibility = accessibility
+        self.microphoneRequestResult = microphoneRequestResult
     }
 
     var accessibilityTrusted: Bool { accessibility }
@@ -128,8 +139,8 @@ private final class PermissionFake: PermissionClient {
 
     func requestMicrophone() async -> Bool {
         microphoneRequests += 1
-        microphoneState = .granted
-        return true
+        if microphoneRequestResult { microphoneState = .granted }
+        return microphoneRequestResult
     }
 
     func requestAccessibilitySystemPrompt() async -> Bool { false }

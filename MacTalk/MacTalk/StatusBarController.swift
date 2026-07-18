@@ -34,6 +34,7 @@ final class StatusBarController {
         dependencies: StatusBarDependencies? = nil
     ) {
         self.dependencies = dependencies ?? .live(notificationManager: notificationManager)
+        self.dependencies.engine.onEffect = { [weak self] effect in self?.handle(effect) }
         installObservers()
         self.dependencies.shortcut.onIntent = { [weak self] intent in self?.handle(intent) }
     }
@@ -70,6 +71,7 @@ final class StatusBarController {
         dependencies.shortcut.cleanup()
         dependencies.shortcut.onIntent = nil
         dependencies.download.onStateChanged = nil
+        dependencies.engine.onEffect = nil
         dependencies.engine.clear()
         dependencies.output.cancel()
         appPickerController?.close()
@@ -187,6 +189,8 @@ final class StatusBarController {
             }
             updateIcon(recording: recordingNow)
             render()
+        case let .effect(effect):
+            handle(effect)
         case let .requestAudioSource(requestID, sources):
             showAppPicker(requestID: requestID, sources: sources)
         case let .confirmDownload(requestID, requirement):
@@ -207,6 +211,33 @@ final class StatusBarController {
             dependencies.output.handleFallbackToMicOnly(showNotification: dependencies.settings.snapshot.showNotifications)
             hudController?.setAppMeterVisible(false)
         case let .error(error): showError(error.message)
+        }
+    }
+
+    private func handle(_ effect: StatusBarEffect) {
+        switch effect {
+        case .showMicrophoneGuidance:
+            StatusBarAlertPresenter.showMicrophoneGuidance()
+        case .showScreenRecordingGuidance:
+            StatusBarAlertPresenter.showScreenRecordingGuidance()
+        case let .confirmDownload(requirement):
+            showDownloadConfirmation(requirement: requirement) { [weak self] approved in
+                guard approved, let self else { return }
+                let requestID = UUID()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.dependencies.download.download(requirement, requestID: requestID)
+                        self.dependencies.engine.prewarm(self.selection(for: requirement))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        self.showError(error.localizedDescription)
+                    }
+                }
+            }
+        case let .permission(permissionEffect):
+            handle(permissionEffect)
         }
     }
 
@@ -295,6 +326,13 @@ final class StatusBarController {
     }
 
     private func showError(_ message: String) { StatusBarAlertPresenter.showError(message) }
+
+    private func selection(for requirement: ModelRequirement) -> EngineSelection {
+        switch requirement {
+        case let .whisper(spec): return .whisper(spec)
+        case let .parakeet(modelID, revision): return EngineSelection(provider: .parakeet, modelID: modelID, revision: revision)
+        }
+    }
 
     private func updateIcon(recording: Bool) {
         guard let button = statusItem?.button else { return }

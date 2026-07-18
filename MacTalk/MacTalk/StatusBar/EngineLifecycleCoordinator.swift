@@ -44,11 +44,13 @@ enum EngineLifecycleState {
 protocol EngineResolving: AnyObject {
     func resolve(_ selection: EngineSelection, requestID: UUID) async -> EngineResolution
     func cancel(requestID: UUID)
+    func recordingActivityChanged(_ active: Bool)
 }
 
 @MainActor
 protocol EngineLifecycleCoordinating: EngineResolving {
     var state: EngineLifecycleState { get }
+    var onEffect: ((StatusBarEffect) -> Void)? { get set }
     func prewarm(_ selection: EngineSelection)
     func settingsChanged(to snapshot: SettingsSnapshot, recordingActive: Bool)
     func clear()
@@ -62,6 +64,7 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
     private let loader: any EngineSelectionLoader
     private let availability: @MainActor (EngineSelection) -> Bool
     var state: EngineLifecycleState = .empty
+    var onEffect: ((StatusBarEffect) -> Void)?
 
     private var operation: Task<EngineResolution, Never>?
     private var operationID: UUID?
@@ -162,6 +165,13 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
         return validated(result, requestID: requestID, operationID: newID, selection: selection)
     }
 
+    func recordingActivityChanged(_ active: Bool) {
+        recordingActive = active
+        guard !active, let deferredSelection else { return }
+        self.deferredSelection = nil
+        prewarm(deferredSelection)
+    }
+
     func cancel(requestID: UUID) {
         cancelledRequestIDs.insert(requestID)
         requestOperations.removeValue(forKey: requestID)
@@ -182,7 +192,10 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
         guard !recordingActive else { return }
         let requestID = UUID()
         Task { @MainActor [weak self] in
-            _ = await self?.resolve(selection, requestID: requestID)
+            let result = await self?.resolve(selection, requestID: requestID)
+            if case let .requiresDownload(requirement) = result {
+                self?.onEffect?(.confirmDownload(requirement))
+            }
             self?.requestOperations.removeValue(forKey: requestID)
         }
     }
@@ -192,15 +205,19 @@ final class EngineLifecycleCoordinator: EngineLifecycleCoordinating {
         guard let selection = selection(for: snapshot) else { return }
         if recordingActive {
             deferredSelection = selection
-        } else if deferredSelection != selection {
-            deferredSelection = nil
-            // Do not synchronously load on settings notifications. Idle
-            // prewarming is cancellable and never blocks a recording start.
-            prewarm(selection)
+            return
         }
+
+        // Do not synchronously load on settings notifications. Idle prewarming
+        // is cancellable and never blocks a recording start. A selection that
+        // was deferred by an active recording owns this first idle prewarm.
+        let selectionToPrewarm = deferredSelection ?? selection
+        deferredSelection = nil
+        prewarm(selectionToPrewarm)
     }
 
     func clear() {
+        recordingActive = false
         if let currentOperationID = operationID {
             cancelledOperationIDs.insert(currentOperationID)
         }

@@ -9,7 +9,6 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/AudioMixerTests
   MacTalkTests/ConcurrencyStressTests
   MacTalkTests/DeterministicHarnessTests
-  MacTalkTests/EngineReloadCoordinatorTests
   MacTalkTests/EngineLifecycleCoordinatorTests
   MacTalkTests/ModelDownloadCoordinatorTests
   MacTalkTests/WhisperModelDownloadClientTests

@@ -48,6 +48,7 @@ enum StatusBarEffect: Equatable, Sendable {
     case permission(PermissionEffect)
     case showMicrophoneGuidance
     case showScreenRecordingGuidance
+    case confirmDownload(ModelRequirement)
 }
 
 enum AutoInsertOutcome: Equatable, Sendable {
@@ -122,6 +123,7 @@ enum UserFacingError: Error, Equatable, Sendable {
 
 enum RecordingSessionEvent {
     case stateChanged(RecordingSessionState)
+    case effect(StatusBarEffect)
     case requestAudioSource(requestID: UUID, sources: [AppPickerWindowController.AudioSource])
     case confirmDownload(requestID: UUID, requirement: ModelRequirement)
     case partial(String)
@@ -206,7 +208,8 @@ struct StatusBarViewStateReducer {
 
 enum StartPermissionResult: Equatable, Sendable {
     case granted
-    case deniedMicrophone
+    case deniedMicrophoneAfterRequest
+    case deniedMicrophoneAlreadyDenied
     case deniedScreenRecording
 }
 

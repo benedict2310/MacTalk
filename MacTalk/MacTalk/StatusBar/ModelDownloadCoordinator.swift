@@ -214,4 +214,3 @@ enum ModelDownloadCoordinatorError: Error, LocalizedError, Equatable {
         }
     }
 }
-

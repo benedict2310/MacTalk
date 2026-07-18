@@ -64,6 +64,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private let settingsSnapshot: @MainActor () -> SettingsSnapshot
     private var request: RequestContext?
     private var work: Task<Void, Never>?
+    private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
     var onEvent: ((RecordingSessionEvent) -> Void)?
 
@@ -110,7 +111,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
                 } else {
                     self.resolve(id)
                 }
-            case .deniedMicrophone, .deniedScreenRecording:
+            case .deniedMicrophoneAfterRequest, .deniedMicrophoneAlreadyDenied:
+                self.emit(.effect(.showMicrophoneGuidance))
+                self.abort(id)
+            case .deniedScreenRecording:
+                self.emit(.effect(.showScreenRecordingGuidance))
                 self.abort(id)
             }
         }
@@ -206,6 +211,8 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         guard let request else {
             work?.cancel()
             work = nil
+            engine.recordingActivityChanged(false)
+            engineActivityActive = false
             state = .idle
             return
         }
@@ -366,6 +373,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         mode: TranscriptionController.Mode? = nil,
         selection: EngineSelection? = nil
     ) {
+        let nextEngineActivity = phase != .idle
+        if nextEngineActivity != engineActivityActive {
+            engine.recordingActivityChanged(nextEngineActivity)
+            engineActivityActive = nextEngineActivity
+        }
         if phase == .idle {
             state = .idle
             emit(.stateChanged(state))

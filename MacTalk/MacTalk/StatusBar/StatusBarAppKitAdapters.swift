@@ -30,6 +30,14 @@ enum StatusBarAlertPresenter {
         alert.runModal()
     }
 
+    static func showMicrophoneGuidance() {
+        Permissions.showMicrophonePermissionGuidance()
+    }
+
+    static func showScreenRecordingGuidance() {
+        Permissions.ensureScreenRecordingGuide()
+    }
+
     static func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Error"

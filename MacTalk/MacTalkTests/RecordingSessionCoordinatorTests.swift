@@ -141,6 +141,7 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         harness.session.emitFinalizationComplete()
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
         XCTAssertEqual(harness.session.stopCount, 1)
+        XCTAssertEqual(harness.engine.activityChanges, [true, false])
     }
 
     func test_providerMismatchFailsBeforeSessionCreation() async {
@@ -155,12 +156,30 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.output.cancelCount, 1)
     }
 
-    func test_deniedMicrophonePermissionReturnsIdleWithoutEngineWork() async throws {
+    func test_deniedMicrophonePermissionEmitsGuidanceAndReturnsIdleWithoutEngineWork() async throws {
         let harness = RecordingHarness()
-        harness.permission.result = .deniedMicrophone
+        harness.permission.result = .deniedMicrophoneAlreadyDenied
         harness.coordinator.requestStart(mode: .micOnly)
         await harness.waitFor { harness.coordinator.state.phase == .idle }
         XCTAssertTrue(harness.engine.selections.isEmpty)
+        XCTAssertTrue(harness.effects.contains(.showMicrophoneGuidance))
+    }
+
+    func test_deniedMicrophoneAfterRequestEmitsGuidanceAndReturnsIdle() async throws {
+        let harness = RecordingHarness()
+        harness.permission.result = .deniedMicrophoneAfterRequest
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .idle }
+        XCTAssertEqual(harness.effects, [.showMicrophoneGuidance])
+    }
+
+    func test_deniedScreenRecordingEmitsGuidanceAndReturnsIdleWithoutEngineWork() async throws {
+        let harness = RecordingHarness()
+        harness.permission.result = .deniedScreenRecording
+        harness.coordinator.requestStart(mode: .micPlusAppAudio)
+        await harness.waitFor { harness.coordinator.state.phase == .idle }
+        XCTAssertTrue(harness.engine.selections.isEmpty)
+        XCTAssertTrue(harness.effects.contains(.showScreenRecordingGuidance))
     }
 
     func test_emptyAudioSourceListCancelsTheCurrentPickerRequest() async throws {
@@ -254,7 +273,14 @@ private final class RecordingHarness: TranscriptionSessionFactory {
     let session = RecordingSessionFake(provider: .whisper)
     let output = RecordingOutputFake()
     var snapshot = SettingsSnapshot(provider: .whisper, whisperModelID: "whisper-large-v3-turbo-q5_0", language: "en", captureMode: .micOnly, showNotifications: true, autoPaste: false)
-    lazy var coordinator = RecordingSessionCoordinator(permission: permission, engine: engine, download: download, sessions: self, output: output, settingsSnapshot: { [weak self] in self!.snapshot })
+    var effects: [StatusBarEffect] = []
+    lazy var coordinator: RecordingSessionCoordinator = {
+        let coordinator = RecordingSessionCoordinator(permission: permission, engine: engine, download: download, sessions: self, output: output, settingsSnapshot: { [weak self] in self!.snapshot })
+        coordinator.onEvent = { [weak self] event in
+            if case let .effect(effect) = event { self?.effects.append(effect) }
+        }
+        return coordinator
+    }()
 
     func make(engine: any ASREngine) -> any TranscriptionSession { session.providerValue = engine.provider; return session }
 
@@ -278,8 +304,10 @@ private final class RecordingEngineFake: EngineResolving {
     var engine = TestRecordingEngine(provider: .whisper)
     var result: EngineResolution = .ready(TestRecordingEngine(provider: .whisper))
     var selections: [EngineSelection] = []
+    var activityChanges: [Bool] = []
     func resolve(_ selection: EngineSelection, requestID: UUID) async -> EngineResolution { selections.append(selection); return result }
     func cancel(requestID: UUID) {}
+    func recordingActivityChanged(_ active: Bool) { activityChanges.append(active) }
 }
 
 @MainActor

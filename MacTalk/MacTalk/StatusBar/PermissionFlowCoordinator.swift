@@ -101,14 +101,12 @@ final class PermissionFlowCoordinator: PermissionFlowCoordinating, RecordingPerm
         case .proceed:
             break
         case .requestPermission:
-            guard await client.requestMicrophone() else { return .deniedMicrophone }
+            guard await client.requestMicrophone() else { return .deniedMicrophoneAfterRequest }
         case .openSettings:
-            client.openMicrophoneSettings()
-            return .deniedMicrophone
+            return .deniedMicrophoneAlreadyDenied
         }
 
         if mode == .micPlusAppAudio, !client.screenRecordingGranted {
-            client.openScreenRecordingSettings()
             return .deniedScreenRecording
         }
         return .granted
