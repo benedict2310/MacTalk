@@ -24,7 +24,7 @@
       </BuildActionEntries>
    </BuildAction>
    <TestAction
-      buildConfiguration = "Debug"
+      buildConfiguration = "DebugTSan"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "NO"
@@ -56,13 +56,13 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "TSAN_OPTIONS"
-            value = "suppressions=$(PROJECT_DIR)/tsan_suppressions.txt:halt_on_error=0"
+            value = "halt_on_error=1"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
    </TestAction>
    <LaunchAction
-      buildConfiguration = "Debug"
+      buildConfiguration = "DebugTSan"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       launchStyle = "0"
@@ -86,7 +86,7 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "TSAN_OPTIONS"
-            value = "halt_on_error=0"
+            value = "halt_on_error=1"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

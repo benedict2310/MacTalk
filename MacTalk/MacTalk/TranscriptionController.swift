@@ -9,7 +9,6 @@ import Foundation
 import AudioToolbox
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
-import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
 import os
 
 /// Identifies the currently accepted audio-capture session.
@@ -211,6 +210,29 @@ final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionC
 /// - Audio callbacks arrive from audio render threads (high priority)
 /// - Transcription runs on background queues (userInitiated)
 /// - UI updates are dispatched to MainActor
+
+/// Timing boundary used by the controller. Tests provide a manual scheduler;
+/// production uses monotonic DispatchTime, so lifecycle tests never wait on wall
+/// clock time or poll for completion.
+protocol TranscriptionScheduler: AudioCompositionScheduler {
+    var nowNanoseconds: UInt64 { get }
+}
+
+struct DispatchTranscriptionScheduler: TranscriptionScheduler, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.mactalk.transcription-timers", qos: .userInitiated)
+
+    var nowNanoseconds: UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    func schedule(
+        deadlineNanoseconds: UInt64,
+        operation: @escaping @Sendable () -> Void
+    ) -> any AudioCompositionScheduledTask {
+        let workItem = DispatchWorkItem(block: operation)
+        queue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: deadlineNanoseconds), execute: workItem)
+        return DispatchCompositionScheduledTask(workItem: workItem)
+    }
+}
+
 final class TranscriptionController: @unchecked Sendable {
     enum Mode: Sendable {
         case micOnly
@@ -221,6 +243,8 @@ final class TranscriptionController: @unchecked Sendable {
 
     private let captureSession: any TranscriptionCaptureSession
     private let settingsStore: AppSettings
+    private let timingScheduler: any TranscriptionScheduler
+    private var pendingStopTask: (any AudioCompositionScheduledTask)?
     private let mixer: AudioMixer
     private let micStream: AudioMixer.Stream
     private let appStream: AudioMixer.Stream
@@ -233,6 +257,7 @@ final class TranscriptionController: @unchecked Sendable {
     /// The sole append path for both sources. Its queue is independent from
     /// audioState, avoiding lock-order inversions at callback boundaries.
     private lazy var compositionPipeline = SerializedAudioCompositionPipeline(
+        scheduler: timingScheduler,
         emit: { [weak self] sessionID, samples in
             self?.appendSamples(samples, sessionID: sessionID, allowStopping: true)
         },
@@ -307,11 +332,14 @@ final class TranscriptionController: @unchecked Sendable {
     init(
         engine: any ASREngine,
         captureSession: any TranscriptionCaptureSession = LiveTranscriptionCaptureSession(),
-        settings: AppSettings = .shared
+        settings: AppSettings = .shared,
+        scheduler: any TranscriptionScheduler = DispatchTranscriptionScheduler()
     ) {
         let mixer = AudioMixer()
         self.captureSession = captureSession
         self.settingsStore = settings
+        self.timingScheduler = scheduler
+        self.pendingStopTask = nil
         self.mixer = mixer
         self.micStream = mixer.makeStream()
         self.appStream = mixer.makeStream()
@@ -375,7 +403,10 @@ final class TranscriptionController: @unchecked Sendable {
 
         // Invalidate callbacks from any previous capture before resetting the
         // streams. ScreenCaptureKit may still deliver a queued callback after
-        // stopCapture has been requested.
+        // stopCapture has been requested. A pending deterministic stop belongs
+        // to the old session and must never flush the new one.
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
         let sessionID = audioSessionGate.begin()
         if settingsSnapshot != nil, recordingSettings.provider != engine.provider {
             throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
@@ -409,8 +440,15 @@ final class TranscriptionController: @unchecked Sendable {
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
-        try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, frame in
-            self?.processAudioFrame(frame, sessionID: callbackSessionID)
+        do {
+            try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, frame in
+                self?.processAudioFrame(frame, sessionID: callbackSessionID)
+            }
+        } catch {
+            // A microphone start failure must invalidate the session and stop
+            // any partially initialized capture before surfacing the error.
+            await cancelStartAndWait()
+            throw error
         }
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
@@ -486,22 +524,27 @@ final class TranscriptionController: @unchecked Sendable {
         // worker a chance to drain, then route both converter tails through the
         // same composer before final inference.
         // Keep the controller alive through final inference and clipboard delivery.
-        Task { [self] in
-            // Capture the final in-flight microphone buffer without a noticeable delay.
-            try? await Task.sleep(nanoseconds: UInt64(tailDrainMs) * 1_000_000)
+        // The scheduler is injectable so tests explicitly advance this bounded
+        // capture handoff instead of sleeping and polling.
+        let deadline = timingScheduler.nowNanoseconds
+            .addingReportingOverflow(UInt64(tailDrainMs) * 1_000_000)
+        let stopDeadline = deadline.overflow ? UInt64.max : deadline.partialValue
+        pendingStopTask = timingScheduler.schedule(deadlineNanoseconds: stopDeadline) { [weak self] in
+            guard let self else { return }
+            Task { [self] in
+                finishAudioStreams(sessionID: sessionID)
+                compositionPipeline.finish(sessionID: sessionID)
+                await cancelPendingChunkTasks(sessionID: sessionID)
+                await flushFinalChunk(sessionID: sessionID)
 
-            finishAudioStreams(sessionID: sessionID)
-            compositionPipeline.finish(sessionID: sessionID)
-            await cancelPendingChunkTasks(sessionID: sessionID)
-            await flushFinalChunk(sessionID: sessionID)
-
-            audioState.withLock { state in
-                if state.sessionID == sessionID {
-                    state.isStopping = false
+                audioState.withLock { state in
+                    if state.sessionID == sessionID {
+                        state.isStopping = false
+                    }
                 }
-            }
-            if let onFinalizationComplete {
-                await onFinalizationComplete()
+                if let onFinalizationComplete {
+                    await onFinalizationComplete()
+                }
             }
         }
 
@@ -526,6 +569,8 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func cancelStartAndReturnSession() -> UUID {
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
         audioSessionGate.stop()
         appAudioGate.stop()
         captureSession.stop()
@@ -931,7 +976,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func throttledUIUpdate(_ text: String) {
         let shouldUpdate = audioState.withLock { state -> Bool in
-            let now = CACurrentMediaTime()
+            let now = TimeInterval(timingScheduler.nowNanoseconds) / 1_000_000_000
             guard now - state.lastUIUpdateTime >= uiUpdateThrottle else {
                 return false  // Throttle UI updates
             }
@@ -952,7 +997,7 @@ final class TranscriptionController: @unchecked Sendable {
         guard audioDiagnosticsEnabled else { return }
 
         let shouldLog = audioState.withLock { state -> Bool in
-            let now = CACurrentMediaTime()
+            let now = TimeInterval(timingScheduler.nowNanoseconds) / 1_000_000_000
             guard now - state.lastDiagnosticsLogTime >= audioDiagnosticsInterval else {
                 return false
             }

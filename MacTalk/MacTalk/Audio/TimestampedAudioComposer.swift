@@ -552,7 +552,7 @@ protocol AudioCompositionScheduler: Sendable {
     ) -> any AudioCompositionScheduledTask
 }
 
-private final class DispatchCompositionScheduledTask: AudioCompositionScheduledTask, @unchecked Sendable {
+final class DispatchCompositionScheduledTask: AudioCompositionScheduledTask, @unchecked Sendable {
     private let workItem: DispatchWorkItem
 
     init(workItem: DispatchWorkItem) {

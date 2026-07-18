@@ -14,6 +14,26 @@ import os
 @testable import MacTalk
 
 final class TranscriptionControllerTests: XCTestCase {
+    private var scheduler: DeterministicManualScheduler!
+
+    override func setUp() {
+        super.setUp()
+        scheduler = DeterministicManualScheduler(clock: DeterministicManualClock())
+    }
+
+    private func advanceStopScheduler() async {
+        scheduler.clock.advance(nanoseconds: 100_000_000)
+        scheduler.fireDue()
+        await Task.yield()
+    }
+
+    private func stopAndAdvance(_ controller: TranscriptionController) async {
+        let completion = expectation(description: "controller stop completed")
+        controller.onFinalizationComplete = { completion.fulfill() }
+        controller.stop()
+        await advanceStopScheduler()
+        await fulfillment(of: [completion], timeout: 1)
+    }
     func test_deterministicEngineRecordsPreparationChunkLanguageAndFinalSamples() async throws {
         let isolatedDefaults = makeIsolatedTestDefaults()
         let defaults = isolatedDefaults.defaults
@@ -23,7 +43,11 @@ final class TranscriptionControllerTests: XCTestCase {
         let partial = ASRPartial(text: "partial result", words: [])
         let final = ASRFinalSegment(text: "final result", words: [])
         let engine = DeterministicASREngine(script: DeterministicASRScript(partials: [partial], finals: [final]))
-        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings)
+        let processStarted = expectation(description: "incremental process started")
+        engine.onEvent = { event in
+            if case .process = event { processStarted.fulfill() }
+        }
+        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings, scheduler: scheduler)
         controller.language = "en"
 
         let finalExpectation = expectation(description: "final callback")
@@ -45,15 +69,13 @@ final class TranscriptionControllerTests: XCTestCase {
             sampleRate: 16_000,
             firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
         ))
-        for _ in 0..<100 where engine.processCalls.isEmpty {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await fulfillment(of: [processStarted], timeout: 1)
         XCTAssertEqual(engine.processCalls.count, 1)
         let processCall = try XCTUnwrap(engine.processCalls.first)
         XCTAssertEqual(processCall.samples.count, 24_000)
         XCTAssertEqual(processCall.language, "en")
 
-        controller.stop()
+        await stopAndAdvance(controller)
         await fulfillment(of: [finalExpectation], timeout: 2)
         XCTAssertEqual(finalText.get(), "Final result.")
         XCTAssertEqual(engine.finalizeCalls.map(\.samples), [samples + samples])
@@ -68,10 +90,90 @@ final class TranscriptionControllerTests: XCTestCase {
         }, ["prepare", "reset", "process", "finalize"])
     }
 
+    func test_microphoneCaptureStartFailureCleansUpBeforeSurfacing() async throws {
+        let capture = DeterministicCaptureSession()
+        capture.microphoneStartError = DeterministicCaptureSession.Error.microphoneStart
+        let engine = DeterministicASREngine()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+
+        do {
+            try await controller.start(mode: .micOnly)
+            XCTFail("Expected microphone capture start failure")
+        } catch let error as DeterministicCaptureSession.Error {
+            XCTAssertEqual(error, .microphoneStart)
+        }
+        XCTAssertEqual(capture.stopCount, 2)
+        XCTAssertEqual(engine.events, [])
+    }
+
+    func test_applicationCaptureStartFailureCleansUpBeforeSurfacing() async throws {
+        let capture = DeterministicCaptureSession()
+        capture.appStartError = DeterministicCaptureSession.Error.appStart
+        let engine = DeterministicASREngine()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+
+        do {
+            try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+            XCTFail("Expected application capture start failure")
+        } catch let error as DeterministicCaptureSession.Error {
+            XCTAssertEqual(error, .appStart)
+        }
+        XCTAssertEqual(capture.stopCount, 2)
+        XCTAssertEqual(engine.events, [])
+    }
+
+    func test_partialFinalAndLifecycleCallbacksPreserveExactOrder() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            partials: [ASRPartial(text: "live words", words: [])],
+            finals: [ASRFinalSegment(text: "final words", words: [])]
+        ))
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let events = DeterministicValueBox<[String]>([])
+        let partial = expectation(description: "partial callback")
+        let final = expectation(description: "final callback")
+        controller.onPartial = { _ in
+            events.set(events.get() + ["partial"])
+            partial.fulfill()
+        }
+        controller.onFinal = { _ in
+            events.set(events.get() + ["final"])
+            final.fulfill()
+        }
+
+        try await controller.start(mode: .micOnly)
+        scheduler.clock.advance(nanoseconds: 100_000_000)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
+        ))
+        await fulfillment(of: [partial], timeout: 1)
+        await stopAndAdvance(controller)
+        await fulfillment(of: [final], timeout: 1)
+
+        XCTAssertEqual(events.get(), ["partial", "final"])
+        XCTAssertEqual(engine.events.map { event -> String in
+            switch event {
+            case .prepare: return "prepare"
+            case .reset: return "reset"
+            case .process: return "process"
+            case .finalize: return "finalize"
+            case .cancelled: return "cancelled"
+            }
+        }, ["prepare", "reset", "process", "finalize"])
+    }
+
     func test_startPreparationFailureStopsCaptureAndReportsError() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(prepareError: .prepare))
-        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
 
         do {
             try await controller.start(mode: .micOnly)
@@ -86,15 +188,14 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_deterministicSilenceDoesNotInvokeIncrementalOrFinalInference() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
         try await controller.start(mode: .micOnly)
         capture.emitMicrophone(AudioCaptureFrame(
             samples: DeterministicAudioFixtures.silence(count: 24_000),
             sampleRate: 16_000,
             firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
         ))
-        controller.stop()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        await stopAndAdvance(controller)
         XCTAssertTrue(engine.processCalls.isEmpty)
         XCTAssertTrue(engine.finalizeCalls.isEmpty)
         XCTAssertEqual(engine.events.filter { $0 == .prepare || $0 == .reset }, [.prepare, .reset])
@@ -185,7 +286,8 @@ final class TranscriptionControllerTests: XCTestCase {
         let controller = TranscriptionController(
             engine: LifecycleTestEngine(),
             captureSession: captureSession,
-            settings: settings
+            settings: settings,
+            scheduler: scheduler
         )
 
         try await controller.start(mode: .micPlusAppAudio, settingsSnapshot: snapshot)
@@ -195,13 +297,13 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertNil(controller.language)
         XCTAssertEqual(captureSession.microphoneCallbacks.count, 1)
         XCTAssertEqual(captureSession.appCallbacks.count, 0)
-        controller.stop()
+        await stopAndAdvance(controller)
     }
 
     func test_controllerRejectsOldAppCallbackAfterStopAndRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession, scheduler: scheduler)
         let source = AppPickerWindowController.AudioSource(
             app: nil,
             display: nil,
@@ -222,11 +324,7 @@ final class TranscriptionControllerTests: XCTestCase {
             sampleRate: 16_000,
             firstSampleHostTime: 1
         ))
-        controller.stop()
-
-        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await stopAndAdvance(controller)
 
         XCTAssertEqual(engine.finalizedFrameCounts, [24_000])
     }
@@ -234,7 +332,7 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_controllerRejectsOldMicrophoneCallbackAfterStopAndRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession, scheduler: scheduler)
 
         try await controller.start(mode: .micOnly)
         let oldCallback = captureSession.microphoneCallbacks[0]
@@ -247,11 +345,7 @@ final class TranscriptionControllerTests: XCTestCase {
 
         oldCallback(oldSessionID, frame)
         newCallback(newSessionID, frame)
-        controller.stop()
-
-        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await stopAndAdvance(controller)
 
         XCTAssertEqual(engine.finalizedFrameCounts, [1_600])
     }
@@ -259,7 +353,7 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_controllerRejectsOldScreenAudioErrorAfterStopAndRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession, scheduler: scheduler)
         let source = AppPickerWindowController.AudioSource(
             app: nil,
             display: nil,
@@ -280,19 +374,19 @@ final class TranscriptionControllerTests: XCTestCase {
         let stopAppCountBeforeStaleError = captureSession.stopAppAudioCount
 
         oldError(oldSessionID, NSError(domain: "old-screen-session", code: 1))
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await Task.yield()
         XCTAssertEqual(captureSession.stopAppAudioCount, stopAppCountBeforeStaleError)
 
         newError(newSessionID, NSError(domain: "current-screen-session", code: 2))
         await fulfillment(of: [fallback], timeout: 1)
         XCTAssertEqual(captureSession.stopAppAudioCount, stopAppCountBeforeStaleError + 1)
-        controller.stop()
+        await stopAndAdvance(controller)
     }
 
     func test_controllerRejectsConcurrentOldCallbacksDuringRestart() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession, scheduler: scheduler)
         let source = AppPickerWindowController.AudioSource(
             app: nil,
             display: nil,
@@ -327,11 +421,7 @@ final class TranscriptionControllerTests: XCTestCase {
             sampleRate: 16_000,
             firstSampleHostTime: 1
         ))
-        controller.stop()
-
-        for _ in 0..<100 where engine.finalizedFrameCounts.isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await stopAndAdvance(controller)
 
         // The composer keeps the microphone's contiguous post-watermark
         // coverage instead of advancing the shared cursor to discard it.
@@ -341,7 +431,7 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_appCallbackQueuedAfterFallbackIsRejectedBeforeConversion() async throws {
         let captureSession = LifecycleCaptureSession()
         let engine = LifecycleTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: captureSession)
+        let controller = TranscriptionController(engine: engine, captureSession: captureSession, scheduler: scheduler)
         let fallback = expectation(description: "controller falls back to mic-only")
         controller.onFallbackToMicOnly = { fallback.fulfill() }
         let source = AppPickerWindowController.AudioSource(
@@ -361,8 +451,7 @@ final class TranscriptionControllerTests: XCTestCase {
         // ScreenCaptureKit may deliver this callback after fallback has stopped
         // its stream. The app stream generation must reject it before conversion.
         appCallback(appSessionID, sampleBuffer)
-        controller.stop()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await stopAndAdvance(controller)
 
         XCTAssertEqual(engine.processedFrameCounts, [])
         XCTAssertEqual(engine.finalizedFrameCounts, [])
@@ -370,7 +459,7 @@ final class TranscriptionControllerTests: XCTestCase {
 
     func test_controllerCountsInvalidMicrophoneAndApplicationTimestamps() async throws {
         let capture = LifecycleCaptureSession()
-        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture)
+        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture, scheduler: scheduler)
         let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
         try await controller.start(mode: .micPlusAppAudio, audioSource: source)
         capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
@@ -381,7 +470,7 @@ final class TranscriptionControllerTests: XCTestCase {
         ))
         XCTAssertEqual(controller.audioCompositionMetrics.invalidMicrophoneTimestamps, 1)
         XCTAssertEqual(controller.audioCompositionMetrics.invalidApplicationTimestamps, 1)
-        controller.stop()
+        await stopAndAdvance(controller)
     }
 
     func test_controllerComposesSimultaneousSecondWaveformsExactly() async throws {
@@ -393,7 +482,7 @@ final class TranscriptionControllerTests: XCTestCase {
         for appFirst in [false, true] {
             let capture = LifecycleCaptureSession()
             let engine = WaveformTestEngine()
-            let controller = TranscriptionController(engine: engine, captureSession: capture)
+            let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
             try await controller.start(mode: .micPlusAppAudio, audioSource: source)
             let hostTime = AudioConvertNanosToHostTime(1_000_000_000)
             let pts = CMTime(value: Int64(AudioConvertHostTimeToNanos(hostTime)), timescale: 1_000_000_000)
@@ -410,8 +499,7 @@ final class TranscriptionControllerTests: XCTestCase {
                 capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], mic)
                 capture.appCallbacks[0](capture.appSessionIDs[0], app)
             }
-            controller.stop()
-            try await waitForFinalized(engine)
+            await stopAndAdvance(controller)
             waveforms.append(try XCTUnwrap(engine.finalizedSamples))
         }
 
@@ -422,7 +510,7 @@ final class TranscriptionControllerTests: XCTestCase {
 
     func test_controllerSignalsMicReadinessBeforeApplicationAudioArrives() async throws {
         let capture = LifecycleCaptureSession()
-        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture)
+        let controller = TranscriptionController(engine: WaveformTestEngine(), captureSession: capture, scheduler: scheduler)
         let ready = expectation(description: "mic ready")
         controller.onMicrophoneReady = { ready.fulfill() }
         let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
@@ -433,13 +521,13 @@ final class TranscriptionControllerTests: XCTestCase {
             AudioCaptureFrame(samples: [0.2, 0.2], sampleRate: 16_000, firstSampleHostTime: hostTime)
         )
         await fulfillment(of: [ready], timeout: 1)
-        controller.stop()
+        await stopAndAdvance(controller)
     }
 
     func test_controllerFallbackPreservesMicWaveformContinuity() async throws {
         let capture = LifecycleCaptureSession()
         let engine = WaveformTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
         let fallback = expectation(description: "fallback")
         controller.onFallbackToMicOnly = { fallback.fulfill() }
         let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
@@ -461,8 +549,7 @@ final class TranscriptionControllerTests: XCTestCase {
         capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
             samples: [Float](repeating: 0.2, count: 16_000), sampleRate: 16_000, firstSampleHostTime: secondHost
         ))
-        controller.stop()
-        try await waitForFinalized(engine)
+        await stopAndAdvance(controller)
         let waveform = try XCTUnwrap(engine.finalizedSamples)
 
         XCTAssertEqual(waveform.count, 32_000)
@@ -473,32 +560,24 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_controllerDrainsConverterTailIntoExactFinalWaveform() async throws {
         let capture = LifecycleCaptureSession()
         let engine = WaveformTestEngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture)
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
         try await controller.start(mode: .micOnly)
         let host = AudioConvertNanosToHostTime(1_000_000_000)
         capture.microphoneCallbacks[0](capture.microphoneSessionIDs[0], AudioCaptureFrame(
             samples: [Float](repeating: 0.25, count: 160), sampleRate: 16_000, firstSampleHostTime: host
         ))
-        controller.stop()
-        try await waitForFinalized(engine)
+        await stopAndAdvance(controller)
         let waveform = try XCTUnwrap(engine.finalizedSamples)
         XCTAssertEqual(waveform.count, 160)
         XCTAssertTrue(waveform.allSatisfy { abs($0 - 0.25) < 0.0001 })
-    }
-
-    private func waitForFinalized(_ engine: WaveformTestEngine) async throws {
-        for _ in 0..<200 {
-            if engine.finalizedSamples != nil { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTFail("timed out waiting for final waveform")
     }
 
     func test_appAudioFailureFallsBackToMicOnlyWithoutStoppingMicrophone() async throws {
         let captureSession = LifecycleCaptureSession()
         let controller = TranscriptionController(
             engine: LifecycleTestEngine(),
-            captureSession: captureSession
+            captureSession: captureSession,
+            scheduler: scheduler
         )
         let fallback = expectation(description: "controller falls back to mic-only")
         controller.onFallbackToMicOnly = { fallback.fulfill() }

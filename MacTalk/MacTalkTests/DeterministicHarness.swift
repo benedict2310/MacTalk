@@ -56,8 +56,8 @@ enum DeterministicASREngineEvent: Equatable, Sendable {
 }
 
 /// A configurable ASR fake that records the exact sample payload and call
-/// order. Delays use Task.sleep, so cancellation is observable and never
-/// depends on wall-clock polling in a test.
+/// order. A cancellation-aware gate models a slow provider without wall-clock
+/// sleeps or polling.
 final class DeterministicASREngine: @unchecked Sendable, ASREngine {
     let provider: ASRProvider
     private let script: DeterministicASRScript
@@ -66,6 +66,8 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
     private var processCount = 0
     private var finalizeCount = 0
     private var partialHandler: (@Sendable (ASRPartial) -> Void)?
+    private let cancellationGate = DeterministicCancellationGate()
+    var onEvent: (@Sendable (DeterministicASREngineEvent) -> Void)?
 
     init(provider: ASRProvider = .whisper, script: DeterministicASRScript = .init()) {
         self.provider = provider
@@ -150,7 +152,7 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
     private func waitIfNeeded(_ nanoseconds: UInt64, operation: String) async throws {
         do {
             if nanoseconds > 0 {
-                try await Task.sleep(nanoseconds: nanoseconds)
+                try await cancellationGate.wait()
             }
             try Task.checkCancellation()
         } catch {
@@ -160,12 +162,45 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
     }
 
     private func record(_ event: DeterministicASREngineEvent) {
-        lock.lock(); recordedEvents.append(event); lock.unlock()
+        let callback = lock.withLock {
+            recordedEvents.append(event)
+            return onEvent
+        }
+        callback?(event)
     }
 
     private func copySamples(from buffer: AVAudioPCMBuffer) -> [Float] {
         guard let channel = buffer.floatChannelData?[0] else { return [] }
         return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    }
+}
+
+private final class DeterministicCancellationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var cancelled = false
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if cancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    self.continuation = continuation
+                    lock.unlock()
+                }
+            }
+        }, onCancel: {
+            lock.lock()
+            cancelled = true
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(throwing: CancellationError())
+        })
     }
 }
 
@@ -237,7 +272,7 @@ final class DeterministicManualClock: @unchecked Sendable {
     func advance(nanoseconds: UInt64) { lock.withLock { value += nanoseconds } }
 }
 
-final class DeterministicManualScheduler: AudioCompositionScheduler, @unchecked Sendable {
+final class DeterministicManualScheduler: TranscriptionScheduler, @unchecked Sendable {
     private final class Entry: @unchecked Sendable {
         let deadline: UInt64
         let operation: @Sendable () -> Void
@@ -253,6 +288,7 @@ final class DeterministicManualScheduler: AudioCompositionScheduler, @unchecked 
         func cancel() { owner?.cancel(entry) }
     }
     let clock: DeterministicManualClock
+    var nowNanoseconds: UInt64 { clock.nowNanoseconds }
     private let lock = NSLock()
     private var entries: [Entry] = []
     init(clock: DeterministicManualClock) { self.clock = clock }
@@ -283,43 +319,6 @@ enum DeterministicAudioFixtures {
     static func hostTime(nanoseconds: UInt64) -> UInt64 { AudioConvertNanosToHostTime(nanoseconds) }
 }
 
-struct DeterministicPermissionState: Equatable, Sendable {
-    var microphone = true
-    var screenRecording = true
-    var accessibility = true
-}
-
-final class DeterministicPermissions: @unchecked Sendable {
-    var state: DeterministicPermissionState
-    private(set) var requestCounts = ["microphone": 0, "screenRecording": 0, "accessibility": 0]
-    init(state: DeterministicPermissionState = .init()) { self.state = state }
-    func requestMicrophone() -> Bool { requestCounts["microphone", default: 0] += 1; return state.microphone }
-    func requestScreenRecording() -> Bool { requestCounts["screenRecording", default: 0] += 1; return state.screenRecording }
-    func requestAccessibility() -> Bool { requestCounts["accessibility", default: 0] += 1; return state.accessibility }
-}
-
-final class DeterministicClipboard: @unchecked Sendable {
-    private(set) var writes: [String] = []
-    func write(_ text: String) { writes.append(text) }
-}
-
-final class DeterministicAutoInsert: @unchecked Sendable {
-    private(set) var inserted: [String] = []
-    func insert(_ text: String) { inserted.append(text) }
-}
-
-final class DeterministicModelStore: @unchecked Sendable {
-    let root: URL
-    private(set) var paths: [String: URL] = [:]
-    init(root: URL) { self.root = root }
-    func install(filename: String) -> URL {
-        let url = root.appendingPathComponent(filename)
-        paths[filename] = url
-        return url
-    }
-    func existing(filename: String) -> URL? { paths[filename] }
-}
-
 final class DeterministicModelDownloader: @unchecked Sendable {
     private(set) var requestedModels: [String] = []
     func download(filename: String) throws -> URL {
@@ -337,12 +336,44 @@ final class DeterministicValueBox<Value>: @unchecked Sendable {
 }
 
 final class DeterministicNetworkTrap: @unchecked Sendable {
+    private let lock = NSLock()
     private(set) var requests: [URLRequest] = []
-    func record(_ request: URLRequest) { requests.append(request) }
-    var requestCount: Int { requests.count }
-    func assertNoRequests(file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertEqual(requests.count, 0, "Unexpected network request in deterministic lane", file: file, line: line)
+
+    func record(_ request: URLRequest) {
+        lock.withLock { requests.append(request) }
     }
+
+    var requestCount: Int { lock.withLock { requests.count } }
+
+    func session() -> URLSession {
+        DeterministicNetworkTrapURLProtocol.trap = self
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DeterministicNetworkTrapURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    func assertNoRequests(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(requestCount, 0, "Unexpected network request in deterministic lane", file: file, line: line)
+    }
+}
+
+private final class DeterministicNetworkTrapURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var trap: DeterministicNetworkTrap?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.trap?.record(request)
+        let error = NSError(
+            domain: "DeterministicNetworkTrap",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Unexpected network request in deterministic lane"]
+        )
+        client?.urlProtocol(self, didFailWithError: error)
+    }
+
+    override func stopLoading() {}
 }
 
 func makeIsolatedTestDefaults(_ name: String = UUID().uuidString) -> (defaults: UserDefaults, suiteName: String) {

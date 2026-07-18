@@ -5,6 +5,11 @@ options:
     macOS: "26.0"
   developmentLanguage: en
 
+configs:
+  Debug: debug
+  Release: release
+  DebugTSan: debug
+
 settings:
   SWIFT_VERSION: "6.0"
   SWIFT_STRICT_CONCURRENCY: complete
@@ -38,36 +43,40 @@ targets:
         NSHumanReadableCopyright: "Copyright © 2025 MacTalk Development Team"
         NSPrincipalClass: "NSApplication"
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.mactalk.app
-      INFOPLIST_FILE: MacTalk/MacTalk/Info.plist
-      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      SWIFT_OBJC_BRIDGING_HEADER: MacTalk/MacTalk/Whisper/WhisperBridge.h
-      HEADER_SEARCH_PATHS:
-        - $(PROJECT_DIR)/Vendor/whisper.cpp
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/include
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/src
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/ggml/include
-      LIBRARY_SEARCH_PATHS:
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/build/src
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src
-      OTHER_LDFLAGS:
-        - -lwhisper
-        - -framework Accelerate
-        - -framework Metal
-        - -framework Foundation
-        - -framework AVFoundation
-        - -framework AppKit
-        - -framework ScreenCaptureKit
-        - -framework UserNotifications
-      LD_RUNPATH_SEARCH_PATHS:
-        - "@executable_path/../Frameworks"
-        - "@loader_path/../Frameworks"
-      ENABLE_HARDENED_RUNTIME: YES
-      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
-      CODE_SIGN_STYLE: Automatic
-      DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
-      CODE_SIGN_ENTITLEMENTS: MacTalk/MacTalk/MacTalk.entitlements
-      GENERATE_INFOPLIST_FILE: NO
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mactalk.app
+        INFOPLIST_FILE: MacTalk/MacTalk/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_OBJC_BRIDGING_HEADER: MacTalk/MacTalk/Whisper/WhisperBridge.h
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Vendor/whisper.cpp
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/include
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/src
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/ggml/include
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/src
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src
+        OTHER_LDFLAGS:
+          - -lwhisper
+          - -framework Accelerate
+          - -framework Metal
+          - -framework Foundation
+          - -framework AVFoundation
+          - -framework AppKit
+          - -framework ScreenCaptureKit
+          - -framework UserNotifications
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "@loader_path/../Frameworks"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
+        CODE_SIGN_ENTITLEMENTS: MacTalk/MacTalk/MacTalk.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+      configs:
+        DebugTSan:
+          ENABLE_THREAD_SANITIZER: YES
     dependencies:
       - sdk: Accelerate.framework
       - sdk: Metal.framework
@@ -218,17 +227,19 @@ schemes:
       targets:
         MacTalk: all
     run:
-      config: Debug
+      config: DebugTSan
       environmentVariables:
-        TSAN_OPTIONS: "halt_on_error=0"
+        TSAN_OPTIONS: "halt_on_error=1"
     test:
-      config: Debug
+      config: DebugTSan
       targets:
         - MacTalkTests
       diagnostics:
         threadSanitizer: true
+        # Keep sanitizer instrumentation in the generated scheme itself;
+        # callers must not rely on an uninstrumented xcodebuild override.
       environmentVariables:
-        TSAN_OPTIONS: "suppressions=$(PROJECT_DIR)/tsan_suppressions.txt:halt_on_error=0"
+        TSAN_OPTIONS: "halt_on_error=1"
     profile:
       config: Release
     analyze:

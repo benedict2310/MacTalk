@@ -85,6 +85,7 @@
 		E0E3BD7B773ECE54B518C2C8 /* EngineSelectionLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1711734B0AD4FDB46A70A1 /* EngineSelectionLoaderTests.swift */; };
 		E11412319162480ADA904AB5 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3BD2E91B633537326157C2EC /* AVFoundation.framework */; };
 		E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */; };
+		E6945B4B17E2433394010F56 /* TSanSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */; };
 		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
 		F6722E9D10CAB9ECA3FD3B16 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74DAEDA2792B773A15191DA0 /* NotificationManager.swift */; };
@@ -147,6 +148,7 @@
 		858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetModelDownloader.swift; sourceTree = "<group>"; };
 		87FBF01E284CBD93030272C6 /* AudioHardwareValidationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHardwareValidationRecorder.swift; sourceTree = "<group>"; };
 		936816A109576B7AC6EB9727 /* AsyncTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTimeout.swift; sourceTree = "<group>"; };
+		94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TSanSmokeTests.swift; sourceTree = "<group>"; };
 		98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureIntegrationTests.swift; sourceTree = "<group>"; };
 		99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowControllerTests.swift; sourceTree = "<group>"; };
 		99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixerTests.swift; sourceTree = "<group>"; };
@@ -307,6 +309,7 @@
 				82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */,
 				E81ABE900575F1149ED6F49B /* TestHelpers.swift */,
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
+				94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */,
 			);
 			name = MacTalkTests;
 			path = MacTalk/MacTalkTests;
@@ -610,6 +613,7 @@
 				EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */,
 				2CA2A08ADEAAAC67AA9DD125 /* SettingsWindowControllerTests.swift in Sources */,
 				D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */,
+				E6945B4B17E2433394010F56 /* TSanSmokeTests.swift in Sources */,
 				5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */,
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
 			);
@@ -749,6 +753,70 @@
 			};
 			name = Debug;
 		};
+		6B0B2B4D72AAE34FE7C7B4B9 /* DebugTSan */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = DebugTSan;
+		};
 		950B5814A87BA8CAC753D68E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -848,6 +916,66 @@
 			};
 			name = Release;
 		};
+		AF76E2CBFF4222BDFBE2CDAA /* DebugTSan */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacTalk/MacTalk/MacTalk.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = 9SXL4GJ4TZ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_THREAD_SANITIZER = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/whisper.cpp",
+					"$(PROJECT_DIR)/Vendor/whisper.cpp/include",
+					"$(PROJECT_DIR)/Vendor/whisper.cpp/src",
+					"$(PROJECT_DIR)/Vendor/whisper.cpp/ggml/include",
+				);
+				INFOPLIST_FILE = MacTalk/MacTalk/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/whisper.cpp/build/src",
+					"$(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src",
+				);
+				OTHER_LDFLAGS = (
+					"-lwhisper",
+					"-framework Accelerate",
+					"-framework Metal",
+					"-framework Foundation",
+					"-framework AVFoundation",
+					"-framework AppKit",
+					"-framework ScreenCaptureKit",
+					"-framework UserNotifications",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.app;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = MacTalk/MacTalk/Whisper/WhisperBridge.h;
+			};
+			name = DebugTSan;
+		};
+		B603FEBFFC5B01628E98AEDF /* DebugTSan */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.app.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacTalk.app/Contents/MacOS/MacTalk";
+			};
+			name = DebugTSan;
+		};
 		D93111286488D42DB11D36AC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -872,6 +1000,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				3962B9417FB088B00E8FFD9F /* Debug */,
+				AF76E2CBFF4222BDFBE2CDAA /* DebugTSan */,
 				ADD9814C196E921D8C938C9B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -881,6 +1010,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				65BFB6797F7E798FF98C8219 /* Debug */,
+				6B0B2B4D72AAE34FE7C7B4B9 /* DebugTSan */,
 				950B5814A87BA8CAC753D68E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -890,6 +1020,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				298F1466BCF0F2BD3B0C17A2 /* Debug */,
+				B603FEBFFC5B01628E98AEDF /* DebugTSan */,
 				D93111286488D42DB11D36AC /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
