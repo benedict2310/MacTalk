@@ -23,11 +23,12 @@ concurrency:
 env:
   XCODEGEN_VERSION: '2.44.1'
   MACTALK_XCODE_VERSION: '26.0'
+  DEVELOPER_DIR: '/Applications/Xcode_26.0.1.app/Contents/Developer'
 
 jobs:
   unit:
     name: Deterministic unit tests (blocking)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     permissions:
       contents: read
@@ -42,6 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
           xcodebuild -version | tee build-xcode-version.txt
           grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
           printf 'xcode_version=%s\n' "$(shasum -a 256 build-xcode-version.txt | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -99,7 +101,7 @@ jobs:
 
   coverage:
     name: Deterministic coverage (blocking)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 50
     permissions:
       contents: read
@@ -114,6 +116,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
           xcodebuild -version | tee build-xcode-version.txt
           grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
           printf 'xcode_version=%s\n' "$(shasum -a 256 build-xcode-version.txt | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -169,7 +172,7 @@ jobs:
   tsan:
     name: ThreadSanitizer (scheduled/manual blocking)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     permissions:
       contents: read
@@ -179,15 +182,14 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      - name: Select documented Xcode toolchain
+      - name: Verify pinned toolchain
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d "/Applications/Xcode_${MACTALK_XCODE_VERSION}.app" ]; then
-            echo "TSAN/UNAVAILABLE: documented Xcode ${MACTALK_XCODE_VERSION} is not installed on macos-15" >&2
+          test -d "$DEVELOPER_DIR" || {
+            echo "TSAN/UNAVAILABLE: documented Xcode 26.0.1 is not installed on macos-26" >&2
             exit 1
-          fi
-          sudo xcode-select -s "/Applications/Xcode_${MACTALK_XCODE_VERSION}.app/Contents/Developer"
+          }
           xcodebuild -version | tee build-xcode-version.txt
           grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
       - name: Standalone clang ThreadSanitizer smoke (first)
@@ -229,7 +231,7 @@ jobs:
   appkit:
     name: AppKit/window manual lane (non-blocking by policy)
     if: github.event_name == 'workflow_dispatch' && inputs.run_appkit == true
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     permissions:
       contents: read
@@ -238,6 +240,13 @@ jobs:
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
           persist-credentials: false
+      - name: Verify pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version | tee build-xcode-version.txt
+          grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
       - name: Run explicit AppKit lane
         run: scripts/test-lanes.sh appkit
 

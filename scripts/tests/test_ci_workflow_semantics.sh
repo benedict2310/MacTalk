@@ -19,12 +19,30 @@ raise 'workflow must trigger pull requests' unless events.is_a?(Hash) && events.
 raise 'workflow must trigger scheduled TSan' unless events.key?('schedule')
 raise 'workflow must support manual dispatch' unless events.key?('workflow_dispatch')
 
-%w[unit coverage tsan lint security documentation].each do |job|
+%w[unit coverage tsan appkit lint security documentation].each do |job|
   raise "missing blocking #{job} job" unless jobs.key?(job)
+end
+
+xcode_jobs = %w[unit coverage tsan appkit]
+expected_developer_dir = '/Applications/Xcode_26.0.1.app/Contents/Developer'
+workflow_env = workflow.fetch('env')
+raise 'workflow must select the concrete Xcode 26.0.1 developer directory' unless workflow_env['DEVELOPER_DIR'] == expected_developer_dir
+xcode_jobs.each do |job|
+  raise "#{job} job must run on macos-26" unless jobs.fetch(job)['runs-on'] == 'macos-26'
+  job_env = jobs.fetch(job)['env'] || {}
+  raise "#{job} job must inherit the pinned developer directory" if job_env.key?('DEVELOPER_DIR')
 end
 
 steps = ->(job) { Array(jobs.fetch(job).fetch('steps')) }
 step_runs = ->(job) { steps.call(job).map { |step| step['run'] if step.is_a?(Hash) }.compact }
+xcode_jobs.each do |job|
+  toolchain_runs = step_runs.call(job).join("\n")
+  raise "#{job} job does not fail closed when the pinned Xcode is absent" unless toolchain_runs.include?('test -d "$DEVELOPER_DIR"')
+  raise "#{job} job does not verify xcodebuild version" unless toolchain_runs.include?('xcodebuild -version')
+  raise "#{job} job does not enforce the pinned Xcode major-minor" unless toolchain_runs.include?('grep -F "Xcode ${MACTALK_XCODE_VERSION}"')
+  raise "#{job} job must not mutate the selected Xcode" if toolchain_runs.include?('xcode-select') || toolchain_runs.include?('sudo ')
+end
+
 unit_runs = step_runs.call('unit').join("\n")
 raise 'unit lane is not the blocking deterministic test command' unless unit_runs.include?('scripts/test-lanes.sh unit')
 raise 'unit lane does not verify reproducible generation' unless unit_runs.include?('test_reproducible_project_generation.sh')
