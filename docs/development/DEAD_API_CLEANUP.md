@@ -25,6 +25,7 @@ Tracking evidence for `TODO-6fc5c73f` on `feat/stabilize-mactalk`.
 | `ScreenAudioCapture.selectFirstWindow` | 0 | 0 | Remove | App audio production uses `selectApp` / `selectDisplay` through `AppAudioSourceCoordinator`; no test or production caller names this convenience API. |
 | `TranscriptionController.autoPasteEnabled` | 0 | 0 | Remove | No reads or writes. Auto-paste preference is captured in `SettingsSnapshot` and handled by `OutputCoordinator`. |
 | `StatusBarDependencies.clock` | 0 | 0 | Remove | Stored and initialized but never read. Permission/output coordinators own their injected clocks; no status-bar compatibility caller supplies this value. |
+| `EngineLifecycleCoordinator.isCurrent` / `isCurrentRequest` | 0 | 0 | Remove | These compatibility helpers were not in `EngineLifecycleCoordinating` and had no caller; current request validation remains private in `validated(...)`. |
 
 ## Retained symbols / explicit non-removals
 
@@ -36,4 +37,11 @@ Tracking evidence for `TODO-6fc5c73f` on `feat/stabilize-mactalk`.
 
 ## Verification after cleanup
 
-Update this section after each logical removal group with the focused tests, full suite, build, and app launch result. TSan is reported as unavailable rather than claimed.
+Each logical removal group was validated before its scoped commit:
+
+1. **Ring buffer removal** (`5055fa1`): full XCTest suite, 230 tests / 1 opt-in local-model skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
+2. **ASR partial-handler removal** (`c9efea1`): full XCTest suite, 230 tests / 1 skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
+3. **Clipboard/Cmd-V, ScreenAudio, controller, and status dependency cleanup** (`97173be`): full XCTest suite, 230 tests / 1 skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
+4. **Obsolete engine status helpers** (`5bb1eef`): full XCTest suite, 230 tests / 1 skip / 0 failures; `./build.sh run` succeeded and launched the signed app.
+
+The final compiler/build evidence is a successful signed Release build from `./build.sh run`; the compiler emitted no errors. Final `rg` over Swift sources reports no removed candidate symbols, and the generated Xcode project has no stale RingBuffer references. The Objective-C bridge symbols were scanned and retained unchanged. The TSan scheme was not run because the requested TSan lane is unavailable for this cleanup environment; no TSan result is claimed. No model download or network operation was used.
