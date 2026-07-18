@@ -20,6 +20,8 @@ struct DeterministicASRScript: Sendable {
     var finalizeErrors: [DeterministicASRError?] = []
     var processDelayNanoseconds: UInt64 = 0
     var finalizeDelayNanoseconds: UInt64 = 0
+    var processBarrier: DeterministicASRBarrier?
+    var finalizeBarrier: DeterministicASRBarrier?
 
     init(
         partials: [ASRPartial?] = [],
@@ -28,7 +30,9 @@ struct DeterministicASRScript: Sendable {
         processErrors: [DeterministicASRError?] = [],
         finalizeErrors: [DeterministicASRError?] = [],
         processDelayNanoseconds: UInt64 = 0,
-        finalizeDelayNanoseconds: UInt64 = 0
+        finalizeDelayNanoseconds: UInt64 = 0,
+        processBarrier: DeterministicASRBarrier? = nil,
+        finalizeBarrier: DeterministicASRBarrier? = nil
     ) {
         self.partials = partials
         self.finals = finals
@@ -37,6 +41,41 @@ struct DeterministicASRScript: Sendable {
         self.finalizeErrors = finalizeErrors
         self.processDelayNanoseconds = processDelayNanoseconds
         self.finalizeDelayNanoseconds = finalizeDelayNanoseconds
+        self.processBarrier = processBarrier
+        self.finalizeBarrier = finalizeBarrier
+    }
+}
+
+/// Manually released inference gate for adversarial ordering tests. Releasing
+/// before a call arrives leaves a permit, so tests can release finalization
+/// first without accidentally ordering the controller's callbacks.
+final class DeterministicASRBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func release() {
+        let continuations: [CheckedContinuation<Void, Error>] = lock.withLock {
+            released = true
+            let result = waiters
+            waiters.removeAll()
+            return result
+        }
+        continuations.forEach { $0.resume() }
     }
 }
 
@@ -101,7 +140,7 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
 
     func prepare() async throws {
         record(.prepare)
-        try await waitIfNeeded(0, operation: "prepare")
+        try await waitIfNeeded(0, barrier: nil, operation: "prepare")
         if let prepareError = script.prepareError {
             throw prepareError
         }
@@ -119,7 +158,7 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
             return value
         }
         record(.process(samples: samples, language: language))
-        try await waitIfNeeded(script.processDelayNanoseconds, operation: "process")
+        try await waitIfNeeded(script.processDelayNanoseconds, barrier: script.processBarrier, operation: "process")
         if let scriptedError = script.processErrors[safe: index], let error = scriptedError {
             throw error
         }
@@ -138,7 +177,7 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
             return value
         }
         record(.finalize(samples: samples, language: language))
-        try await waitIfNeeded(script.finalizeDelayNanoseconds, operation: "finalize")
+        try await waitIfNeeded(script.finalizeDelayNanoseconds, barrier: script.finalizeBarrier, operation: "finalize")
         if let scriptedError = script.finalizeErrors[safe: index], let error = scriptedError {
             throw error
         }
@@ -149,9 +188,15 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
         lock.withLock { partialHandler = handler }
     }
 
-    private func waitIfNeeded(_ nanoseconds: UInt64, operation: String) async throws {
+    private func waitIfNeeded(
+        _ nanoseconds: UInt64,
+        barrier: DeterministicASRBarrier?,
+        operation: String
+    ) async throws {
         do {
-            if nanoseconds > 0 {
+            if let barrier {
+                try await barrier.wait()
+            } else if nanoseconds > 0 {
                 try await cancellationGate.wait()
             }
             try Task.checkCancellation()
@@ -350,10 +395,6 @@ final class DeterministicNetworkTrap: @unchecked Sendable {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DeterministicNetworkTrapURLProtocol.self]
         return URLSession(configuration: configuration)
-    }
-
-    func assertNoRequests(file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertEqual(requestCount, 0, "Unexpected network request in deterministic lane", file: file, line: line)
     }
 }
 

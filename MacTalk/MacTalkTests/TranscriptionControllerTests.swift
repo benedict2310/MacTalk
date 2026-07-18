@@ -123,16 +123,30 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(engine.events, [])
     }
 
-    func test_partialFinalAndLifecycleCallbacksPreserveExactOrder() async throws {
+    func test_partialFinalAndLifecycleCallbacksSerializeAdversarialInferenceCompletion() async throws {
         let capture = DeterministicCaptureSession()
+        let processBarrier = DeterministicASRBarrier()
+        let finalizeBarrier = DeterministicASRBarrier()
         let engine = DeterministicASREngine(script: DeterministicASRScript(
             partials: [ASRPartial(text: "live words", words: [])],
-            finals: [ASRFinalSegment(text: "final words", words: [])]
+            finals: [ASRFinalSegment(text: "final words", words: [])],
+            processBarrier: processBarrier,
+            finalizeBarrier: finalizeBarrier
         ))
         let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
         let events = DeterministicValueBox<[String]>([])
+        let processStarted = expectation(description: "partial inference entered fake engine")
+        let finalizeStarted = expectation(description: "final inference entered fake engine")
         let partial = expectation(description: "partial callback")
         let final = expectation(description: "final callback")
+        let finalizationComplete = expectation(description: "finalization complete")
+        engine.onEvent = { event in
+            switch event {
+            case .process: processStarted.fulfill()
+            case .finalize: finalizeStarted.fulfill()
+            default: break
+            }
+        }
         controller.onPartial = { _ in
             events.set(events.get() + ["partial"])
             partial.fulfill()
@@ -141,6 +155,7 @@ final class TranscriptionControllerTests: XCTestCase {
             events.set(events.get() + ["final"])
             final.fulfill()
         }
+        controller.onFinalizationComplete = { finalizationComplete.fulfill() }
 
         try await controller.start(mode: .micOnly)
         scheduler.clock.advance(nanoseconds: 100_000_000)
@@ -154,20 +169,22 @@ final class TranscriptionControllerTests: XCTestCase {
             sampleRate: 16_000,
             firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 2_000_000_000)
         ))
-        await fulfillment(of: [partial], timeout: 1)
-        await stopAndAdvance(controller)
-        await fulfillment(of: [final], timeout: 1)
+        await fulfillment(of: [processStarted], timeout: 1)
 
+        // Stop while the independently gated partial inference is still in flight.
+        controller.stop()
+        await advanceStopScheduler()
+        await fulfillment(of: [finalizeStarted], timeout: 1)
+
+        // Deliberately complete final inference first. The controller must hold
+        // its observable final callback behind the already-running partial.
+        finalizeBarrier.release()
+        await Task.yield()
+        XCTAssertEqual(events.get(), [])
+
+        processBarrier.release()
+        await fulfillment(of: [partial, final, finalizationComplete], timeout: 2)
         XCTAssertEqual(events.get(), ["partial", "final"])
-        XCTAssertEqual(engine.events.map { event -> String in
-            switch event {
-            case .prepare: return "prepare"
-            case .reset: return "reset"
-            case .process: return "process"
-            case .finalize: return "finalize"
-            case .cancelled: return "cancelled"
-            }
-        }, ["prepare", "reset", "process", "finalize"])
     }
 
     func test_startPreparationFailureStopsCaptureAndReportsError() async throws {

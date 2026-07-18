@@ -57,7 +57,7 @@ final class DeterministicHarnessTests: XCTestCase {
 
         downloader.start(spec: spec)
         await fulfillment(of: [failed], timeout: 2)
-        XCTAssertEqual(trap.requestCount, 1)
+        XCTAssertEqual(trap.requests.map(\.url), spec.urls)
     }
 
     func test_audioFixturesAreStableAndIsolatedFakesFailClosed() throws {
@@ -71,7 +71,5 @@ final class DeterministicHarnessTests: XCTestCase {
         let downloader = DeterministicModelDownloader()
         XCTAssertThrowsError(try downloader.download(filename: "never-download.bin"))
         XCTAssertEqual(downloader.requestedModels, ["never-download.bin"])
-        let trap = DeterministicNetworkTrap()
-        trap.assertNoRequests()
     }
 }

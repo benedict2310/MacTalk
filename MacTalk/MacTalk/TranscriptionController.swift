@@ -534,7 +534,6 @@ final class TranscriptionController: @unchecked Sendable {
             Task { [self] in
                 finishAudioStreams(sessionID: sessionID)
                 compositionPipeline.finish(sessionID: sessionID)
-                await cancelPendingChunkTasks(sessionID: sessionID)
                 await flushFinalChunk(sessionID: sessionID)
 
                 audioState.withLock { state in
@@ -800,7 +799,7 @@ final class TranscriptionController: @unchecked Sendable {
                                 return true
                             }
                             if didAppend {
-                                self.throttledUIUpdate(trimmedText)
+                                await self.throttledUIUpdate(trimmedText)
                             }
                         }
                     }
@@ -845,26 +844,43 @@ final class TranscriptionController: @unchecked Sendable {
         DLOG("Processing final transcription with ALL audio: samples=\(snapshot.audio.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing final transcription with ALL audio: \(snapshot.audio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
+        // Capture the in-flight partial tasks before starting final inference.
+        // Whisper permits both requests to run concurrently, but final output
+        // must not become observable until the partial has delivered its UI
+        // callback. Holding the final segment locally also prevents a late
+        // partial from being appended after final text replaces the transcript.
+        let pendingPartialTasks: [Task<Void, Never>] = audioState.withLock { state in
+            guard state.sessionID == sessionID else { return [] }
+            return state.pendingTasks[sessionID]?.map(\.task) ?? []
+        }
+        var finalText: String?
+
         // Transcribe complete audio recording
         do {
             let finalSegment = try await PerformanceMonitor.shared.measure("ASRFinalInference") {
                 try await engine.finalize(samples: snapshot.audio, language: snapshot.language)
             }
-
             if let finalSegment {
                 let trimmedText = finalSegment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
                     DLOG("Final transcription result received: chars=\(trimmedText.count)")
-                    audioState.withLock { state in
-                        guard state.sessionID == sessionID else { return }
-                        state.fullTranscript = [trimmedText]
-                    }
+                    finalText = trimmedText
                 }
             }
         } catch {
             DebugLogger.shared.log(.error(description: error.localizedDescription))
         }
 
+        for task in pendingPartialTasks {
+            await task.value
+        }
+
+        if let finalText {
+            audioState.withLock { state in
+                guard state.sessionID == sessionID else { return }
+                state.fullTranscript = [finalText]
+            }
+        }
         await emitFinalTranscript(sessionID: sessionID)
     }
 
@@ -974,7 +990,7 @@ final class TranscriptionController: @unchecked Sendable {
         }
     }
 
-    private func throttledUIUpdate(_ text: String) {
+    private func throttledUIUpdate(_ text: String) async {
         let shouldUpdate = audioState.withLock { state -> Bool in
             let now = TimeInterval(timingScheduler.nowNanoseconds) / 1_000_000_000
             guard now - state.lastUIUpdateTime >= uiUpdateThrottle else {
@@ -984,12 +1000,8 @@ final class TranscriptionController: @unchecked Sendable {
             return true
         }
 
-        if shouldUpdate {
-            if let onPartial {
-                Task { @MainActor in
-                    onPartial(text)
-                }
-            }
+        if shouldUpdate, let onPartial {
+            await onPartial(text)
         }
     }
 

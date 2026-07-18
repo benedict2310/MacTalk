@@ -23,8 +23,11 @@ missing path, unknown filename, or invalid artifact is reported as a clear
 skip, never repaired or downloaded. Unit and coverage lanes always exclude
 this test.
 
-`DeterministicHarness.swift` provides scripted ASR, capture, clock/scheduler,
-audio fixtures, permission/clipboard/auto-insert fakes, isolated model roots,
-a downloader that fails closed, and a network-request trap. Production seams
-remain injectable capture/settings/engine boundaries; no fake is installed in
-the application process.
+`DeterministicHarness.swift` provides `DeterministicASREngine`,
+`DeterministicCaptureSession`, `DeterministicManualClock`,
+`DeterministicManualScheduler`, `DeterministicAudioFixtures`,
+`DeterministicModelDownloader`, `DeterministicNetworkTrap`,
+`DeterministicASRBarrier`, and `makeIsolatedTestDefaults`. The ASR barrier
+drives adversarial partial/final ordering tests. Production seams remain
+injectable capture/settings/engine boundaries; no fake is installed in the
+application process.
