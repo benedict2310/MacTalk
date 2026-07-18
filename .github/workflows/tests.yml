@@ -282,3 +282,5 @@ jobs:
           persist-credentials: false
       - name: Run blocking documentation checks
         run: bash scripts/ci-docs-checks.sh
+      - name: Run documentation negative fixtures
+        run: bash scripts/tests/test_ci_docs_checks.sh

@@ -10,7 +10,7 @@
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-MacTalk is a menu-bar app with two local ASR providers: Whisper and Parakeet. After a model is provisioned, transcription runs on the Mac; model downloaders use network URLs and verify catalog SHA-256 values before installation. See the dated [verified status baseline](docs/STATUS.md) for command results and external release gates.
+MacTalk is a menu-bar app with two local ASR providers: Whisper and Parakeet. After a model is explicitly provisioned, transcription runs locally on the Mac; model downloaders use network URLs and verify catalog SHA-256 values before installation. See the dated [verified status baseline](docs/STATUS.md) for command results and external release gates.
 
 The repository targets macOS 26.0, Swift 6.0, and FluidAudio 0.15.5 as declared in `project.yml`. This README does not claim notarization, hardware/TCC validation, or a universal offline installation.
 
@@ -20,8 +20,8 @@ The repository targets macOS 26.0, Swift 6.0, and FluidAudio 0.15.5 as declared 
 
 ## Features
 
-- **Dual Engine Support** - Choose Whisper for accuracy or Parakeet for ultra-fast real-time streaming
-- **Incremental transcription** - Whisper processes bounded chunks; Parakeet uses its provider-specific finalization path
+- **Dual Engine Support** - Choose Whisper for accuracy or Parakeet for its provider-specific finalization behavior
+- **Incremental transcription** - Whisper processes bounded chunks; Parakeet uses final-only processing to avoid inference overlap
 - **Dual Capture Modes** - Mic-only or mic + app audio (for calls/meetings)
 - **Local Inference** - Captured audio is processed locally after model provisioning; model downloads are explicit network operations
 - **Metal Accelerated** - Optimized for Apple Silicon
@@ -71,7 +71,7 @@ The repository targets macOS 26.0, Swift 6.0, and FluidAudio 0.15.5 as declared 
    - **Microphone** when you start recording
    - **Screen Recording** when you use Mic + App Audio
    - **Accessibility** only if you enable auto-paste
-5. Select a model to download (recommended: Whisper `small` or Parakeet for live streaming)
+5. Select a model to download (recommended: Whisper `small` or Parakeet)
 
 ### Build from Source
 
@@ -94,13 +94,13 @@ See [docs/development/SETUP.md](docs/development/SETUP.md) for build instruction
 
 MacTalk supports two transcription engines:
 
-### Parakeet (Recommended for speed)
+### Parakeet
 
-FluidAudio-backed local transcription. Provider lifecycle and finalization are coordinated separately from Whisper; see `ASREngine.swift` and the status baseline for validated behavior.
+FluidAudio-backed local transcription. The current provider path performs final-only processing to avoid inference overlap; see `ASREngine.swift` and the status baseline for validated behavior.
 
 | Model | Size | Speed | Use Case |
 |-------|------|-------|----------|
-| Parakeet TDT 0.6B | ~600 MB | Instant | Real-time streaming, live dictation |
+| Parakeet TDT 0.6B | ~600 MB | Not measured | Finalized transcription path |
 
 ### Whisper (Recommended for accuracy)
 
@@ -144,10 +144,10 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 
 ### Q: How is this different from macOS Dictation?
 **A:**
-- MacTalk works completely offline (Apple Dictation requires network for best quality)
+- After a model is provisioned, MacTalk's transcription path runs locally without network access; model provisioning remains an explicit network operation
 - Supports app audio capture for transcribing calls
 - Choice of multiple models (speed vs. accuracy tradeoff)
-- Privacy-focused with no telemetry or network calls
+- Privacy-focused with no analytics or tracking
 
 ---
 
@@ -155,7 +155,7 @@ Microphone and Screen Recording permissions are required for transcription. Acce
 
 - Built with Swift 6 and AppKit for native macOS performance with strict concurrency
 - Powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal acceleration
-- Parakeet engine via [FluidAudio](https://github.com/FluidInference/FluidAudio) for real-time streaming
+- Parakeet engine via [FluidAudio](https://github.com/FluidInference/FluidAudio); the current provider path uses final-only processing
 - Based on [OpenAI Whisper](https://github.com/openai/whisper) and [NVIDIA Parakeet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/canary/models/parakeet-tdt-0.6b-v2)
 
 ---

@@ -1,7 +1,7 @@
 # MacTalk verified status baseline
 
-**Baseline date:** 2026-07-18  
-**Branch:** `feat/stabilize-mactalk`  
+**Baseline date:** 2026-07-18
+**Branch:** `feat/stabilize-mactalk`
 **Source:** the checkout on this branch at collection time; run
 `git rev-parse HEAD` and use the commit recorded by release preflight for any
 new release claim.

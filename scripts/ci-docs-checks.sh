@@ -94,12 +94,34 @@ if not data.get("hardware_tcc", {}).get("reason") or not data.get("release", {})
 readme = read("README.md")
 if not re.search(r"\[[^\]]*License[^\]]*\]\(\.?/?LICENSE\)", readme, re.I):
     fail("README does not link the root LICENSE")
-if re.search(r"100%\s+(local|local processing)|zero network calls|macOS 14\.0|Xcode 15", readme, re.I):
+if not re.search(r"after an? (?:model|artifact) is (?:explicitly )?provisioned,? transcription runs locally", readme, re.I):
+    fail("README does not qualify local inference as post-provisioning")
+if not re.search(r"model (?:downloaders|provisioning).*network", readme, re.I):
+    fail("README does not disclose the network requirement for model provisioning")
+unsupported_readme = (
+    r"completely offline|zero network calls|no telemetry or network calls|"
+    r"Parakeet[^\n]*(?:streaming|instant|ultra-fast)|"
+    r"(?:streaming|instant|ultra-fast)[^\n]*Parakeet"
+)
+if re.search(unsupported_readme, readme, re.I):
+    fail("README contains an unsupported offline or Parakeet performance/streaming claim")
+if re.search(r"100%\s+(local|local processing)|macOS 14\.0|Xcode 15", readme, re.I):
     fail("README contains a stale platform/privacy claim")
 for rel in ("docs/development/ARCHITECTURE.md", "docs/development/SETUP.md", "docs/testing/TESTING.md"):
     text = read(rel)
     if re.search(r"macOS 14\.0|Xcode 15\.0|RingBufferTests|WhisperEngineTests|85\.2%|100% coverage", text, re.I):
         fail(f"{rel} contains a historical API/version/coverage claim")
+
+docs_hub = read("docs/README.md")
+for filename in ("development/SETUP.md", "development/ARCHITECTURE.md", "STATUS.md"):
+    if not re.search(rf"\([^)]*{re.escape(filename)}\)", docs_hub):
+        fail(f"docs/README.md does not link current {filename}")
+for filename in ("XCODE_BUILD.md", "PROGRESS.md"):
+    lines = [line for line in docs_hub.splitlines() if filename in line]
+    if not lines:
+        fail(f"docs/README.md does not link historical {filename}")
+    if any(not re.search(r"historical", line, re.I) for line in lines):
+        fail(f"docs/README.md presents historical {filename} as current")
 
 # Check only current entry-point docs for stale root-level links; historical
 # stories/plans are deliberately excluded from this rule.

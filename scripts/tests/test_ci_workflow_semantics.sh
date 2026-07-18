@@ -60,6 +60,8 @@ raise 'TSan job does not verify an instrumented runtime link' unless tsan_runs.i
   raise "#{job} job is not blocking" if jobs.fetch(job).key?('continue-on-error')
   raise "#{job} job has no meaningful command" if step_runs.call(job).join.empty?
 end
+documentation_runs = step_runs.call('documentation').join("\n")
+raise 'documentation job does not execute the docs checker fixture test' unless documentation_runs.include?('scripts/tests/test_ci_docs_checks.sh')
 
 # Every third-party action is immutable; no workflow may opt into hidden lanes.
 walk = lambda do |value, &block|

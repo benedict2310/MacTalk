@@ -32,7 +32,7 @@ Core technical documentation for developers
 
 - **[ARCHITECTURE.md](development/ARCHITECTURE.md)** - System architecture, components, and data flow
 - **[SETUP.md](development/SETUP.md)** - Development environment setup guide
-- **[XCODE_BUILD.md](development/XCODE_BUILD.md)** - Xcode project configuration and build settings
+- **Historical: [XCODE_BUILD.md](development/XCODE_BUILD.md)** - Superseded Xcode project configuration and build settings; use [SETUP.md](development/SETUP.md) for current instructions
 
 ### ✨ [Features](features/)
 Detailed feature implementation documentation
@@ -83,8 +83,8 @@ Issue resolution, debugging, and known problems
 
 **Setting up the project:**
 1. Read [SETUP.md](development/SETUP.md)
-2. Follow build instructions in [XCODE_BUILD.md](development/XCODE_BUILD.md)
-3. Review [ARCHITECTURE.md](development/ARCHITECTURE.md)
+2. Review [ARCHITECTURE.md](development/ARCHITECTURE.md)
+3. Check [STATUS.md](STATUS.md) for the current verified baseline
 
 **Running tests:**
 1. See [TESTING.md](testing/TESTING.md)
@@ -101,7 +101,8 @@ Issue resolution, debugging, and known problems
 1. [PRD.md](planning/PRD.md) - Full product requirements
 2. [LIQUID_GLASS_UI.md](features/LIQUID_GLASS_UI.md) - UI design system
 3. [ACCESSIBILITY.md](features/ACCESSIBILITY.md) - Accessibility standards
-4. [PROGRESS.md](planning/PROGRESS.md) - Current status
+4. [STATUS.md](STATUS.md) - Current verified baseline
+5. Historical: [PROGRESS.md](planning/PROGRESS.md) - Earlier development status and progress tracking
 
 ### For QA/Testing
 
@@ -160,7 +161,7 @@ Notable choices:
 
 ## Getting Help
 
-**Build/Setup Issues:** [development/SETUP.md](development/SETUP.md), [development/XCODE_BUILD.md](development/XCODE_BUILD.md)
+**Build/Setup Issues:** [development/SETUP.md](development/SETUP.md), [STATUS.md](STATUS.md)
 **Permission Problems:** [permissions/README.md](permissions/README.md)
 **Performance Issues:** [troubleshooting/PROFILING.md](troubleshooting/PROFILING.md)
 **Test Failures:** [testing/TESTING.md](testing/TESTING.md)

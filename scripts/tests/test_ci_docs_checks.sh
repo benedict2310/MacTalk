@@ -25,5 +25,37 @@ if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
     echo "docs checker accepted a deployment-target mismatch" >&2
     exit 1
 fi
+cp "$ROOT/project.yml" "$fixture/project.yml"
+
+# Unsupported README claims must remain rejected even if the rest of the
+# repository is internally consistent.
+printf '\n- Parakeet provides ultra-fast real-time streaming\n' >> "$fixture/README.md"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted an unsupported Parakeet streaming claim" >&2
+    exit 1
+fi
+cp "$ROOT/README.md" "$fixture/README.md"
+sed -i.bak 's/Once a model is downloaded and verified, the transcription path can run without a network connection\./MacTalk works completely offline./' "$fixture/README.md"
+rm -f "$fixture/README.md.bak"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted an unqualified offline claim" >&2
+    exit 1
+fi
+cp "$ROOT/README.md" "$fixture/README.md"
+
+# Historical documents must not be presented as current guidance by the hub.
+sed -i.bak 's/Historical development status and progress tracking/Current status/' "$fixture/docs/README.md"
+rm -f "$fixture/docs/README.md.bak"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted a current PROGRESS label" >&2
+    exit 1
+fi
+cp "$ROOT/docs/README.md" "$fixture/docs/README.md"
+sed -i.bak 's/Historical: \[XCODE_BUILD.md\]/[XCODE_BUILD.md]/' "$fixture/docs/README.md"
+rm -f "$fixture/docs/README.md.bak"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted a current XCODE_BUILD label" >&2
+    exit 1
+fi
 
 echo "ci-docs-checks negative fixtures passed"

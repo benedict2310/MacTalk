@@ -29,7 +29,7 @@ import FluidAudio
 final class ParakeetBootstrap {
     static let shared = ParakeetBootstrap()
     private(set) var models: AsrModels?
-    
+
     // Called when user selects Parakeet or app launches in Parakeet mode
     func prepareModels() async throws {
         if models == nil {
