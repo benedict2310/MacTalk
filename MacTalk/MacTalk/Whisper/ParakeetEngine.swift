@@ -11,7 +11,6 @@ import FluidAudio
 
 final class ParakeetEngine: @unchecked Sendable, ASREngine {
     private let bootstrap: ParakeetBootstrap
-    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
     private let core: ParakeetEngineCore
 
     let provider: ASRProvider = .parakeet
@@ -29,16 +28,10 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
         await core.reset()
     }
 
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
-        partialHandler = handler
-    }
-
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
         let result = try await core.transcribe(buffer: buffer)
         let words = mapWords(from: result)
-        let partial = ASRPartial(text: result.text, words: words)
-        partialHandler?(partial)
-        return partial
+        return ASRPartial(text: result.text, words: words)
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {

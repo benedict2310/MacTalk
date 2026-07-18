@@ -104,7 +104,6 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
     private var recordedEvents: [DeterministicASREngineEvent] = []
     private var processCount = 0
     private var finalizeCount = 0
-    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
     private let cancellationGate = DeterministicCancellationGate()
     var onEvent: (@Sendable (DeterministicASREngineEvent) -> Void)?
 
@@ -162,11 +161,7 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
         if let scriptedError = script.processErrors[safe: index], let error = scriptedError {
             throw error
         }
-        let result = script.partials[safe: index] ?? nil
-        if let result, let handler = lock.withLock({ partialHandler }) {
-            handler(result)
-        }
-        return result
+        return script.partials[safe: index] ?? nil
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
@@ -182,10 +177,6 @@ final class DeterministicASREngine: @unchecked Sendable, ASREngine {
             throw error
         }
         return script.finals[safe: index] ?? nil
-    }
-
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
-        lock.withLock { partialHandler = handler }
     }
 
     private func waitIfNeeded(

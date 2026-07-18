@@ -59,8 +59,6 @@ protocol ASREngine: Sendable {
 
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial?
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment?
-
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?)
 }
 
 extension ASREngine {

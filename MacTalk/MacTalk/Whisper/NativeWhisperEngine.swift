@@ -23,8 +23,6 @@ import Darwin
 final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
     private var ctx: OpaquePointer?
     private let queue = DispatchQueue(label: "com.mactalk.whisper.engine", qos: .userInitiated)
-    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
-
     let provider: ASRProvider = .whisper
 
     /// Transcription result containing text and timing information.
@@ -66,10 +64,6 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
 
     func reset() async {}
 
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
-        partialHandler = handler
-    }
-
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
         guard let samples = samples(from: buffer) else {
             return nil
@@ -78,9 +72,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             return nil
         }
 
-        let partial = ASRPartial(text: result.text, words: [])
-        partialHandler?(partial)
-        return partial
+        return ASRPartial(text: result.text, words: [])
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {

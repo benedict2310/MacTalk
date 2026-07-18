@@ -762,7 +762,6 @@ private final class WaveformTestEngine: @unchecked Sendable, ASREngine {
         lock.withLock { $0 = samples }
         return nil
     }
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {}
 }
 
 private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {
@@ -792,5 +791,4 @@ private final class LifecycleTestEngine: @unchecked Sendable, ASREngine {
         }
         return nil
     }
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {}
 }

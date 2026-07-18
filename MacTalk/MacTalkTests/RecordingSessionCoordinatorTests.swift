@@ -367,5 +367,4 @@ private final class TestRecordingEngine: ASREngine, @unchecked Sendable {
     func reset() async {}
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? { nil }
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? { nil }
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {}
 }
