@@ -1,167 +1,280 @@
-name: MacTalk CI/CD
+name: MacTalk CI
 
 on:
   push:
-    branches: [ main, develop, 'feature/**', 'claude/**' ]
+    branches: [main, develop, 'feature/**', 'feat/**', 'claude/**']
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      run_appkit:
+        description: Run the explicit AppKit/window lane (no TCC or hardware)
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+concurrency:
+  group: mactalk-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XCODEGEN_VERSION: '2.44.1'
+  MACTALK_XCODE_VERSION: '26.0'
 
 jobs:
-  # Tests disabled due to persistent timeout issues in GitHub Actions headless environment
-  # Root cause: xcodebuild has a 120-second timeout bug where compilation + test startup
-  # exceeds the limit. UI-related tests also hang without window server.
-  # All tests pass locally - run locally before merging: xcodebuild test -project MacTalk.xcodeproj -scheme MacTalk
-  #
-  # test:
-  #   name: Run Tests
-  #   runs-on: macos-15
-  #   timeout-minutes: 30
-  #   ...
-
-  build:
-    name: Build Release
+  unit:
+    name: Deterministic unit tests (blocking)
     runs-on: macos-15
-    timeout-minutes: 20
-
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
           submodules: recursive
-
-      - name: Run hermetic release hardening tests
-        run: bash scripts/tests/test_release_hardening.sh
-
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Install XcodeGen 2.44.1
+          persist-credentials: false
+      - name: Verify pinned toolchain
+        id: toolchain
         shell: bash
         run: |
+          set -euo pipefail
+          xcodebuild -version | tee build-xcode-version.txt
+          grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
+          printf 'xcode_version=%s\n' "$(shasum -a 256 build-xcode-version.txt | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Cache SwiftPM and DerivedData
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            ~/Library/Caches/org.swift.swiftpm
+          key: mactalk-spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode_version }}-${{ hashFiles('MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('project.yml', 'scripts/install_xcodegen.sh') }}
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
           XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
           echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
-          xcodegen --version
-
+          test "$(xcodegen --version | awk 'NR == 1 {print $NF}')" = "$XCODEGEN_VERSION"
+      - name: Verify semantic CI contract
+        run: bash scripts/tests/test_ci_workflow_semantics.sh
       - name: Verify reproducible project generation
         run: bash scripts/tests/test_reproducible_project_generation.sh
-
-      - name: Remove old project file
-        run: rm -rf MacTalk.xcodeproj
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Build whisper.cpp
+      - name: Generate project and reject drift
         run: |
+          set -euo pipefail
+          xcodegen generate
+          git diff --exit-code -- MacTalk.xcodeproj
+      - name: Build whisper.cpp without network/model steps
+        run: |
+          set -euo pipefail
           cd Vendor/whisper.cpp
-          mkdir -p build && cd build
+          mkdir -p build
+          cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
-          cmake --build . --config Release -j $(sysctl -n hw.ncpu)
-
-      - name: Build for Release
+          cmake --build . --config Release -j "$(sysctl -n hw.ncpu)"
+      - name: Run deterministic unit lane
+        shell: bash
         run: |
-          xcodebuild build \
-            -project MacTalk.xcodeproj \
-            -scheme MacTalk \
-            -configuration Release \
-            -destination 'platform=macOS,arch=arm64' \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            ONLY_ACTIVE_ARCH=YES
-
-      - name: Upload build log
+          set +e
+          mkdir -p build/ci
+          scripts/test-lanes.sh unit 2>&1 | tee build/ci/unit.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit "$status"
+      - name: Upload unit log
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
-          name: build-log
-          path: xcodebuild-build.log
-        continue-on-error: true
+          name: mactalk-unit-log
+          path: build/ci/unit.log
+          if-no-files-found: warn
+
+  coverage:
+    name: Deterministic coverage (blocking)
+    runs-on: macos-15
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify pinned toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version | tee build-xcode-version.txt
+          grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
+          printf 'xcode_version=%s\n' "$(shasum -a 256 build-xcode-version.txt | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Cache SwiftPM and DerivedData
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            ~/Library/Caches/org.swift.swiftpm
+          key: mactalk-spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode_version }}-${{ hashFiles('MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('project.yml', 'scripts/install_xcodegen.sh') }}
+      - name: Install pinned XcodeGen and verify project
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
+          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          bash scripts/tests/test_reproducible_project_generation.sh
+          xcodegen generate
+          git diff --exit-code -- MacTalk.xcodeproj
+      - name: Build whisper.cpp without network/model steps
+        run: |
+          set -euo pipefail
+          cd Vendor/whisper.cpp
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build . --config Release -j "$(sysctl -n hw.ncpu)"
+      - name: Run deterministic coverage lane
+        shell: bash
+        run: |
+          set +e
+          mkdir -p build/coverage
+          MACTALK_COVERAGE_DIR="$PWD/build/coverage" bash scripts/coverage.sh
+          test_status=$?
+          MACTALK_COVERAGE_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash scripts/coverage-summary.sh "$PWD/build/coverage/MacTalk.xcresult"
+          report_status=$?
+          set -e
+          if [ "$test_status" -ne 0 ]; then exit "$test_status"; fi
+          exit "$report_status"
+      - name: Upload coverage bundle, reports, and logs
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: mactalk-coverage
+          path: |
+            build/coverage/MacTalk.xcresult
+            build/coverage/xcodebuild.log
+            build/coverage/coverage.json
+            build/coverage/coverage-by-file.txt
+            build/coverage/test-results-summary.json
+          if-no-files-found: warn
+
+  tsan:
+    name: ThreadSanitizer (scheduled/manual blocking)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Select documented Xcode toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "/Applications/Xcode_${MACTALK_XCODE_VERSION}.app" ]; then
+            echo "TSAN/UNAVAILABLE: documented Xcode ${MACTALK_XCODE_VERSION} is not installed on macos-15" >&2
+            exit 1
+          fi
+          sudo xcode-select -s "/Applications/Xcode_${MACTALK_XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version | tee build-xcode-version.txt
+          grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
+      - name: Standalone clang ThreadSanitizer smoke (first)
+        run: bash scripts/tsan-smoke.sh
+      - name: Install pinned XcodeGen and generate project
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
+          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          bash scripts/tests/test_reproducible_project_generation.sh
+          xcodegen generate
+          git diff --exit-code -- MacTalk.xcodeproj
+      - name: Build whisper.cpp without network/model steps
+        run: |
+          set -euo pipefail
+          cd Vendor/whisper.cpp
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build . --config Release -j "$(sysctl -n hw.ncpu)"
+      - name: Run genuine instrumented TSan lane
+        shell: bash
+        run: |
+          set +e
+          mkdir -p build/ci
+          scripts/test-lanes.sh tsan 2>&1 | tee build/ci/tsan.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit "$status"
+      - name: Upload TSan log
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: mactalk-tsan-log
+          path: build/ci/tsan.log
+          if-no-files-found: warn
+
+  appkit:
+    name: AppKit/window manual lane (non-blocking by policy)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_appkit == true
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+        with:
+          persist-credentials: false
+      - name: Run explicit AppKit lane
+        run: scripts/test-lanes.sh appkit
 
   lint:
-    name: Swift Lint
+    name: Lint and CI static checks (blocking)
     runs-on: macos-15
-    timeout-minutes: 10
-
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
-
-      - name: Install SwiftLint
-        run: brew install swiftlint
-        continue-on-error: true
-
-      - name: Run SwiftLint
-        run: |
-          cd MacTalk/MacTalk
-          swiftlint lint --reporter github-actions-logging || true
-        continue-on-error: true
+        with:
+          persist-credentials: false
+      - name: Run blocking lint/static checks
+        run: bash scripts/ci-static-checks.sh
 
   security:
-    name: Security Scan
+    name: Security checks (blocking)
     runs-on: macos-15
     timeout-minutes: 10
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
-
-      - name: Run security audit
-        run: |
-          echo "Scanning for hardcoded secrets..."
-          cd MacTalk/MacTalk
-          ! find . -name "*.swift" -exec grep -H "password\s*=\s*\"" {} \; || echo "Warning: Found password patterns"
-          ! find . -name "*.swift" -exec grep -H "api_key\s*=\s*\"" {} \; || echo "Warning: Found API key patterns"
-          ! find . -name "*.swift" -exec grep -H "secret\s*=\s*\"" {} \; || echo "Warning: Found secret patterns"
-          echo "Security scan complete."
-        continue-on-error: true
-
-      - name: Check permissions
-        run: |
-          echo "Checking for Info.plist..."
-          if [ -f "MacTalk/MacTalk/Info.plist" ]; then
-            plutil -lint MacTalk/MacTalk/Info.plist && echo "✅ Info.plist is valid"
-          else
-            echo "Info.plist not found (may be generated during build)"
-          fi
-        continue-on-error: true
+        with:
+          persist-credentials: false
+      - name: Run blocking security checks
+        run: bash scripts/ci-security-checks.sh
 
   documentation:
-    name: Documentation Check
+    name: Documentation checks (blocking)
     runs-on: macos-15
     timeout-minutes: 10
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
-
-      - name: Check documentation
-        run: |
-          echo "Checking for required documentation files..."
-          test -f README.md && echo "✅ README.md found" || echo "❌ README.md missing"
-          test -f docs/ARCHITECTURE.md && echo "✅ ARCHITECTURE.md found" || echo "⚠️  ARCHITECTURE.md missing"
-          test -f docs/ROADMAP.md && echo "✅ ROADMAP.md found" || echo "❌ ROADMAP.md missing"
-          test -f docs/PROGRESS.md && echo "✅ PROGRESS.md found" || echo "❌ PROGRESS.md missing"
-          test -f docs/TESTING.md && echo "✅ TESTING.md found" || echo "⚠️  TESTING.md missing"
-          test -f docs/TEST_COVERAGE.md && echo "✅ TEST_COVERAGE.md found" || echo "⚠️  TEST_COVERAGE.md missing"
-          test -f docs/PROFILING.md && echo "✅ PROFILING.md found" || echo "✅ PROFILING.md found"
-          test -f docs/ACCESSIBILITY.md && echo "✅ ACCESSIBILITY.md found" || echo "✅ ACCESSIBILITY.md found"
-          test -f docs/LOCALIZATION.md && echo "✅ LOCALIZATION.md found" || echo "✅ LOCALIZATION.md found"
-          echo "Documentation check complete."
-        continue-on-error: true
-
-  notify:
-    name: Notify Results
-    runs-on: ubuntu-latest
-    needs: [lint, build, security, documentation]
-    if: always()
-
-    steps:
-      - name: Summary
-        run: |
-          echo "## MacTalk CI/CD Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Tests: Disabled (run locally)" >> $GITHUB_STEP_SUMMARY
-          echo "- Lint: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Documentation: ${{ needs.documentation.result }}" >> $GITHUB_STEP_SUMMARY
+        with:
+          persist-credentials: false
+      - name: Run blocking documentation checks
+        run: bash scripts/ci-docs-checks.sh

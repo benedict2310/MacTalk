@@ -78,7 +78,9 @@ cmp -s "$BEFORE_LOCK" "$GENERATE_ROOT/$LOCKFILE" || {
 ) > "$AFTER_SCHEME_LIST"
 if ! cmp -s "$BEFORE_SCHEME_LIST" "$AFTER_SCHEME_LIST"; then
   echo "xcodegen added or removed a tracked shared scheme" >&2
-  diff -u "$BEFORE_SCHEME_LIST" "$AFTER_SCHEME_LIST" >&2 || true
+  if ! diff -u "$BEFORE_SCHEME_LIST" "$AFTER_SCHEME_LIST" >&2; then
+    echo "scheme list differs as expected" >&2
+  fi
   exit 1
 fi
 while IFS= read -r scheme; do

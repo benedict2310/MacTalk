@@ -9,8 +9,14 @@ excluded explicitly, so a passing unit lane has zero XCTest skips.
 scripts/test-lanes.sh unit       # full deterministic suite
 scripts/test-lanes.sh repeat     # three relaunch iterations
 scripts/test-lanes.sh appkit     # window/controller tests, no TCC prompts
-scripts/coverage.sh              # xcresult + xccov report by file
+scripts/coverage.sh              # xcresult + JSON/per-file xccov reports
 ```
+
+CI uses the same explicit allowlist and never auto-selects `appkit`, `hardware`,
+`tcc`, or `real-model`. AppKit/window validation is a separate manual lane;
+hardware/TCC requires `MACTALK_HARDWARE_VALIDATION_ACK`, and real-model requires
+`MACTALK_EXISTING_MODEL_PATH`. See `docs/testing/CI.md` for the scheduled TSan
+runtime policy.
 
 The `hardware` lane is intentionally interactive and requires
 `MACTALK_HARDWARE_VALIDATION_ACK=I_HAVE_AUTHORIZED_CAPTURE`; it builds and

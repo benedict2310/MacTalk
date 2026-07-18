@@ -16,7 +16,9 @@ check_if_running() {
     if pgrep -x "${APP_NAME}" > /dev/null; then
         echo "⚠️  ${APP_NAME} is currently running"
         echo "   Killing all instances..."
-        killall "${APP_NAME}" 2>/dev/null || true
+        if ! killall "${APP_NAME}" 2>/dev/null; then
+            echo "   ${APP_NAME} exited before killall completed"
+        fi
         sleep 2
         echo "   ✅ Stopped ${APP_NAME}"
     fi

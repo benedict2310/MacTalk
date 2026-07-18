@@ -60,7 +60,7 @@ Before running tests, you need:
 ### Step 1: Open the Project
 
 ```bash
-cd MacTalk/MacTalk
+cd MacTalk
 open MacTalk.xcodeproj
 ```
 
@@ -177,7 +177,7 @@ These tests reference components that depend on whisper.cpp:
 // #include "whisper.h"
 ```
 
-**Option B**: Build whisper.cpp first (see `docs/XCODE_BUILD.md`)
+**Option B**: Build whisper.cpp first (see `docs/development/XCODE_BUILD.md`)
 
 **Option C**: Remove WhisperBridge.mm from the MacTalk target temporarily:
 1. Select WhisperBridge.mm in Project Navigator
@@ -243,7 +243,7 @@ For CI/CD pipelines (GitHub Actions, etc.):
 - name: Run tests
   run: |
     xcodebuild test \
-      -project MacTalk/MacTalk.xcodeproj \
+      -project MacTalk.xcodeproj \
       -scheme MacTalk \
       -destination 'platform=macOS' \
       -enableCodeCoverage YES

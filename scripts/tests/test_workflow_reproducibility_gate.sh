@@ -14,12 +14,11 @@ if workflow.count(required) != 1:
     raise SystemExit(f"expected exactly one reproducibility gate, found {workflow.count(required)}")
 
 gate = workflow.index(required)
-destructive = workflow.index("run: rm -rf MacTalk.xcodeproj")
-generate = workflow.index("run: xcodegen generate")
-if gate > destructive:
-    raise SystemExit("reproducibility gate must run before destructive project deletion")
+if "rm -rf MacTalk.xcodeproj" in workflow:
+    raise SystemExit("CI must not delete the tracked project before regeneration")
+generate = workflow.index("xcodegen generate")
 if gate > generate:
     raise SystemExit("reproducibility gate must run before project regeneration")
 
-print("workflow reproducibility gate is present before deletion and regeneration")
+print("workflow reproducibility gate is present before regeneration")
 PY

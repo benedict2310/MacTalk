@@ -30,7 +30,8 @@ run_xctest() {
 
 run_tsan_command() {
   MACTALK_TEST_LANE=tsan xcodebuild test -project "$PROJECT" -scheme MacTalk-TSan \
-    -destination "$DESTINATION" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "$@"
+    -destination "$DESTINATION" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+    ENABLE_THREAD_SANITIZER=YES -enableThreadSanitizer YES "$@"
 }
 
 case "${1:-unit}" in
@@ -59,31 +60,24 @@ real-model)
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_THREAD_SANITIZER=NO
   ;;
 tsan)
-  # A TSan result is valid only if the generated scheme enables instrumentation
-  # and its standalone smoke test actually launches under the Apple runtime.
+  # Run a real compiler/runtime smoke before XCTest. A TSan result is valid
+  # only when the generated scheme, test executable, and Apple runtime are all
+  # instrumented; runtime crashes are external blockers, never passes.
+  "$ROOT/scripts/tsan-smoke.sh"
   SCHEME_FILE="$PROJECT/xcshareddata/xcschemes/MacTalk-TSan.xcscheme"
   grep -q 'buildConfiguration = "DebugTSan"' "$SCHEME_FILE" && \
     grep -q 'ENABLE_THREAD_SANITIZER = YES;' "$PROJECT/project.pbxproj" || {
-    echo "TSAN/UNAVAILABLE: generated MacTalk-TSan scheme/configuration is not instrumented" >&2
-    exit 78
+    echo "TSAN/FAIL: generated MacTalk-TSan scheme/configuration is not instrumented" >&2
+    exit 1
   }
-  SMOKE_LOG="$(mktemp "${TMPDIR:-/tmp}/mactalk-tsan-smoke.XXXXXX")"
-  set +e
-  run_tsan_command -only-testing:MacTalkTests/TSanSmokeTests 2>&1 | tee "$SMOKE_LOG"
-  smoke_status=${PIPESTATUS[0]}
-  set -e
-  if [ "$smoke_status" -ne 0 ]; then
-    if grep -Eiq 'ThreadSanitizer: (CHECK FAILED|unexpected memory mapping|failed to|FATAL)|EXC_CRASH|SIGABRT|signal (segv|bus)|Early unexpected exit|before establishing connection|dyld: Library not loaded' "$SMOKE_LOG"; then
-      echo "TSAN/UNAVAILABLE: Apple Thread Sanitizer runtime crashed during standalone smoke; no instrumented pass claimed"
-      rm -f "$SMOKE_LOG"
-      exit 0
-    fi
-    echo "TSAN/FAIL: standalone instrumented smoke failed to compile or run" >&2
-    rm -f "$SMOKE_LOG"
-    exit "$smoke_status"
-  fi
-  rm -f "$SMOKE_LOG"
-  run_tsan_command "${DETERMINISTIC_ARGS[@]}"
+  TSAN_DERIVED_DATA="$TEST_HOME/DerivedData"
+  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" -only-testing:MacTalkTests/TSanSmokeTests -enableThreadSanitizer YES
+  TSAN_EXECUTABLE="$(find "$TSAN_DERIVED_DATA" -type f -path '*MacTalkTests.xctest/Contents/MacOS/MacTalkTests' -print -quit)"
+  "$ROOT/scripts/verify-tsan-runtime.sh" "$TSAN_EXECUTABLE"
+  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
+    -only-testing:MacTalkTests/ConcurrencyStressTests \
+    -only-testing:MacTalkTests/AudioMixerTests \
+    -enableThreadSanitizer YES
   ;;
 all)
   run_xctest unit

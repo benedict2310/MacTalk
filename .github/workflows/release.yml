@@ -122,7 +122,9 @@ jobs:
       - name: Remove signing keychain and certificate
         if: always()
         run: |
-          security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null || true
+          if ! security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null; then
+            echo "signing keychain was already absent"
+          fi
           rm -f "$RUNNER_TEMP/certificate.p12"
 
   notarize:
@@ -204,7 +206,9 @@ jobs:
       - name: Remove signing keychain and certificate
         if: always()
         run: |
-          security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null || true
+          if ! security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null; then
+            echo "signing keychain was already absent"
+          fi
           rm -f "$RUNNER_TEMP/certificate.p12"
 
   publish:

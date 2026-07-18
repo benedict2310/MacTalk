@@ -33,7 +33,9 @@ fail_signature() {
 # useful, deterministic unsigned-bundle check before querying credentials.
 details_for() {
     local path="$1"
-    codesign -dvvv "$path" 2>&1 || true
+    if ! codesign -dvvv "$path" 2>&1; then
+        echo "codesign metadata query failed for $path" >&2
+    fi
 }
 APP_DETAILS="$(details_for "$APP_PATH")"
 if ! grep -q '^TeamIdentifier=' <<< "$APP_DETAILS" || grep -qiE 'not signed|code object is not signed' <<< "$APP_DETAILS"; then
