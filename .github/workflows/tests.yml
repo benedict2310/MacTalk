@@ -58,8 +58,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
-          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          XCODEGEN_BIN_DIR="$(XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh)"
+          echo "$XCODEGEN_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$XCODEGEN_BIN_DIR:$PATH"
           test "$(xcodegen --version | awk 'NR == 1 {print $NF}')" = "$XCODEGEN_VERSION"
       - name: Verify semantic CI contract
         run: bash scripts/tests/test_ci_workflow_semantics.sh
@@ -131,8 +132,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
-          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          XCODEGEN_BIN_DIR="$(XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh)"
+          echo "$XCODEGEN_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$XCODEGEN_BIN_DIR:$PATH"
           bash scripts/tests/test_reproducible_project_generation.sh
           xcodegen generate
           git diff --exit-code -- MacTalk.xcodeproj
@@ -198,8 +200,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
-          echo "$RUNNER_TOOL_CACHE/xcodegen/2.44.1/bin" >> "$GITHUB_PATH"
+          XCODEGEN_BIN_DIR="$(XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh)"
+          echo "$XCODEGEN_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$XCODEGEN_BIN_DIR:$PATH"
           bash scripts/tests/test_reproducible_project_generation.sh
           xcodegen generate
           git diff --exit-code -- MacTalk.xcodeproj

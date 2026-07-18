@@ -43,6 +43,13 @@ xcode_jobs.each do |job|
   raise "#{job} job must not mutate the selected Xcode" if toolchain_runs.include?('xcode-select') || toolchain_runs.include?('sudo ')
 end
 
+%w[unit coverage tsan].each do |job|
+  install_runs = step_runs.call(job).join("\n")
+  raise "#{job} job does not capture the XcodeGen bin directory from the installer" unless install_runs.include?('XCODEGEN_BIN_DIR="$(XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh)"')
+  raise "#{job} job does not export XcodeGen onto PATH in the install step" unless install_runs.include?('export PATH="$XCODEGEN_BIN_DIR:$PATH"')
+  raise "#{job} job does not publish XcodeGen via GITHUB_PATH" unless install_runs.include?('echo "$XCODEGEN_BIN_DIR" >> "$GITHUB_PATH"')
+end
+
 unit_runs = step_runs.call('unit').join("\n")
 raise 'unit lane is not the blocking deterministic test command' unless unit_runs.include?('scripts/test-lanes.sh unit')
 raise 'unit lane does not verify reproducible generation' unless unit_runs.include?('test_reproducible_project_generation.sh')
