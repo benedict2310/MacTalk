@@ -4,11 +4,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/tests.yml"
-exec ruby - "$WORKFLOW" <<'RUBY'
+RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
+exec ruby - "$WORKFLOW" "$RELEASE_WORKFLOW" <<'RUBY'
 require 'yaml'
 require 'set'
 
 path = ARGV.fetch(0)
+release_path = ARGV.fetch(1)
 workflow = YAML.load_file(path)
 raise 'workflow must be a mapping' unless workflow.is_a?(Hash)
 jobs = workflow.fetch('jobs')
@@ -26,6 +28,7 @@ end
 xcode_jobs = %w[unit coverage tsan appkit]
 expected_developer_dir = '/Applications/Xcode_26.0.1.app/Contents/Developer'
 workflow_env = workflow.fetch('env')
+raise 'workflow must set MACTALK_XCODE_VERSION to the exact string 26.0' unless workflow_env['MACTALK_XCODE_VERSION'].is_a?(String) && workflow_env['MACTALK_XCODE_VERSION'] == '26.0'
 raise 'workflow must select the concrete Xcode 26.0.1 developer directory' unless workflow_env['DEVELOPER_DIR'] == expected_developer_dir
 xcode_jobs.each do |job|
   raise "#{job} job must run on macos-26" unless jobs.fetch(job)['runs-on'] == 'macos-26'
@@ -42,6 +45,22 @@ xcode_jobs.each do |job|
   raise "#{job} job does not enforce the pinned Xcode major-minor" unless toolchain_runs.include?('grep -F "Xcode ${MACTALK_XCODE_VERSION}"')
   raise "#{job} job must not mutate the selected Xcode" if toolchain_runs.include?('xcode-select') || toolchain_runs.include?('sudo ')
 end
+
+release_workflow = YAML.load_file(release_path)
+release_jobs = release_workflow.fetch('jobs')
+release_build = release_jobs.fetch('build')
+raise 'release build job must run on macos-26' unless release_build['runs-on'] == 'macos-26'
+release_preflight_env = release_jobs.fetch('preflight')['env'] || {}
+raise 'release preflight must not inherit the Xcode developer directory' if release_preflight_env.key?('DEVELOPER_DIR')
+release_env = release_build.fetch('env')
+raise 'release build must set MACTALK_XCODE_VERSION to the exact string 26.0' unless release_env['MACTALK_XCODE_VERSION'].is_a?(String) && release_env['MACTALK_XCODE_VERSION'] == '26.0'
+raise 'release build must select the concrete Xcode 26.0.1 developer directory' unless release_env['DEVELOPER_DIR'] == expected_developer_dir
+release_steps = Array(release_build.fetch('steps'))
+release_runs = release_steps.map { |step| step['run'] if step.is_a?(Hash) }.compact.join("\n")
+raise 'release build does not fail closed when the pinned Xcode is absent' unless release_runs.include?('test -d "$DEVELOPER_DIR"')
+raise 'release build does not verify xcodebuild version' unless release_runs.include?('xcodebuild -version')
+raise 'release build does not enforce the pinned Xcode major-minor' unless release_runs.include?('grep -F "Xcode ${MACTALK_XCODE_VERSION}"')
+raise 'release build must not mutate the selected Xcode' if release_runs.include?('xcode-select') || release_runs.include?('sudo ')
 
 %w[unit coverage tsan].each do |job|
   install_runs = step_runs.call(job).join("\n")
