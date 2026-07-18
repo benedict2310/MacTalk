@@ -1,6 +1,6 @@
 import Foundation
 
-struct ModelSpec: Codable, Identifiable, Hashable {
+struct ModelSpec: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var provider: ASRProvider { .whisper }
     let displayName: String

@@ -41,8 +41,32 @@ enum ScreenCaptureError: Error, LocalizedError {
 final class StatusBarController {
     // Create status item lazily to ensure proper registration on macOS 26 (Tahoe)
     private var statusItem: NSStatusItem!
-    private var engine: (any ASREngine)?
-    private let engineReloadCoordinator = EngineReloadCoordinator(loader: DefaultEngineSelectionLoader())
+    /// Compatibility accessors for the recording adapter. Storage and identity
+    /// live exclusively in EngineLifecycleCoordinator.
+    private var engine: (any ASREngine)? {
+        get { engineLifecycleCoordinator.loadedEngine }
+        set {
+            guard let newValue else {
+                engineLifecycleCoordinator.clearLoadedEngine()
+                return
+            }
+            let selection = engineSelection(for: AppSettings.shared.snapshot)
+            engineLifecycleCoordinator.adoptLoadedEngine(newValue, selection: selection ?? EngineSelection(provider: newValue.provider, modelID: "active", revision: "active"))
+        }
+    }
+    private let engineLifecycleCoordinator = EngineLifecycleCoordinator(
+        loader: DefaultEngineSelectionLoader(),
+        availability: { selection in
+            switch selection.provider {
+            case .whisper:
+                guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
+                return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
+            case .parakeet:
+                return ParakeetModelDownloader.modelsAvailable()
+            }
+        }
+    )
+    private let modelDownloadCoordinator = ModelDownloadCoordinator(client: ProductionModelDownloadClient())
     private var transcriber: TranscriptionController?
     private var hudController: HUDWindowController?
     private var settingsController: SettingsWindowController?
@@ -73,7 +97,18 @@ final class StatusBarController {
     private var progressItem: NSMenuItem?
     private var parakeetMenuItem: NSMenuItem?
     private var whisperModelItems: [NSMenuItem] = []
-    private var parakeetEngine: ParakeetEngine?
+    /// Lazy Parakeet access remains a view of the lifecycle coordinator, not a
+    /// second engine cache.
+    private var parakeetEngine: ParakeetEngine? {
+        get { engineLifecycleCoordinator.loadedEngine as? ParakeetEngine }
+        set {
+            if let newValue {
+                engineLifecycleCoordinator.adoptLoadedEngine(newValue, selection: .parakeet)
+            } else if engineLifecycleCoordinator.loadedSelection?.provider == .parakeet {
+                engineLifecycleCoordinator.clearLoadedEngine()
+            }
+        }
+    }
     private var isParakeetPreparationInFlight = false
     private var pendingParakeetStartRetry = false
     private var pendingParakeetStartGeneration: Int?
@@ -176,20 +211,6 @@ final class StatusBarController {
             ) { [weak self] _ in
                 Task { @MainActor in
                     self?.permissionsDidChange()
-                }
-            }
-        )
-
-        // Listen for Parakeet download updates
-        notificationTokens.append(
-            NotificationCenter.default.addObserver(
-                forName: .parakeetDownloadStateDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let state = notification.object as? ParakeetModelDownloader.State else { return }
-                Task { @MainActor in
-                    self?.handleParakeetDownloadState(state)
                 }
             }
         )
@@ -362,9 +383,10 @@ final class StatusBarController {
             self?.stopRecording()
         }
 
-        // Bind download progress updates
-        ModelManager.shared.onDownloadState = { [weak self] state in
-            self?.handleDownloadState(state)
+        // Download state is normalized and tagged by the coordinator. The
+        // controller only renders its value state and presents any alert.
+        modelDownloadCoordinator.onStateChanged = { [weak self] state in
+            self?.handleModelDownloadState(state)
         }
 
         // Load default model (async to avoid blocking menu bar icon)
@@ -534,14 +556,13 @@ final class StatusBarController {
                     guard let self = self else { return }
                     if approved {
                         AppSettings.shared.provider = .parakeet
-                        Task { [weak self] in
+                        let requestID = UUID()
+                        Task { @MainActor [weak self] in
                             guard let self else { return }
                             do {
-                                try await ParakeetBootstrap.shared.downloadModels()
+                                try await modelDownloadCoordinator.download(.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision), requestID: requestID)
                             } catch {
-                                await MainActor.run {
-                                    self.showError("Parakeet download failed: \(error.localizedDescription)")
-                                }
+                                showError("Parakeet download failed: \(error.localizedDescription)")
                             }
                         }
                     } else {
@@ -640,40 +661,25 @@ final class StatusBarController {
     }
 
     private func prepareWhisperModelWithAutoDownload(spec: ModelSpec) {
-        // Cached files are untrusted input too. Validate before loading the
-        // native whisper.cpp model; a corrupt cache must not be used.
-        if ModelStore.exists(spec) {
-            let url = ModelStore.path(for: spec)
-            Task { [weak self] in
-                let isValid = await Task.detached(priority: .utility) {
-                    (try? ModelIntegrityVerifier.validate(source: url, spec: spec)) != nil
-                }.value
-                guard let self else { return }
-                if isValid {
-                    guard self.provider == .whisper else { return }
-                    if let loadedEngine = NativeWhisperEngine(modelSpec: spec, modelURL: url) {
-                        self.adoptLoadedEngine(
-                            loadedEngine,
-                            selection: .whisper(spec)
-                        )
-                    }
-                    self.setStartItemsEnabled(true)
-                } else {
-                    // Missing/malformed catalog metadata is an external
-                    // release blocker, not evidence that the user's cache is
-                    // corrupt. Never delete an unverifiable file solely due
-                    // to absent provenance.
-                    if ModelIntegrityVerifier.isValidDigest(spec.sha256) {
-                        try? FileManager.default.removeItem(at: url)
-                    }
-                    self.showError("Model integrity metadata is unavailable; this model cannot be loaded safely.")
-                }
-            }
+        let selection = EngineSelection.whisper(spec)
+        guard isEngineAvailableLocally(selection) else {
+            showDownloadConfirmationDialog(spec: spec)
             return
         }
 
-        // Model doesn't exist - ask user if they want to download
-        showDownloadConfirmationDialog(spec: spec)
+        let requestID = UUID()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let resolution = await engineLifecycleCoordinator.resolve(selection, requestID: requestID)
+            guard provider == .whisper else { return }
+            if case let .ready(loadedEngine) = resolution {
+                adoptLoadedEngine(loadedEngine, selection: selection)
+                setStartItemsEnabled(true)
+            } else if case let .failed(message) = resolution {
+                setStartItemsEnabled(true)
+                showError("Failed to load the selected engine: \(message)")
+            }
+        }
     }
 
     private func showDownloadConfirmationDialog(spec: ModelSpec) {
@@ -708,83 +714,44 @@ final class StatusBarController {
     }
 
     private func startModelDownload(spec: ModelSpec) {
-        ModelManager.shared.ensureAvailable(spec) { [weak self] result in
-            self?.setStartItemsEnabled(true)
-            switch result {
-            case .success(let url):
-                if self?.provider == .whisper, let loadedEngine = NativeWhisperEngine(modelSpec: spec, modelURL: url) {
-                    self?.adoptLoadedEngine(
-                        loadedEngine,
-                        selection: .whisper(spec)
-                    )
+        let requestID = UUID()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await modelDownloadCoordinator.download(.whisper(spec), requestID: requestID)
+                let resolution = await engineLifecycleCoordinator.resolve(.whisper(spec), requestID: requestID)
+                if case let .ready(loadedEngine) = resolution {
+                    adoptLoadedEngine(loadedEngine, selection: .whisper(spec))
                 }
-            case .failure(let error):
-                self?.progressItem?.title = "Model error: \(error.localizedDescription)"
-                self?.progressItem?.isHidden = false
-                self?.showError("Failed to load model: \(error.localizedDescription)")
+                setStartItemsEnabled(true)
+            } catch {
+                setStartItemsEnabled(true)
+                showError("Failed to load model: \(error.localizedDescription)")
             }
         }
     }
 
-    private func handleDownloadState(_ state: ModelDownloader.State) {
-        guard provider == .whisper else { return }
-        switch state {
-        case .running(let progress):
-            progressItem?.title = String(format: "Downloading model… %.0f%%", progress * 100)
+    private func handleModelDownloadState(_ state: ModelDownloadViewState) {
+        let parakeet = if case .parakeet = state.requirement { true } else { false }
+        switch state.phase {
+        case let .downloading(fraction, index, count):
+            if parakeet, let index, let count {
+                progressItem?.title = String(format: "Downloading Parakeet… %.0f%% (%d/%d)", fraction * 100, index, count)
+            } else {
+                progressItem?.title = String(format: "Downloading model… %.0f%%", fraction * 100)
+            }
             progressItem?.isHidden = false
         case .verifying:
-            progressItem?.title = "Verifying model…"
+            progressItem?.title = parakeet ? "Verifying Parakeet…" : "Verifying model…"
             progressItem?.isHidden = false
-        case .failed(let error):
-            progressItem?.title = "Download failed: \(error.localizedDescription)"
+        case .failed(let message):
+            progressItem?.title = parakeet ? "Parakeet download failed: \(message)" : "Download failed: \(message)"
             progressItem?.isHidden = false
-            // Auto-hide error after 5 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-                self?.progressItem?.isHidden = true
-            }
-        case .done:
-            progressItem?.title = "Model ready ✓"
+        case .ready:
+            progressItem?.title = parakeet ? "Parakeet ready ✓" : "Model ready ✓"
             progressItem?.isHidden = false
-            // Auto-hide success message after 2 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.progressItem?.isHidden = true
-            }
-        default:
+        case .idle:
             progressItem?.isHidden = true
-        }
-    }
-
-    private func handleParakeetDownloadState(_ state: ParakeetModelDownloader.State) {
-        switch state {
-        case .running(let progress, let index, let count, _):
-            progressItem?.title = String(
-                format: "Downloading Parakeet… %.0f%% (%d/%d)", progress * 100, index, count
-            )
-            progressItem?.isHidden = false
-            setStartItemsEnabled(false)
-        case .verifying:
-            progressItem?.title = "Verifying Parakeet…"
-            progressItem?.isHidden = false
-        case .failed(let error):
-            progressItem?.title = "Parakeet download failed: \(error.localizedDescription)"
-            progressItem?.isHidden = false
-            setStartItemsEnabled(true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-                self?.progressItem?.isHidden = true
-            }
-        case .done:
-            progressItem?.title = "Parakeet ready ✓"
-            progressItem?.isHidden = false
-            setStartItemsEnabled(true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.progressItem?.isHidden = true
-            }
-            Task { [weak self] in
-                guard let self, self.provider == .parakeet else { return }
-                await self.prepareParakeetEngine()
-            }
-        default:
-            break
         }
     }
 
@@ -830,8 +797,8 @@ final class StatusBarController {
     private func isEngineAvailableLocally(_ selection: EngineSelection) -> Bool {
         switch selection.provider {
         case .whisper:
-            guard let spec = ModelCatalog.findById(selection.modelID) else { return false }
-            return ModelStore.exists(spec)
+            guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
+            return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
         case .parakeet:
             return ParakeetModelDownloader.modelsAvailable()
         }
@@ -840,7 +807,7 @@ final class StatusBarController {
     private func adoptLoadedEngine(_ engine: any ASREngine, selection: EngineSelection?) {
         self.engine = engine
         if let selection {
-            engineReloadCoordinator.adoptLoadedEngine(engine, selection: selection)
+            engineLifecycleCoordinator.adoptLoadedEngine(engine, selection: selection)
         }
     }
 
@@ -931,7 +898,7 @@ final class StatusBarController {
 
         provider = newProvider
         engine = nil
-        engineReloadCoordinator.clearLoadedEngine()
+        engineLifecycleCoordinator.clearLoadedEngine()
         if newProvider == .whisper {
             parakeetEngine = nil
         }
@@ -1148,7 +1115,7 @@ final class StatusBarController {
         // Provider-only checks are insufficient when the selected Whisper model
         // changes. Availability is checked locally; this path never downloads.
         if let pendingSelection = engineSelection(for: settingsSnapshot),
-           engineReloadCoordinator.loadedSelection != pendingSelection || engineReloadCoordinator.loadedEngine == nil {
+           engineLifecycleCoordinator.loadedSelection != pendingSelection || engineLifecycleCoordinator.loadedEngine == nil {
             if isEngineAvailableLocally(pendingSelection) {
                 isStartInFlight = true
                 startGeneration += 1
@@ -1156,7 +1123,7 @@ final class StatusBarController {
                 Task { [weak self] in
                     guard let self else { return }
                     do {
-                        let loaded = try await self.engineReloadCoordinator.reconcile(
+                        let loaded = try await self.engineLifecycleCoordinator.reconcile(
                             pending: PendingSettingsSnapshot(engine: pendingSelection),
                             isRecording: false
                         )
@@ -1177,7 +1144,7 @@ final class StatusBarController {
                 return
             } else if pendingSelection.provider == .whisper {
                 engine = nil
-                engineReloadCoordinator.clearLoadedEngine()
+                engineLifecycleCoordinator.clearLoadedEngine()
                 pendingSettingsLatch.clear()
                 pendingStartMode = nil
                 showError("The selected Whisper model is not available locally.")
@@ -1205,7 +1172,7 @@ final class StatusBarController {
         if preparationDecision.clearMismatchedEngine, let engine {
             NSLog("⚠️ [StatusBar] Engine/provider mismatch (\(engine.provider) vs \(provider)) - clearing")
             self.engine = nil
-            engineReloadCoordinator.clearLoadedEngine()
+            engineLifecycleCoordinator.clearLoadedEngine()
         }
 
         switch preparationDecision.action {
@@ -1213,19 +1180,16 @@ final class StatusBarController {
             showParakeetDownloadConfirmation { [weak self] approved in
                 guard let self = self else { return }
                 if approved {
-                    Task { [weak self] in
+                    let requestID = UUID()
+                    Task { @MainActor [weak self] in
                         guard let self else { return }
                         do {
-                            try await ParakeetBootstrap.shared.downloadModels()
-                            await MainActor.run {
-                                self.startRecording(allowParakeetPrepare: false)
-                            }
+                            try await modelDownloadCoordinator.download(.parakeet(modelID: EngineSelection.parakeet.modelID, revision: EngineSelection.parakeet.revision), requestID: requestID)
+                            startRecording(allowParakeetPrepare: false)
                         } catch {
-                            await MainActor.run {
-                                self.pendingSettingsLatch.clear()
-                                self.pendingStartMode = nil
-                                self.showError("Parakeet download failed: \(error.localizedDescription)")
-                            }
+                            pendingSettingsLatch.clear()
+                            pendingStartMode = nil
+                            showError("Parakeet download failed: \(error.localizedDescription)")
                         }
                     }
                 } else {
@@ -1644,7 +1608,7 @@ final class StatusBarController {
         selectedModel = ModelCatalog.findById(settingsSnapshot.whisperModelID)
         if engine?.provider != provider {
             engine = nil
-            engineReloadCoordinator.clearLoadedEngine()
+            engineLifecycleCoordinator.clearLoadedEngine()
         }
         updateProviderMenuState()
     }

@@ -1,22 +1,19 @@
 import Foundation
 
-/// Stable identity for the engine loaded by the app.
-///
-/// The revision is deliberately separate from the model ID: a catalog entry can
-/// point at a new artifact without changing its display name.
+/// Stable provider/model/revision identity for one loaded engine.
 struct EngineSelection: Equatable, Sendable {
     let provider: ASRProvider
     let modelID: String
     let revision: String
 
     static func whisper(_ spec: ModelSpec) -> EngineSelection {
-        return EngineSelection(provider: .whisper, modelID: spec.id, revision: spec.sha256)
+        EngineSelection(provider: .whisper, modelID: spec.id, revision: spec.sha256)
     }
 
     static let parakeet = EngineSelection(
         provider: .parakeet,
         modelID: "parakeet-tdt-0.6b-v3",
-        revision: "v3"
+        revision: "aed02740059203c4a87495924f685de3722ae9ce"
     )
 }
 
@@ -24,46 +21,44 @@ struct PendingSettingsSnapshot: Equatable, Sendable {
     let engine: EngineSelection
 }
 
-protocol EngineSelectionLoader: Sendable {
-    func load(selection: EngineSelection) async throws -> any ASREngine
-}
+/// Compatibility name for clients that have not yet moved to
+/// EngineLifecycleCoordinator. It is an alias, not a second cache or owner.
+typealias EngineReloadCoordinator = EngineLifecycleCoordinator
 
-/// Reconciles the selected engine only at recording-session boundaries.
-/// Settings edits never replace the engine owned by an active recording.
 @MainActor
-final class EngineReloadCoordinator {
-    private(set) var loadedSelection: EngineSelection?
-    private(set) var loadedEngine: (any ASREngine)?
-    private let loader: any EngineSelectionLoader
+extension EngineLifecycleCoordinator {
+    var loadedSelection: EngineSelection? {
+        guard case let .ready(selection, _) = state else { return nil }
+        return selection
+    }
 
-    init(loader: any EngineSelectionLoader) {
-        self.loader = loader
+    var loadedEngine: (any ASREngine)? {
+        guard case let .ready(_, engine) = state else { return nil }
+        return engine
     }
 
     func reconcile(
         pending: PendingSettingsSnapshot,
         isRecording: Bool
     ) async throws -> any ASREngine {
-        if isRecording, let loadedEngine {
-            return loadedEngine
+        if isRecording, let loadedEngine { return loadedEngine }
+        let requestID = UUID()
+        switch await resolve(pending.engine, requestID: requestID) {
+        case let .ready(engine): return engine
+        case .requiresDownload:
+            throw NSError(domain: "MacTalk.EngineSelection", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "The selected model is not available locally."
+            ])
+        case let .failed(message):
+            throw NSError(domain: "MacTalk.EngineSelection", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: message
+            ])
         }
-        if loadedSelection == pending.engine, let loadedEngine {
-            return loadedEngine
-        }
-
-        let engine = try await loader.load(selection: pending.engine)
-        loadedSelection = pending.engine
-        loadedEngine = engine
-        return engine
     }
 
     func adoptLoadedEngine(_ engine: any ASREngine, selection: EngineSelection) {
-        loadedSelection = selection
-        loadedEngine = engine
+        state = .ready(selection: selection, engine: engine)
     }
 
-    func clearLoadedEngine() {
-        loadedSelection = nil
-        loadedEngine = nil
-    }
+    func clearLoadedEngine() { clear() }
 }

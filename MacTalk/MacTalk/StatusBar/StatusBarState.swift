@@ -67,7 +67,7 @@ struct OutputResult: Equatable, Sendable {
     let permissionEffect: PermissionEffect?
 }
 
-enum ModelRequirement: Equatable {
+enum ModelRequirement: Equatable, Sendable {
     case whisper(ModelSpec)
     case parakeet(modelID: String, revision: String)
 }
