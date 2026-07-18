@@ -5,37 +5,7 @@
 //  Menu bar controller for MacTalk application
 //
 
-// swiftlint:disable file_length type_body_length
-
 import AppKit
-@preconcurrency import ScreenCaptureKit
-
-/// Errors that can occur during screen capture operations
-enum ScreenCaptureError: Error, LocalizedError {
-    case timeout
-    case permissionDenied
-    case noSourcesAvailable
-
-    var errorDescription: String? {
-        switch self {
-        case .timeout:
-            return """
-            Screen capture system is not responding.
-
-            This is a known macOS bug. Try:
-            1. Run: killall -9 replayd
-            2. Log out and back in
-            3. Restart your Mac
-
-            The 'replayd' daemon handles screen recording and can become unresponsive.
-            """
-        case .permissionDenied:
-            return "Screen Recording permission is not granted."
-        case .noSourcesAvailable:
-            return "No audio sources are available for capture."
-        }
-    }
-}
 
 @MainActor
 final class StatusBarController {
@@ -78,6 +48,8 @@ final class StatusBarController {
     private let dependencies: StatusBarDependencies
     private let permissionFlowCoordinator: PermissionFlowCoordinator
     private let outputCoordinator: OutputCoordinator
+    private let appAudioSourceCoordinator: AppAudioSourceCoordinator
+    private let shortcutCoordinator: ShortcutCoordinator
     private lazy var recordingSessionCoordinator: RecordingSessionCoordinator = {
         let coordinator = RecordingSessionCoordinator(
             permission: permissionFlowCoordinator,
@@ -85,7 +57,8 @@ final class StatusBarController {
             download: modelDownloadCoordinator,
             sessions: ProductionTranscriptionSessionFactory(),
             output: outputCoordinator,
-            settingsSnapshot: { AppSettings.shared.snapshot }
+            settingsSnapshot: { AppSettings.shared.snapshot },
+            audioSources: appAudioSourceCoordinator
         )
         coordinator.onEvent = { [weak self] event in
             self?.handleRecordingSessionEvent(event)
@@ -137,10 +110,6 @@ final class StatusBarController {
     private var activeDownloadRequirement: ModelRequirement?
     private var selectedEngineSelection: EngineSelection?
 
-    // Hotkeys
-    private let hotkeyManager = HotkeyManager()
-    private var registeredHotkeyIDs: [String: UInt32] = [:]
-
     // Menu items for shortcut display
     private var micOnlyMenuItem: NSMenuItem?
     private var micPlusAppMenuItem: NSMenuItem?
@@ -168,6 +137,14 @@ final class StatusBarController {
             notifications: resolvedDependencies.notificationSubmitter,
             permissionFlow: permissionCoordinator
         )
+        self.appAudioSourceCoordinator = AppAudioSourceCoordinator(client: resolvedDependencies.shareableContentClient)
+        self.shortcutCoordinator = ShortcutCoordinator(
+            registrar: resolvedDependencies.hotkeyRegistrar,
+            reader: UserDefaultsShortcutConfigurationReader()
+        )
+        self.shortcutCoordinator.onIntent = { [weak self] intent in
+            self?.handle(intent)
+        }
         DLOG("=== StatusBarController.init() START ===")
         NSLog("🔧 [MacTalk] StatusBarController.init() called")
 
@@ -301,8 +278,9 @@ final class StatusBarController {
         setupMenu()
         NSLog("🔧 [MacTalk] setupMenu() completed")
 
-        // Register global shortcuts
-        registerShortcuts()
+        // Register global shortcuts through the typed shortcut coordinator.
+        shortcutCoordinator.reload()
+        updateMenuShortcuts()
         NSLog("🔧 [MacTalk] Shortcuts registered")
 
         NSLog("✅ [MacTalk] Status bar setup complete. Button frame: %@", NSStringFromRect(button.frame))
@@ -440,8 +418,8 @@ final class StatusBarController {
                     appPickerController = nil
                 }
             }
-        case let .requestAudioSource(requestID):
-            showAppPicker(requestID: requestID)
+        case let .requestAudioSource(requestID, sources):
+            showAppPicker(requestID: requestID, sources: sources)
         case let .confirmDownload(requestID, requirement):
             guard case let .whisper(spec) = requirement else {
                 showParakeetDownloadConfirmation { [weak self] approved in
@@ -475,15 +453,25 @@ final class StatusBarController {
         }
     }
 
-    @objc private func startMicOnly() {
-        mode = .micOnly
-        recordingSessionCoordinator.requestStart(mode: .micOnly)
-    }
+    @objc private func startMicOnly() { handle(.startMicOnly) }
 
-    @objc private func startMicPlusApp() {
-        NSLog("🎙️ [StatusBar] Starting Mic + App Audio mode...")
-        mode = .micPlusAppAudio
-        recordingSessionCoordinator.requestStart(mode: .micPlusAppAudio)
+    @objc private func startMicPlusApp() { handle(.startMicPlusAppAudio) }
+
+    private func handle(_ intent: StatusBarIntent) {
+        switch intent {
+        case .startMicOnly:
+            mode = .micOnly
+            recordingSessionCoordinator.requestStart(mode: .micOnly)
+        case .startMicPlusAppAudio:
+            mode = .micPlusAppAudio
+            recordingSessionCoordinator.requestStart(mode: .micPlusAppAudio)
+        case .stop:
+            recordingSessionCoordinator.stop()
+        case .toggleAutoPaste:
+            break
+        case .showSettings, .showAbout, .quit:
+            break
+        }
     }
 
     @objc private func stopRecording() {
@@ -979,14 +967,6 @@ final class StatusBarController {
         }
     }
 
-    private func resumeRecordingAfterProviderSwitch() {
-        if mode == .micPlusAppAudio && selectedAudioSource == nil {
-            showAppPicker()
-        } else {
-            startRecording()
-        }
-    }
-
     private func setupTranscriptionCallbacks(_ controller: TranscriptionController) {
         controller.onPartial = { [weak self] text in
             // Route partial text to HUD for live streaming display
@@ -1471,6 +1451,8 @@ final class StatusBarController {
 
     func cleanup() {
         recordingSessionCoordinator.cleanup()
+        appAudioSourceCoordinator.cleanup()
+        shortcutCoordinator.cleanup()
         engineLifecycleCoordinator.clear()
         hudController?.close()
     }
@@ -1478,26 +1460,18 @@ final class StatusBarController {
     // MARK: - Menu Shortcut Display
 
     private func updateMenuShortcuts() {
-        let defaults = UserDefaults.standard
-
-        // Update Mic-Only shortcut
-        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcut)
-        }
-
-        // Update Mic + App Audio shortcut
-        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcut)
-        }
+        updateMenuItemShortcut(micOnlyMenuItem, shortcut: shortcutCoordinator.configuration.micOnly)
+        updateMenuItemShortcut(micPlusAppMenuItem, shortcut: shortcutCoordinator.configuration.micPlusAppAudio)
     }
 
-    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut) {
-        guard let menuItem = menuItem else { return }
-
-        // Get the base title without any previous shortcut
+    private func updateMenuItemShortcut(_ menuItem: NSMenuItem?, shortcut: KeyboardShortcut?) {
+        guard let menuItem else { return }
         let baseTitle = menuItem.title.components(separatedBy: "\t").first ?? menuItem.title
+        guard let shortcut else {
+            menuItem.title = baseTitle
+            menuItem.attributedTitle = nil
+            return
+        }
 
         // Create attributed string with tab-separated shortcut
         let paragraphStyle = NSMutableParagraphStyle()
@@ -1526,115 +1500,38 @@ final class StatusBarController {
 
     // MARK: - App Picker
 
-    private func showAppPicker(requestID: UUID? = nil) {
-        // Coordinator-owned picker requests may only be presented while the
-        // matching request is still waiting for a source. The legacy path is
-        // intentionally left intact until the Stage 5 removal.
-        if let requestID {
-            guard isCurrentAudioSourceRequest(requestID) else { return }
+    private func showAppPicker(
+        requestID: UUID,
+        sources: [AppPickerWindowController.AudioSource]
+    ) {
+        guard isCurrentAudioSourceRequest(requestID) else { return }
+        NSLog("🎬 [StatusBar] showAppPicker() - presenting preloaded audio sources...")
+
+        guard !sources.isEmpty else {
+            recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+            showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
+            return
         }
 
-        NSLog("🎬 [StatusBar] showAppPicker() - starting to load audio sources...")
-
-        // Pattern 1: Preload → Inject → Then show
-        // Load data FIRST, then create window controller with data
-        Task { @MainActor in
-            do {
-                let sources = try await loadAudioSources()
-
-                if let requestID {
-                    // Stop can win while ScreenCaptureKit is suspended. Never
-                    // present a picker or touch picker state for that stale
-                    // completion.
-                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                    guard !sources.isEmpty else {
-                        NSLog("⚠️ [StatusBar] No audio sources available")
-                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-                        self.showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
-                        return
-                    }
-                } else if sources.isEmpty {
-                    NSLog("⚠️ [StatusBar] No audio sources available")
-                    abandonPendingStart()
-                    showError("No audio sources found.\n\nMake sure Screen Recording permission is granted.")
-                    return
-                }
-
-                NSLog("✅ [StatusBar] Loaded \(sources.count) audio sources - creating window controller...")
-
-                // Now create window controller WITH data already available
-                let picker = AppPickerWindowController(sources: sources)
-                self.appPickerController = picker
-
-                picker.onSelection = { [weak self] source in
-                    NSLog("✅ [StatusBar] Audio source selected: \(source.name)")
-                    guard let self else { return }
-                    if let requestID {
-                        // A stale callback must not adopt a source or release a
-                        // picker belonging to a newer request.
-                        guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                        self.selectedAudioSource = source
-                        self.appPickerController = nil
-                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: source)
-                    } else {
-                        self.selectedAudioSource = source
-                        self.appPickerController = nil
-                        self.startRecording()
-                    }
-                }
-                picker.onCancel = { [weak self] in
-                    guard let self else { return }
-                    self.appPickerController = nil
-                    if let requestID {
-                        // Empty, failed, revoked, and user-cancelled picker
-                        // requests all use the coordinator cancellation path.
-                        self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-                    } else {
-                        self.abandonPendingStart()
-                    }
-                }
-
-                if let requestID {
-                    // Check again after constructing the window, before any
-                    // visible state or activation is changed.
-                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                }
-
-                // Force window load synchronously BEFORE showing
-                _ = picker.window
-                NSLog("🎬 [StatusBar] Window loaded - now showing...")
-
-                if let requestID {
-                    // Window loading itself can yield to Stop on future AppKit
-                    // implementations. Do not show a stale request.
-                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                }
-
-                // Now show the window (data is already loaded and injected)
-                picker.showWindow(nil)
-                NSApp.activate(ignoringOtherApps: true)
-                NSLog("✅ [StatusBar] App picker window shown successfully")
-
-            } catch let error as ScreenCaptureError {
-                NSLog("❌ [StatusBar] Screen capture error: \(error)")
-                if let requestID {
-                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                    self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-                } else {
-                    abandonPendingStart()
-                }
-                showError(error.localizedDescription ?? "Unknown screen capture error")
-            } catch {
-                NSLog("❌ [StatusBar] Failed to load audio sources: \(error)")
-                if let requestID {
-                    guard self.isCurrentAudioSourceRequest(requestID) else { return }
-                    self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
-                } else {
-                    abandonPendingStart()
-                }
-                showError("Failed to load audio sources.\n\nError: \(error.localizedDescription)")
-            }
+        let picker = AppPickerWindowController(sources: sources)
+        appPickerController = picker
+        picker.onSelection = { [weak self] source in
+            guard let self, self.isCurrentAudioSourceRequest(requestID) else { return }
+            self.appPickerController = nil
+            self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: source)
         }
+        picker.onCancel = { [weak self] in
+            guard let self else { return }
+            self.appPickerController = nil
+            self.recordingSessionCoordinator.provideAudioSource(requestID: requestID, source: nil)
+        }
+
+        // Re-check request ownership after constructing the retained window.
+        guard isCurrentAudioSourceRequest(requestID) else { return }
+        _ = picker.window
+        picker.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        NSLog("✅ [StatusBar] App picker window shown successfully")
     }
 
     private func isCurrentAudioSourceRequest(_ requestID: UUID) -> Bool {
@@ -1644,110 +1541,10 @@ final class StatusBarController {
         return true
     }
 
-    private func loadAudioSources() async throws -> [AppPickerWindowController.AudioSource] {
-        NSLog("🔍 [StatusBar] loadAudioSources() - checking screen recording permission...")
-
-        // Check screen recording permission first (synchronous, reliable)
-        let hasPermission = Permissions.checkScreenRecordingPermission()
-        NSLog("🔍 [StatusBar] Screen recording permission: \(hasPermission)")
-
-        guard hasPermission else {
-            NSLog("❌ [StatusBar] Screen recording permission NOT granted")
-            // The caller owns cancellation so coordinator-driven requests can
-            // invalidate exactly their request instead of abandoning unrelated
-            // legacy preparation state.
-            throw ScreenCaptureError.permissionDenied
-        }
-
-        NSLog("🔍 [StatusBar] Fetching shareable content with timeout protection...")
-
-        // Wrap SCShareableContent with timeout protection to prevent infinite hangs
-        let content: SCShareableContent
-        do {
-            content = try await withTimeout(seconds: 5) {
-                try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: true
-                )
-            }
-            NSLog("✅ [StatusBar] Successfully fetched shareable content")
-            NSLog("🔍 [StatusBar] Found \(content.displays.count) displays, \(content.applications.count) applications, \(content.windows.count) windows")
-        } catch is TimeoutError {
-            NSLog("⏱️ [StatusBar] SCShareableContent timed out after 5 seconds")
-            throw ScreenCaptureError.timeout
-        }
-
-        var sources: [AppPickerWindowController.AudioSource] = []
-
-        // Add system audio option
-        if let display = content.displays.first {
-            NSLog("🔍 [StatusBar] Adding system audio source for display: \(display.displayID)")
-            sources.append(.systemAudio(display: display))
-        }
-
-        // Add running applications with windows
-        for app in content.applications {
-            let hasWindow = content.windows.contains(where: { $0.owningApplication == app })
-            if hasWindow {
-                NSLog("🔍 [StatusBar] Adding app: \(app.applicationName)")
-                sources.append(.fromApp(app))
-            }
-        }
-
-        NSLog("✅ [StatusBar] Total audio sources found: \(sources.count)")
-
-        // Sort alphabetically
-        sources.sort { $0.name < $1.name }
-
-        return sources
-    }
-
     // MARK: - Hotkeys
 
-    private func registerShortcuts() {
-        // Unregister all existing hotkeys first
-        for (_, hotkeyID) in registeredHotkeyIDs {
-            hotkeyManager.unregister(hotkeyID: hotkeyID)
-        }
-        registeredHotkeyIDs.removeAll()
-
-        // Load shortcuts from UserDefaults
-        let defaults = UserDefaults.standard
-
-        // Start Mic-Only Recording (toggle behavior)
-        if let data = defaults.data(forKey: "startMicOnlyShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            if let hotkeyID = hotkeyManager.register(
-                keyCode: shortcut.keyCode,
-                modifiers: shortcut.carbonModifiers,
-                handler: { [weak self] in
-                    self?.toggleMicOnly()
-                }
-            ) {
-                registeredHotkeyIDs["startMicOnly"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Start Mic-Only shortcut: \(shortcut.displayString)")
-            }
-        }
-
-        // Start Mic + App Audio Recording (toggle behavior)
-        if let data = defaults.data(forKey: "startMicPlusAppShortcut"),
-           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            if let hotkeyID = hotkeyManager.register(
-                keyCode: shortcut.keyCode,
-                modifiers: shortcut.carbonModifiers,
-                handler: { [weak self] in
-                    self?.toggleMicPlusApp()
-                }
-            ) {
-                registeredHotkeyIDs["startMicPlusApp"] = hotkeyID
-                NSLog("✅ [MacTalk] Registered Start Mic+App shortcut: \(shortcut.displayString)")
-            }
-        }
-
-    }
-
     @objc private func shortcutsDidChange() {
-        registerShortcuts()
+        shortcutCoordinator.reload()
         updateMenuShortcuts()
     }
 

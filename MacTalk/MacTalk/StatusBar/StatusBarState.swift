@@ -117,7 +117,7 @@ enum UserFacingError: Error, Equatable, Sendable {
 
 enum RecordingSessionEvent {
     case stateChanged(RecordingSessionState)
-    case requestAudioSource(requestID: UUID)
+    case requestAudioSource(requestID: UUID, sources: [AppPickerWindowController.AudioSource])
     case confirmDownload(requestID: UUID, requirement: ModelRequirement)
     case partial(String)
     case finalText(String)

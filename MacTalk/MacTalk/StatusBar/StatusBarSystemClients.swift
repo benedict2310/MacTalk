@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+@preconcurrency import ScreenCaptureKit
 
 @MainActor
 protocol PermissionClient: AnyObject {
@@ -194,6 +195,8 @@ struct StatusBarDependencies {
     let textInserter: any TextInserting
     let workspaceReader: any WorkspaceReading
     let notificationSubmitter: any NotificationSubmitting
+    let shareableContentClient: any ShareableContentClient
+    let hotkeyRegistrar: any HotkeyRegistering
     let clock: @MainActor () -> Date
 
     static func live(notificationManager: NotificationManager) -> StatusBarDependencies {
@@ -203,7 +206,45 @@ struct StatusBarDependencies {
             textInserter: SystemTextInserter(),
             workspaceReader: SystemWorkspaceReader(),
             notificationSubmitter: SystemNotificationSubmitter(manager: notificationManager),
+            shareableContentClient: SystemShareableContentClient(),
+            hotkeyRegistrar: SystemHotkeyRegistrar(),
             clock: { Date() }
         )
+    }
+}
+
+@MainActor
+final class SystemShareableContentClient: ShareableContentClient {
+    init() {}
+
+    func loadShareableContent(timeout: TimeInterval) async throws -> ShareableContentSnapshot {
+        let content: SCShareableContent
+        do {
+            content = try await withTimeout(seconds: timeout) {
+                try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            }
+        } catch is TimeoutError {
+            throw ScreenCaptureError.timeout
+        }
+
+        let windowOwners = Set(content.windows.compactMap { $0.owningApplication?.bundleIdentifier })
+        var candidates: [ShareableContentSource] = []
+        if let display = content.displays.first {
+            candidates.append(ShareableContentSource(
+                identity: "system",
+                source: .systemAudio(display: display),
+                ownsWindow: true,
+                isSystemAudio: true
+            ))
+        }
+        candidates += content.applications.map { app in
+            ShareableContentSource(
+                identity: app.bundleIdentifier,
+                source: .fromApp(app),
+                ownsWindow: windowOwners.contains(app.bundleIdentifier),
+                isSystemAudio: false
+            )
+        }
+        return ShareableContentSnapshot(sources: candidates)
     }
 }

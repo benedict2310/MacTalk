@@ -59,6 +59,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private let download: any ModelRequirementDownloading
     private let sessions: any TranscriptionSessionFactory
     private let output: any OutputCoordinating
+    private let audioSources: (any AppAudioSourceCoordinating)?
     private let settingsSnapshot: @MainActor () -> SettingsSnapshot
     private var request: RequestContext?
     private var work: Task<Void, Never>?
@@ -71,13 +72,15 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         download: any ModelRequirementDownloading,
         sessions: any TranscriptionSessionFactory,
         output: any OutputCoordinating,
-        settingsSnapshot: @escaping @MainActor () -> SettingsSnapshot
+        settingsSnapshot: @escaping @MainActor () -> SettingsSnapshot,
+        audioSources: (any AppAudioSourceCoordinating)? = nil
     ) {
         self.permission = permission
         self.engine = engine
         self.download = download
         self.sessions = sessions
         self.output = output
+        self.audioSources = audioSources
         self.settingsSnapshot = settingsSnapshot
     }
 
@@ -102,12 +105,33 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             case .granted:
                 if mode == .micPlusAppAudio {
                     self.transition(.selectingAudioSource)
-                    self.emit(.requestAudioSource(requestID: id))
+                    self.loadAudioSources(id)
                 } else {
                     self.resolve(id)
                 }
             case .deniedMicrophone, .deniedScreenRecording:
                 self.abort(id)
+            }
+        }
+    }
+
+    private func loadAudioSources(_ id: UUID) {
+        guard owns(id), case .selectingAudioSource = state.phase else { return }
+        guard let audioSources else {
+            emit(.requestAudioSource(requestID: id, sources: []))
+            return
+        }
+        let loader = audioSources
+        work = Task { @MainActor [weak self] in
+            do {
+                let sources = try await loader.loadSources()
+                guard let self, self.owns(id), case .selectingAudioSource = self.state.phase else { return }
+                self.emit(.requestAudioSource(requestID: id, sources: sources))
+            } catch is CancellationError {
+                self?.abort(id)
+            } catch {
+                guard let self, self.owns(id) else { return }
+                self.fail(id, message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             }
         }
     }
@@ -312,6 +336,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         work = nil
         engine.cancel(requestID: id)
         download.cancel(requestID: id)
+        audioSources?.cleanup()
     }
 
     private func owns(_ id: UUID) -> Bool { request?.id == id }

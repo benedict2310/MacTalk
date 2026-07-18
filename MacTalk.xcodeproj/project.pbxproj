@@ -14,6 +14,7 @@
 		0AAAF6C7453DB903009A6B9E /* ASREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD599796D84855D50B261BE6 /* ASREngine.swift */; };
 		0AC807B1970D5526C85348C9 /* ConcurrencyStressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAD794CD9B38C6DF8CEE5F41 /* ConcurrencyStressTests.swift */; };
 		0B067F0E48F672266A45B3B2 /* AudioCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E1D05DC2005455D469C9D44 /* AudioCompositionTests.swift */; };
+		0BE1C4565BA6BDB53320FE33 /* AppAudioSourceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9928C31339CAC2A2015117 /* AppAudioSourceCoordinator.swift */; };
 		178EB531E286F42E6FC61E2E /* DeterministicHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B0E921D638972D397B465C /* DeterministicHarness.swift */; };
 		189620BE107155031013E9B2 /* RecordingStartGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6FBC8D71B4265F28DCEE52A /* RecordingStartGate.swift */; };
 		22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */; };
@@ -37,6 +38,7 @@
 		4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DBE9FB441A6D40040A46EC /* HotkeyManagerTests.swift */; };
 		4D52B02AC9D2B5F3F0054644 /* OutputCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 677415A9FCDE4847F18D4C94 /* OutputCoordinatorTests.swift */; };
 		4E3418A79136E93D144D1A3E /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E02C702E7A93C3C3EB66EC4 /* AppSettingsTests.swift */; };
+		4F2E080EC91C1F3617D0C479 /* ShortcutCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2140D4CE795539A3A351D09 /* ShortcutCoordinator.swift */; };
 		50FE09108D301C3C52E2D93C /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD951499247140D4AAFCEA4F /* UserNotifications.framework */; };
 		520D5CB08C0BEE4FBB233F47 /* NativeWhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA82C17EF6BC9027FA3048E8 /* NativeWhisperEngineTests.swift */; };
 		5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81ABE900575F1149ED6F49B /* TestHelpers.swift */; };
@@ -60,6 +62,7 @@
 		7A5F0DC5DD558795C47FA413 /* HUDWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */; };
 		7AB2F2BBEDB6558B75DB870A /* SHA256Streamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6A281ADAFA30F63A003298 /* SHA256Streamer.swift */; };
 		7DBC21CA08AE0BB41407A650 /* ShortcutRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B6BD7A39D8B2C793828874 /* ShortcutRecorderView.swift */; };
+		7E48DF4D4B2A34BA321B24F1 /* AppAudioSourceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */; };
 		7EF5A1780F0CB2DFA7923539 /* RecordingSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11660B850F4D58231935145A /* RecordingSessionCoordinator.swift */; };
 		7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27CEB8938615FEF6ADC8B82 /* TranscriptionController.swift */; };
 		7FA1E14C0F925120151EB0CB /* PrivacyLoggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81F3CF3EAB00EA975604C5A1 /* PrivacyLoggingTests.swift */; };
@@ -86,6 +89,7 @@
 		BF7779BE4CF099D3CC1F8874 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */; };
 		C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */; };
 		C289FCFA43BC6160F45CC5EF /* AudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F45EAFB3246883475BF41D0 /* AudioCapture.swift */; };
+		C660FD6794D4333446D08410 /* ShortcutCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37B2DC4DFB8C1C1AF92D668A /* ShortcutCoordinatorTests.swift */; };
 		CB36CD51A8713642F3EF11A6 /* ModelIntegrityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43939A73281D9B60CA7A0912 /* ModelIntegrityTests.swift */; };
 		CD8CFF3413450B0B52DDC9EB /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3370D324AA3BB2E3D65289F3 /* CoreML.framework */; };
 		CF52A5E4EEFEA0AD489CAF78 /* AudioHardwareValidationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FBF01E284CBD93030272C6 /* AudioHardwareValidationRecorder.swift */; };
@@ -140,6 +144,7 @@
 		31C64476BEB27CFE9AB9D1E2 /* TimestampedAudioComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimestampedAudioComposer.swift; sourceTree = "<group>"; };
 		3370D324AA3BB2E3D65289F3 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
 		35F50A54ADED08971D0A193F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		37B2DC4DFB8C1C1AF92D668A /* ShortcutCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutCoordinatorTests.swift; sourceTree = "<group>"; };
 		392B5C1EE24551C4C7BA55FB /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = SDKROOT; };
 		3BD2E91B633537326157C2EC /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		3F45EAFB3246883475BF41D0 /* AudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCapture.swift; sourceTree = "<group>"; };
@@ -148,6 +153,7 @@
 		4E05DF575E71C6393CD98181 /* ModelSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSecurityTests.swift; sourceTree = "<group>"; };
 		549F2BE7C81181A9E395C6CE /* EngineReloadCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineReloadCoordinatorTests.swift; sourceTree = "<group>"; };
 		59E9EED0C012BA63AE29807D /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinatorTests.swift; sourceTree = "<group>"; };
 		63E40FCC9174C4CE0C094B6E /* DeterministicHarnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicHarnessTests.swift; sourceTree = "<group>"; };
 		66B5122D76E3EC68FD7D4D00 /* ProductionRecordingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRecordingSession.swift; sourceTree = "<group>"; };
 		6715914C4DF7FFB0CF653B4D /* MacTalk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacTalk.entitlements; sourceTree = "<group>"; };
@@ -176,6 +182,7 @@
 		99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixerTests.swift; sourceTree = "<group>"; };
 		9D5BDB30038EE514B48799F0 /* ModelProvenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelProvenanceTests.swift; sourceTree = "<group>"; };
 		9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowController.swift; sourceTree = "<group>"; };
+		9F9928C31339CAC2A2015117 /* AppAudioSourceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinator.swift; sourceTree = "<group>"; };
 		A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalog.swift; sourceTree = "<group>"; };
 		A1EF30A6B780B2DDAEF45D32 /* EngineLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB1711734B0AD4FDB46A70A1 /* EngineSelectionLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSelectionLoaderTests.swift; sourceTree = "<group>"; };
@@ -217,6 +224,7 @@
 		EF01E16D9F042ED0D5426CE5 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		F032A713515F1C44CE66DF56 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		F0CB0C822E590700DC92674D /* ScreenAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenAudioCapture.swift; sourceTree = "<group>"; };
+		F2140D4CE795539A3A351D09 /* ShortcutCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutCoordinator.swift; sourceTree = "<group>"; };
 		F56455613F439A82FDAE5FB0 /* MacTalkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacTalkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F6FBC8D71B4265F28DCEE52A /* RecordingStartGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingStartGate.swift; sourceTree = "<group>"; };
 		F7D1282BF5D1667A5FA43179 /* WhisperBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WhisperBridge.h; sourceTree = "<group>"; };
@@ -305,6 +313,7 @@
 		6B6BA2213193562FE47B8CCA /* MacTalkTests */ = {
 			isa = PBXGroup;
 			children = (
+				5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */,
 				6B2F549ED7DBEBADC45C4429 /* AppPickerIntegrationTests.swift */,
 				6E02C702E7A93C3C3EB66EC4 /* AppSettingsTests.swift */,
 				98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */,
@@ -339,6 +348,7 @@
 				44DB11AF678F4F2CB4A12F7A /* ScreenAudioCaptureTests.swift */,
 				1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */,
 				99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */,
+				37B2DC4DFB8C1C1AF92D668A /* ShortcutCoordinatorTests.swift */,
 				82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */,
 				E81ABE900575F1149ED6F49B /* TestHelpers.swift */,
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
@@ -392,6 +402,7 @@
 		E27F3D54199219C8BDFEE07B /* StatusBar */ = {
 			isa = PBXGroup;
 			children = (
+				9F9928C31339CAC2A2015117 /* AppAudioSourceCoordinator.swift */,
 				102E5197191515865176303A /* EngineLifecycleCoordinator.swift */,
 				CDABAA799E48D4CA3D9D1764 /* ModelDownloadCoordinator.swift */,
 				B0E20ACCFC1E31B87A935F7D /* OutputCoordinator.swift */,
@@ -399,6 +410,7 @@
 				17582BFD99988F2714042AC0 /* ProductionModelDownloadClients.swift */,
 				66B5122D76E3EC68FD7D4D00 /* ProductionRecordingSession.swift */,
 				11660B850F4D58231935145A /* RecordingSessionCoordinator.swift */,
+				F2140D4CE795539A3A351D09 /* ShortcutCoordinator.swift */,
 				842D1A1DB98DC2331ECEE659 /* StatusBarState.swift */,
 				B5D86C8AAAE5F0F4E180A81F /* StatusBarSystemClients.swift */,
 			);
@@ -583,6 +595,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0AAAF6C7453DB903009A6B9E /* ASREngine.swift in Sources */,
+				0BE1C4565BA6BDB53320FE33 /* AppAudioSourceCoordinator.swift in Sources */,
 				2758A4C87A0B8F80B244A10E /* AppDelegate.swift in Sources */,
 				84D42F69C99B386850434DC8 /* AppPickerWindowController.swift in Sources */,
 				A6793E663C67A0D63408317E /* AppSettings.swift in Sources */,
@@ -627,6 +640,7 @@
 				7AB2F2BBEDB6558B75DB870A /* SHA256Streamer.swift in Sources */,
 				78C03577C5DF441A3E20842D /* ScreenAudioCapture.swift in Sources */,
 				22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */,
+				4F2E080EC91C1F3617D0C479 /* ShortcutCoordinator.swift in Sources */,
 				7DBC21CA08AE0BB41407A650 /* ShortcutRecorderView.swift in Sources */,
 				F8737753B44C1AEC16F43DC7 /* StatusBarController.swift in Sources */,
 				A843366A6B64CA916E0322C7 /* StatusBarState.swift in Sources */,
@@ -642,6 +656,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7E48DF4D4B2A34BA321B24F1 /* AppAudioSourceCoordinatorTests.swift in Sources */,
 				D12ACE6C04D0BC9571BF1736 /* AppPickerIntegrationTests.swift in Sources */,
 				4E3418A79136E93D144D1A3E /* AppSettingsTests.swift in Sources */,
 				0804E7DC8A6B15ABA6101DAB /* AudioCaptureIntegrationTests.swift in Sources */,
@@ -676,6 +691,7 @@
 				FE70C047F8540DB2C94D4DE5 /* ScreenAudioCaptureTests.swift in Sources */,
 				EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */,
 				2CA2A08ADEAAAC67AA9DD125 /* SettingsWindowControllerTests.swift in Sources */,
+				C660FD6794D4333446D08410 /* ShortcutCoordinatorTests.swift in Sources */,
 				D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */,
 				E6945B4B17E2433394010F56 /* TSanSmokeTests.swift in Sources */,
 				5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */,
