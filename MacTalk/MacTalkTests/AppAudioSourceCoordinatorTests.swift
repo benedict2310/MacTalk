@@ -45,6 +45,41 @@ final class AppAudioSourceCoordinatorTests: XCTestCase {
         }
     }
 
+    func test_timeoutReturnsBeforeCancellationIgnoringOperationCompletes() async throws {
+        let operation = CancellationIgnoringOperation()
+        let recorder = TimeoutCompletionRecorder()
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let timeoutTask = Task { () -> Bool in
+            do {
+                _ = try await withTimeout(seconds: 0.025) {
+                    await operation.run()
+                }
+                return false
+            } catch is TimeoutError {
+                await recorder.record(clock.now)
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        await operation.waitUntilStarted()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let completedAt = await recorder.value
+        XCTAssertNotNil(completedAt)
+        if let completedAt {
+            XCTAssertLessThan(startedAt.duration(to: completedAt), .milliseconds(90))
+        }
+
+        // The underlying operation explicitly ignores cancellation. Resuming
+        // it after the timeout verifies that its late completion is harmless.
+        await operation.release()
+        let timedOut = await timeoutTask.value
+        XCTAssertTrue(timedOut)
+    }
+
     private func candidate(
         _ identity: String,
         _ name: String,
@@ -68,5 +103,44 @@ private final class ShareableClientFake: ShareableContentClient {
 
     func loadShareableContent(timeout: TimeInterval) async throws -> ShareableContentSnapshot {
         try result.get()
+    }
+}
+
+private actor CancellationIgnoringOperation {
+    private var started = false
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+    private var completion: CheckedContinuation<Void, Never>?
+
+    func run() async {
+        if !started {
+            started = true
+            startedContinuation?.resume()
+            startedContinuation = nil
+        }
+        // Checked continuations do not automatically throw on task
+        // cancellation, so this operation remains blocked after cancellation.
+        await withCheckedContinuation { continuation in
+            completion = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startedContinuation = continuation
+        }
+    }
+
+    func release() {
+        completion?.resume()
+        completion = nil
+    }
+}
+
+private actor TimeoutCompletionRecorder {
+    private(set) var value: ContinuousClock.Instant?
+
+    func record(_ timestamp: ContinuousClock.Instant) {
+        value = timestamp
     }
 }

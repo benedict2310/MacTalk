@@ -6,10 +6,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/scripts/deterministic-test-selection.sh"
 
 required_classes=(
+  MacTalkTests/AppAudioSourceCoordinatorTests
   MacTalkTests/OutputCoordinatorTests
   MacTalkTests/PermissionFlowCoordinatorTests
   MacTalkTests/RecordingSessionCoordinatorTests
   MacTalkTests/StatusBarControllerTests
+  MacTalkTests/ShortcutCoordinatorTests
   MacTalkTests/WhisperModelDownloadClientTests
 )
 

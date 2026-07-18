@@ -2,6 +2,7 @@
 # here is a reviewable declaration that it has no AppKit/window, TCC,
 # hardware, provider/model, or real-network dependency.
 DETERMINISTIC_TEST_CLASSES=(
+  MacTalkTests/AppAudioSourceCoordinatorTests
   MacTalkTests/AppSettingsTests
   MacTalkTests/AudioCompositionTests
   MacTalkTests/AudioLevelMonitorTests
@@ -22,6 +23,7 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/PrivacyLoggingTests
   MacTalkTests/RecordingSessionCoordinatorTests
   MacTalkTests/StatusBarControllerTests
+  MacTalkTests/ShortcutCoordinatorTests
   MacTalkTests/TranscriptionControllerTests
 )
 
