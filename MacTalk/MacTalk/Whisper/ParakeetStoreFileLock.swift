@@ -68,27 +68,45 @@ public struct ParakeetStoreFileLock: Sendable {
     }
 
     public let storeParent: URL
-    private let lockURL: URL
+    private let afterParentValidation: (@Sendable () -> Void)?
 
     public init(storeParent: URL) {
         self.storeParent = storeParent
-        self.lockURL = storeParent.appendingPathComponent(".mactalk-store.lock", isDirectory: false)
+        self.afterParentValidation = nil
+    }
+
+    internal init(storeParent: URL, afterParentValidation: (@Sendable () -> Void)?) {
+        self.storeParent = storeParent
+        self.afterParentValidation = afterParentValidation
+    }
+
+    /// Attempts one nonblocking acquisition. A nil result proves that the
+    /// kernel rejected this exact lock descriptor with EAGAIN/EWOULDBLOCK.
+    public func tryAcquire(_ mode: Mode) throws -> Lease? {
+        let fd = try openValidatedLockDescriptor()
+        let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
+        while true {
+            guard flock(fd, operation) != 0 else {
+                return Lease(fileDescriptor: fd, mode: mode)
+            }
+            let code = errno
+            if code == EINTR { continue }
+            _ = close(fd)
+            if code == EAGAIN || code == EWOULDBLOCK {
+                return nil
+            }
+            throw LockError.flockFailed(code)
+        }
     }
 
     public func acquire(_ mode: Mode) async throws -> Lease {
-        let parentFD = try openStoreParentDirectory()
-        defer { _ = close(parentFD) }
-        let fd = try openLockFile(parentFD: parentFD)
+        let fd = try openValidatedLockDescriptor()
         var closeOnExit = true
         defer {
             if closeOnExit { _ = close(fd) }
         }
 
-        let operation: Int32
-        switch mode {
-        case .shared: operation = LOCK_SH | LOCK_NB
-        case .exclusive: operation = LOCK_EX | LOCK_NB
-        }
+        let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
         while true {
             try Task.checkCancellation()
             if flock(fd, operation) == 0 {
@@ -112,6 +130,13 @@ public struct ParakeetStoreFileLock: Sendable {
             }
             throw LockError.flockFailed(code)
         }
+    }
+
+    private func openValidatedLockDescriptor() throws -> Int32 {
+        let parentFD = try openStoreParentDirectory()
+        defer { _ = close(parentFD) }
+        afterParentValidation?()
+        return try openLockFile(parentFD: parentFD)
     }
 
     private func openStoreParentDirectory() throws -> Int32 {
@@ -177,11 +202,20 @@ public struct ParakeetStoreFileLock: Sendable {
     }
 
     private func openLockFile(parentFD: Int32) throws -> Int32 {
-        _ = parentFD
-        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
+        var fd: Int32 = -1
+        var lastError: Int32 = ENOENT
+        for _ in 0..<100 {
+            fd = openat(parentFD, ".mactalk-store.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
+            if fd >= 0 { break }
+            lastError = errno
+            if lastError != ENOENT {
+                break
+            }
+            usleep(1_000)
+        }
         guard fd >= 0 else {
-            if errno == ELOOP { throw LockError.lockPathIsSymlink }
-            throw LockError.openFailed(errno)
+            if lastError == ELOOP { throw LockError.lockPathIsSymlink }
+            throw LockError.openFailed(lastError)
         }
         var info = stat()
         guard fstat(fd, &info) == 0 else {

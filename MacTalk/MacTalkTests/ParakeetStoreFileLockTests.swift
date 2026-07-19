@@ -16,7 +16,7 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         try await second.waitFor("READY")
         second.write("GO\n")
         try await second.waitFor("WAITING")
-        XCTAssertFalse(second.hasOutput("ACQUIRED"))
+        try await second.waitFor("BLOCKED")
 
         first.write("RELEASE\n")
         try await first.waitFor("RELEASED")
@@ -58,7 +58,7 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         try await blockedExclusive.waitFor("READY")
         blockedExclusive.write("GO\n")
         try await blockedExclusive.waitFor("WAITING")
-        XCTAssertFalse(blockedExclusive.hasOutput("ACQUIRED"))
+        try await blockedExclusive.waitFor("BLOCKED")
         shared.write("RELEASE\n")
         try await shared.waitFor("RELEASED")
         try await blockedExclusive.waitFor("ACQUIRED")
@@ -74,7 +74,7 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         try await blockedShared.waitFor("READY")
         blockedShared.write("GO\n")
         try await blockedShared.waitFor("WAITING")
-        XCTAssertFalse(blockedShared.hasOutput("ACQUIRED"))
+        try await blockedShared.waitFor("BLOCKED")
         exclusive.write("RELEASE\n")
         try await exclusive.waitFor("RELEASED")
         try await blockedShared.waitFor("ACQUIRED")
@@ -104,6 +104,16 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         XCTAssertEqual(successor.terminate(), 0)
     }
 
+    func test_tryAcquireReportsContentionAndClosesDescriptor() async throws {
+        let root = try makeTemporaryStore()
+        let lock = ParakeetStoreFileLock(storeParent: root)
+        let held = try XCTUnwrap(try lock.tryAcquire(.exclusive))
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
+        held.release()
+        let successor = try XCTUnwrap(try lock.tryAcquire(.exclusive))
+        successor.release()
+    }
+
     func test_cancellationWhileWaitingDoesNotLeakOrAcquireLater() async throws {
         let root = try makeTemporaryStore()
         let lock = ParakeetStoreFileLock(storeParent: root)
@@ -122,6 +132,22 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         held.release()
         let acquired = try await lock.acquire(.exclusive)
         acquired.release()
+    }
+
+    func test_openBindsLockToValidatedParentDescriptorAcrossReplacement() async throws {
+        let root = try makeTemporaryStore()
+        let renamed = root.deletingLastPathComponent().appendingPathComponent("renamed-\(UUID().uuidString)", isDirectory: true)
+        let replacement = root
+        let lock = ParakeetStoreFileLock(storeParent: root, afterParentValidation: {
+            precondition(rename(root.path, renamed.path) == 0)
+            precondition(mkdir(replacement.path, 0o700) == 0)
+        })
+        let lease = try await lock.acquire(.exclusive)
+        defer { lease.release() }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.appendingPathComponent(".mactalk-store.lock").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacement.appendingPathComponent(".mactalk-store.lock").path))
+        try? FileManager.default.removeItem(at: renamed)
+        try? FileManager.default.removeItem(at: replacement)
     }
 
     func test_rootAndLockModesArePrivate() async throws {

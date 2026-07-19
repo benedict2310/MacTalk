@@ -19,7 +19,13 @@ struct ParakeetStoreLockProbe {
             emit("READY")
             guard readLine() == "GO" else { throw ProbeError.missingGo }
             emit("WAITING")
-            let lease = try await lock.acquire(mode)
+            let lease: ParakeetStoreFileLock.Lease
+            if let immediateLease = try lock.tryAcquire(mode) {
+                lease = immediateLease
+            } else {
+                emit("BLOCKED")
+                lease = try await lock.acquire(mode)
+            }
             emit("ACQUIRED")
             if abrupt { _exit(0) }
             guard readLine() == "RELEASE" else { throw ProbeError.missingRelease }
