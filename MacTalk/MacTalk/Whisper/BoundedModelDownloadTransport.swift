@@ -171,6 +171,18 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
 
         let workspace = request.workspaceRoot
         let anchor = try WorkspaceAnchor(root: workspace, slotName: identityDirectory, filename: request.identity.filename)
+        // The instance-local permit still serializes this transport's state
+        // machine, but it cannot coordinate a second transport or process. The
+        // descriptor-backed lease is the authoritative workspace boundary and
+        // spans prepare, every network attempt, verification, promotion, and
+        // failure cleanup.
+        let slotLease: TransportSlotLease
+        do {
+            slotLease = try await TransportSlotLease.acquire(anchor: anchor)
+        } catch is CancellationError {
+            throw BoundedModelDownloadError.cancelled
+        }
+        defer { slotLease.release() }
         let mirrorURLs = request.mirrors
         var lastError: BoundedModelDownloadError?
 
@@ -551,6 +563,56 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     }
 }
 
+private final class TransportSlotLease: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var fileDescriptor: Int32?
+
+    private init(fileDescriptor: Int32) {
+        self.fileDescriptor = fileDescriptor
+    }
+
+    static func acquire(anchor: WorkspaceAnchor) async throws -> TransportSlotLease {
+        let fd = try anchor.openTransportLock()
+        var closeOnExit = true
+        defer {
+            if closeOnExit { _ = close(fd) }
+        }
+        while true {
+            try Task.checkCancellation()
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    _ = flock(fd, LOCK_UN)
+                    throw error
+                }
+                closeOnExit = false
+                return TransportSlotLease(fileDescriptor: fd)
+            }
+            let code = errno
+            if code == EINTR { continue }
+            guard code == EAGAIN || code == EWOULDBLOCK else {
+                throw BoundedModelDownloadError.transport("cannot lock transport slot")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
+    func release() {
+        stateLock.lock()
+        guard let fd = fileDescriptor else {
+            stateLock.unlock()
+            return
+        }
+        fileDescriptor = nil
+        stateLock.unlock()
+        _ = flock(fd, LOCK_UN)
+        _ = close(fd)
+    }
+
+    deinit { release() }
+}
+
 private final class WorkspaceAnchor: @unchecked Sendable {
     private static let queueLock = NSLock()
     private nonisolated(unsafe) static var queues: [String: DispatchQueue] = [:]
@@ -605,6 +667,26 @@ private final class WorkspaceAnchor: @unchecked Sendable {
         close(completedFD)
         close(partialsFD)
         close(rootFD)
+    }
+
+    func openTransportLock() throws -> Int32 {
+        try ioQueue.sync {
+            let fd = openat(slotFD, ".transport.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, mode_t(0o600))
+            guard fd >= 0 else {
+                if errno == ELOOP { throw BoundedModelDownloadError.invalidResumeState }
+                throw BoundedModelDownloadError.transport("cannot open transport lock")
+            }
+            var st = stat()
+            guard fstat(fd, &st) == 0,
+                  (st.st_mode & S_IFMT) == S_IFREG,
+                  st.st_uid == getuid(),
+                  st.st_nlink == 1,
+                  (st.st_mode & 0o777) == 0o600 else {
+                close(fd)
+                throw BoundedModelDownloadError.invalidResumeState
+            }
+            return fd
+        }
     }
 
     func openPart(readOnly: Bool) throws -> Int32 {

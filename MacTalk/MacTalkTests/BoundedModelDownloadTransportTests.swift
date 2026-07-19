@@ -16,6 +16,24 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         var transport: BoundedModelDownloadTransport?
     }
 
+    private final class RequestCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func incrementAndRead() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+
+        func read() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private actor EntryGate {
         private var entered = false
         private var continuation: CheckedContinuation<Void, Never>?
@@ -65,6 +83,94 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("mactalk-transport-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    func testSeparateTransportInstancesSerializeSlotThroughPromotion() async throws {
+        let workspace = try root()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let approved = Data("approved-payload".utf8)
+        let corrupt = Data("corrupt-payload!".utf8)
+        XCTAssertEqual(approved.count, corrupt.count)
+        let artifact = identity(for: approved)
+        let requestCounter = RequestCounter()
+        let server = try LoopbackHTTPServer { _ in
+            let count = requestCounter.incrementAndRead()
+            return .init(body: .fixed(count == 1 ? approved : corrupt))
+        }
+        defer { server.stop() }
+
+        let claimReached = DispatchSemaphore(value: 0)
+        let releaseClaim = DispatchSemaphore(value: 0)
+        let first = BoundedModelDownloadTransport(allowInsecureLoopback: true, afterGenerationClaim: { _ in
+            claimReached.signal()
+            _ = releaseClaim.wait(timeout: .now() + 5)
+        })
+        let second = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let firstRequest = request(identity: artifact, server: server, root: workspace)
+        let secondRequest = request(identity: artifact, server: server, root: workspace)
+
+        let firstTask = Task { try await first.download(firstRequest) }
+        XCTAssertEqual(claimReached.wait(timeout: .now() + 5), .success, "first transport must reach verified pre-promotion barrier")
+        let secondTask = Task { try await second.download(secondRequest) }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(requestCounter.read(), 1, "second transport must not request or write before first promotion")
+
+        releaseClaim.signal()
+        let promoted = try await firstTask.value
+        XCTAssertEqual(try Data(contentsOf: promoted), approved)
+        do {
+            _ = try await secondTask.value
+            XCTFail("corrupt second response must not promote")
+        } catch BoundedModelDownloadError.checksumMismatch {
+            // expected
+        } catch {
+            XCTFail("unexpected second transport error: \(error)")
+        }
+        XCTAssertEqual(try Data(contentsOf: promoted), approved, "second transport must not corrupt the approved destination")
+        XCTAssertEqual(requestCounter.read(), 2)
+
+        let slot = workspace.appendingPathComponent("partials").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: artifact))
+        let lockPath = slot.appendingPathComponent(".transport.lock")
+        let attrs = try FileManager.default.attributesOfItem(atPath: lockPath.path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testWaitingSecondTransportCancellationDoesNotDeadlockOrRequest() async throws {
+        let workspace = try root()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let payload = Data("lock-holder-payload".utf8)
+        let artifact = identity(for: payload)
+        let requestCounter = RequestCounter()
+        let server = try LoopbackHTTPServer { _ in
+            _ = requestCounter.incrementAndRead()
+            return .init(body: .fixed(payload))
+        }
+        defer { server.stop() }
+        let claimReached = DispatchSemaphore(value: 0)
+        let releaseClaim = DispatchSemaphore(value: 0)
+        let first = BoundedModelDownloadTransport(allowInsecureLoopback: true, afterGenerationClaim: { _ in
+            claimReached.signal()
+            _ = releaseClaim.wait(timeout: .now() + 5)
+        })
+        let second = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let firstRequest = request(identity: artifact, server: server, root: workspace)
+        let secondRequest = request(identity: artifact, server: server, root: workspace)
+        let firstTask = Task { try await first.download(firstRequest) }
+        XCTAssertEqual(claimReached.wait(timeout: .now() + 5), .success)
+        let secondTask = Task { try await second.download(secondRequest) }
+        try await Task.sleep(for: .milliseconds(100))
+        secondTask.cancel()
+        do {
+            _ = try await secondTask.value
+            XCTFail("a task canceled while waiting for the slot lock must fail")
+        } catch BoundedModelDownloadError.cancelled {
+            // expected
+        } catch {
+            XCTFail("unexpected waiting cancellation error: \(error)")
+        }
+        XCTAssertEqual(requestCounter.read(), 1, "a canceled waiter must not start network I/O")
+        releaseClaim.signal()
+        _ = try await firstTask.value
     }
 
     func testStrongAndDateValidatorsRejectAdversarialValues() {
