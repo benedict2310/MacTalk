@@ -193,7 +193,7 @@ targets:
     sources:
       - path: MacTalk/MacTalkTests
         excludes:
-          - Fixtures/VerifiedCoreMLFixture/**
+          - Fixtures
     postBuildScripts:
       - name: Copy Verified CoreML Fixture
         inputFiles:

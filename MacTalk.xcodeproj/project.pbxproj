@@ -499,13 +499,6 @@
 			path = Whisper;
 			sourceTree = "<group>";
 		};
-		"TEMP_3701B2C6-6A92-4F6D-957C-75E9091F55DD" /* Fixtures */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Fixtures;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
