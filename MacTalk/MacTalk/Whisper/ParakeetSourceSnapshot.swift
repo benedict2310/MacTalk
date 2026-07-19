@@ -88,16 +88,18 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
     private let store: ParakeetSourceStore
     private let queue: DispatchQueue
     private let beforeArtifactRead: (@Sendable () -> Void)?
+    private let beforeCompletion: (@Sendable () -> Void)?
     private let forceFdopendirFailure: Bool
 
-    convenience init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil) {
-        self.init(store: store, queue: queue, beforeArtifactRead: beforeArtifactRead, forceFdopendirFailure: false)
+    convenience init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil, beforeCompletion: (@Sendable () -> Void)? = nil) {
+        self.init(store: store, queue: queue, beforeArtifactRead: beforeArtifactRead, beforeCompletion: beforeCompletion, forceFdopendirFailure: false)
     }
 
-    init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil, forceFdopendirFailure: Bool) {
+    init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil, beforeCompletion: (@Sendable () -> Void)? = nil, forceFdopendirFailure: Bool = false) {
         self.store = store
         self.queue = queue ?? DispatchQueue(label: "com.mactalk.parakeet-source-snapshot", qos: .userInitiated)
         self.beforeArtifactRead = beforeArtifactRead
+        self.beforeCompletion = beforeCompletion
         self.forceFdopendirFailure = forceFdopendirFailure
     }
 
@@ -109,37 +111,49 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         } catch is CancellationError {
             throw ParakeetSourceSnapshotError.cancelled
         }
-        let cancellation = SnapshotCancellation()
+        let operation = SnapshotOperationState()
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     do {
-                        try cancellation.check()
+                        try operation.check()
                         guard let snapshot = try lease.withStoreParentDescriptorIfAvailable({ parentFD in
-                            try self.readSnapshot(parentFD: parentFD, cancellation: cancellation)
+                            try self.readSnapshot(parentFD: parentFD, operation: operation)
                         }) else {
                             throw ParakeetSourceSnapshotError.cancelled
                         }
+                        self.beforeCompletion?()
+                        let result: Result<VerifiedParakeetSourceSnapshot, Error>
+                        if operation.claimCompletion() {
+                            result = .success(snapshot)
+                        } else {
+                            result = .failure(ParakeetSourceSnapshotError.cancelled)
+                        }
                         lease.release()
-                        continuation.resume(returning: snapshot)
+                        continuation.resume(with: result)
                     } catch {
                         lease.release()
-                        if case VerifiedArtifactReaderError.cancelled = error {
-                            continuation.resume(throwing: ParakeetSourceSnapshotError.cancelled)
+                        let mappedError: Error = error is VerifiedArtifactReaderError && operation.isCancelled
+                            ? ParakeetSourceSnapshotError.cancelled
+                            : error
+                        let result: Result<VerifiedParakeetSourceSnapshot, Error>
+                        if operation.claimCompletion() {
+                            result = .failure(mappedError)
                         } else {
-                            continuation.resume(throwing: error)
+                            result = .failure(ParakeetSourceSnapshotError.cancelled)
                         }
+                        continuation.resume(with: result)
                     }
                 }
             }
         }, onCancel: {
-            cancellation.cancel()
+            operation.cancel()
             lease.release()
         })
     }
 
-    private func readSnapshot(parentFD: Int32, cancellation: SnapshotCancellation) throws -> VerifiedParakeetSourceSnapshot {
-        try cancellation.check()
+    private func readSnapshot(parentFD: Int32, operation: SnapshotOperationState) throws -> VerifiedParakeetSourceSnapshot {
+        try operation.check()
         guard !store.sourceDirectoryName.isEmpty,
               !store.sourceDirectoryName.contains("/"),
               store.sourceDirectoryName != ".", store.sourceDirectoryName != "..",
@@ -149,10 +163,10 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         let sourceFD = try openDirectory(named: store.sourceDirectoryName, relativeTo: parentFD)
         defer { _ = close(sourceFD) }
         try validatePrivateDirectory(sourceFD)
-        try cancellation.check()
-        let markerData = try readMarker(sourceFD: sourceFD, cancellation: cancellation)
+        try operation.check()
+        let markerData = try readMarker(sourceFD: sourceFD, operation: operation)
         try validateMarker(markerData)
-        try enumerateExactTree(sourceFD: sourceFD, cancellation: cancellation)
+        try enumerateExactTree(sourceFD: sourceFD, operation: operation)
 
         let sourceEntries = store.entries.filter { $0.role == "specification" || $0.role == "weights" }
         let vocabularyEntries = store.entries.filter { $0.role == "vocabulary" }
@@ -169,10 +183,10 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
               }) else {
             throw ParakeetSourceSnapshotError.duplicateStructure("manifest")
         }
-        let reader = VerifiedArtifactReader(rootFD: sourceFD, cancellationCheck: { cancellation.isCancelled })
+        let reader = VerifiedArtifactReader(rootFD: sourceFD, cancellationCheck: { operation.isCancelled })
         var assets = [ParakeetSourceComponent: VerifiedCoreMLAssetBytes]()
         for component in ParakeetSourceComponent.allCases {
-            try cancellation.check()
+            try operation.check()
             let entries = sourceEntries.filter { $0.component == component.rawValue }
             guard entries.count == 2 else { throw ParakeetSourceSnapshotError.missingComponent(component.rawValue) }
             guard let specification = entries.first(where: { $0.role == "specification" }),
@@ -261,7 +275,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         return keys
     }
 
-    private func enumerateExactTree(sourceFD: Int32, cancellation: SnapshotCancellation) throws {
+    private func enumerateExactTree(sourceFD: Int32, operation: SnapshotOperationState) throws {
         var expectedFiles = Set([ParakeetSourceStore.identityMarkerName])
         for entry in store.entries { expectedFiles.insert(entry.path) }
         var expectedDirectories = Set<String>()
@@ -274,15 +288,15 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
             }
         }
         var found = Set<String>()
-        try walk(fd: sourceFD, relativePath: "", expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, found: &found, cancellation: cancellation)
+        try walk(fd: sourceFD, relativePath: "", expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, found: &found, operation: operation)
         guard found == expectedFiles.union(expectedDirectories) else {
             let missing = expectedFiles.union(expectedDirectories).subtracting(found).sorted().first ?? "unknown"
             throw ParakeetSourceSnapshotError.missingPath(missing)
         }
     }
 
-    private func walk(fd: Int32, relativePath: String, expectedFiles: Set<String>, expectedDirectories: Set<String>, found: inout Set<String>, cancellation: SnapshotCancellation) throws {
-        try cancellation.check()
+    private func walk(fd: Int32, relativePath: String, expectedFiles: Set<String>, expectedDirectories: Set<String>, found: inout Set<String>, operation: SnapshotOperationState) throws {
+        try operation.check()
         let listingFD = dup(fd)
         guard listingFD >= 0 else { throw ParakeetSourceSnapshotError.sourceNotDirectory }
         if forceFdopendirFailure {
@@ -295,7 +309,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         }
         defer { closedir(directory) }
         while let item = readdir(directory) {
-            try cancellation.check()
+            try operation.check()
             let name = withUnsafePointer(to: item.pointee.d_name) { pointer in String(cString: UnsafeRawPointer(pointer).assumingMemoryBound(to: CChar.self)) }
             guard name != ".", name != ".." else { continue }
             let path = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
@@ -309,7 +323,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
                 found.insert(path)
                 let child = try openDirectory(named: name, relativeTo: fd)
                 defer { _ = close(child) }
-                try walk(fd: child, relativePath: path, expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, found: &found, cancellation: cancellation)
+                try walk(fd: child, relativePath: path, expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, found: &found, operation: operation)
             } else {
                 guard type == S_IFREG else { throw type == S_IFLNK ? ParakeetSourceSnapshotError.symlinkPath(path) : ParakeetSourceSnapshotError.nonRegularPath(path) }
                 found.insert(path)
@@ -317,7 +331,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         }
     }
 
-    private func readMarker(sourceFD: Int32, cancellation: SnapshotCancellation) throws -> Data {
+    private func readMarker(sourceFD: Int32, operation: SnapshotOperationState) throws -> Data {
         let fd = try openFile(named: ParakeetSourceStore.identityMarkerName, relativeTo: sourceFD)
         defer { _ = close(fd) }
         var info = stat()
@@ -328,7 +342,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         var offset = 0
         try data.withUnsafeMutableBytes { raw in
             while offset < dataSize {
-                try cancellation.check()
+                try operation.check()
                 let count = Darwin.read(fd, raw.baseAddress!.advanced(by: offset), dataSize - offset)
                 if count < 0 { if errno == EINTR { continue }; throw ParakeetSourceSnapshotError.markerMalformed }
                 if count == 0 { throw ParakeetSourceSnapshotError.markerMalformed }
@@ -359,10 +373,40 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
     }
 }
 
-private final class SnapshotCancellation: @unchecked Sendable {
+private final class SnapshotOperationState: @unchecked Sendable {
+    private enum State {
+        case pending
+        case cancelled
+        case completed
+    }
+
     private let lock = NSLock()
-    private var cancelled = false
-    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
-    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
-    func check() throws { if isCancelled { throw ParakeetSourceSnapshotError.cancelled } }
+    private var state = State.pending
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .cancelled = state { return true }
+        return false
+    }
+
+    func cancel() {
+        lock.lock()
+        if case .pending = state { state = .cancelled }
+        lock.unlock()
+    }
+
+    func check() throws {
+        guard isCancelled == false else { throw ParakeetSourceSnapshotError.cancelled }
+    }
+
+    /// Claims the single completion linearization point. Once claimed, a later
+    /// cancellation cannot rewrite the result that the queue is about to resume.
+    func claimCompletion() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .pending = state else { return false }
+        state = .completed
+        return true
+    }
 }

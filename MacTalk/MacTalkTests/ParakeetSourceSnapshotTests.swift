@@ -83,6 +83,38 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_cancellationBeforeCompletionLinearizationReturnsCancelledWithoutSnapshot() async throws {
+        let fixture = try SourceFixture()
+        let completionReady = DispatchSemaphore(value: 0)
+        let releaseCompletion = DispatchSemaphore(value: 0)
+        let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store, beforeCompletion: {
+            completionReady.signal()
+            releaseCompletion.wait()
+        })
+        let task = Task { () -> Result<VerifiedParakeetSourceSnapshot, Error> in
+            do {
+                return .success(try await provider.makeVerifiedSnapshot())
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        XCTAssertEqual(completionReady.wait(timeout: .now() + 2), .success)
+        task.cancel()
+        releaseCompletion.signal()
+
+        let result = await task.value
+        guard case let .failure(error) = result else {
+            return XCTFail("cancellation before completion must not publish a snapshot")
+        }
+        XCTAssertEqual(error as? ParakeetSourceSnapshotError, .cancelled)
+
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor, "completion cancellation must release the shared lease")
+        successor?.release()
+    }
+
     func test_cancellationReturnsWhileActiveSnapshotReadIsBlocked() async throws {
         let fixture = try SourceFixture()
         let started = DispatchSemaphore(value: 0)
