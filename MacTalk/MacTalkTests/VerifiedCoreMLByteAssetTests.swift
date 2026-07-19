@@ -130,6 +130,13 @@ final class VerifiedCoreMLByteAssetTests: XCTestCase {
         XCTAssertEqual(try predict(loaded.model), manifest.prediction.output)
     }
 
+    func test_descriptionKeySetRejectsUnexpectedNames() {
+        XCTAssertTrue(hasExactFeatureNames(["x"], expected: "x"))
+        XCTAssertTrue(hasExactFeatureNames(["double"], expected: "double"))
+        XCTAssertFalse(hasExactFeatureNames(["x", "unexpected"], expected: "x"))
+        XCTAssertFalse(hasExactFeatureNames(["double", "unexpected"], expected: "double"))
+    }
+
     func test_fixtureManifestRejectsUnknownTopLevelFields() throws {
         let data = try Data(contentsOf: fixtureDirectory.appendingPathComponent("fixture-manifest.json"))
         var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -197,8 +204,12 @@ final class VerifiedCoreMLByteAssetTests: XCTestCase {
     }
 
     private func assertDescription(_ model: MLModel) throws {
-        let input = try XCTUnwrap(model.modelDescription.inputDescriptionsByName[manifest.input.name])
-        let output = try XCTUnwrap(model.modelDescription.outputDescriptionsByName[manifest.output.name])
+        let inputDescriptions = model.modelDescription.inputDescriptionsByName
+        let outputDescriptions = model.modelDescription.outputDescriptionsByName
+        XCTAssertEqual(Set(inputDescriptions.keys), Set([manifest.input.name]), "CoreML input names must exactly match the fixture manifest")
+        XCTAssertEqual(Set(outputDescriptions.keys), Set([manifest.output.name]), "CoreML output names must exactly match the fixture manifest")
+        let input = try XCTUnwrap(inputDescriptions[manifest.input.name])
+        let output = try XCTUnwrap(outputDescriptions[manifest.output.name])
         XCTAssertEqual(input.type, .multiArray)
         XCTAssertEqual(output.type, .multiArray)
         let inputConstraint = try XCTUnwrap(input.multiArrayConstraint)
@@ -207,6 +218,10 @@ final class VerifiedCoreMLByteAssetTests: XCTestCase {
         XCTAssertEqual(outputConstraint.dataType, manifest.output.mlDataType)
         XCTAssertEqual(inputConstraint.shape.map(\.intValue), manifest.input.shape)
         XCTAssertEqual(outputConstraint.shape.map(\.intValue), manifest.output.shape)
+    }
+
+    private func hasExactFeatureNames(_ names: Set<String>, expected: String) -> Bool {
+        names == Set([expected])
     }
 
     private func predict(_ model: MLModel) throws -> [Double] {
