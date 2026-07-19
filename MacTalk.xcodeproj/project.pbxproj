@@ -17,6 +17,7 @@
 		0BE1C4565BA6BDB53320FE33 /* AppAudioSourceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9928C31339CAC2A2015117 /* AppAudioSourceCoordinator.swift */; };
 		178EB531E286F42E6FC61E2E /* DeterministicHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B0E921D638972D397B465C /* DeterministicHarness.swift */; };
 		22EA9314082C867E95AAD93D /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */; };
+		23FB52B28101D8AC8ECA9A38 /* VerifiedArtifactReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */; };
 		26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = F8BDC86480E09233F303814D /* WhisperBridge.mm */; };
 		2758A4C87A0B8F80B244A10E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F032A713515F1C44CE66DF56 /* AppDelegate.swift */; };
 		280C2A87D802749506DCE8E1 /* AudioLevelMeterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135F815473A57D696974319C /* AudioLevelMeterView.swift */; };
@@ -50,6 +51,7 @@
 		5DEA73CAF2F5F8B48FE6F1BD /* AudioWaveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC01F39AE8E11E437C3DB59 /* AudioWaveView.swift */; };
 		5ECC9DC74C0255852D7D10D4 /* ParakeetStoreFileLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */; };
 		5F1333172A225DFE267FC2AE /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17A686CDEF44401730A9967E /* Metal.framework */; };
+		66298E9129F745F0A5A8BA57 /* VerifiedArtifactReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE87EA8F709AAD776A33FB83 /* VerifiedArtifactReader.swift */; };
 		6B24766DCFE64F0C7CA7DE74 /* AutoInsertManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */; };
 		6CA60FEE44034413EF9AD91D /* ParakeetBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = F902ABAAF29E3BD4DC3E4C6B /* ParakeetBootstrap.swift */; };
 		6D616C97722734D890E368C4 /* ModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */; };
@@ -164,6 +166,7 @@
 		4E05DF575E71C6393CD98181 /* ModelSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSecurityTests.swift; sourceTree = "<group>"; };
 		4FF9AD343E04BC2892622DA6 /* StatusMenuPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuPresenter.swift; sourceTree = "<group>"; };
 		500BF5A68FDA36C8BD7C1020 /* Probe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = "<group>"; };
+		5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedArtifactReaderTests.swift; sourceTree = "<group>"; };
 		59E9EED0C012BA63AE29807D /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 		5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinatorTests.swift; sourceTree = "<group>"; };
 		63E40FCC9174C4CE0C094B6E /* DeterministicHarnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicHarnessTests.swift; sourceTree = "<group>"; };
@@ -246,6 +249,7 @@
 		FAD794CD9B38C6DF8CEE5F41 /* ConcurrencyStressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConcurrencyStressTests.swift; sourceTree = "<group>"; };
 		FC6A14DF13BE05A8263A8449 /* ModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManager.swift; sourceTree = "<group>"; };
 		FD599796D84855D50B261BE6 /* ASREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ASREngine.swift; sourceTree = "<group>"; };
+		FE87EA8F709AAD776A33FB83 /* VerifiedArtifactReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedArtifactReader.swift; sourceTree = "<group>"; };
 		FF9641A5E0843D73310B25FF /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -373,6 +377,7 @@
 				E81ABE900575F1149ED6F49B /* TestHelpers.swift */,
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
 				94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */,
+				5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */,
 			);
 			name = MacTalkTests;
 			path = MacTalk/MacTalkTests;
@@ -464,6 +469,7 @@
 				858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */,
 				8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */,
 				6D6A281ADAFA30F63A003298 /* SHA256Streamer.swift */,
+				FE87EA8F709AAD776A33FB83 /* VerifiedArtifactReader.swift */,
 				F7D1282BF5D1667A5FA43179 /* WhisperBridge.h */,
 				F8BDC86480E09233F303814D /* WhisperBridge.mm */,
 			);
@@ -701,6 +707,7 @@
 				36BE7A849EAF97B712375786 /* StatusMenuPresenter.swift in Sources */,
 				A0D5BB67AAE9CC74CDE0199C /* TimestampedAudioComposer.swift in Sources */,
 				7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */,
+				66298E9129F745F0A5A8BA57 /* VerifiedArtifactReader.swift in Sources */,
 				26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */,
 				74885DC000A12417A4D290BF /* main.swift in Sources */,
 			);
@@ -750,6 +757,7 @@
 				E6945B4B17E2433394010F56 /* TSanSmokeTests.swift in Sources */,
 				5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */,
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
+				23FB52B28101D8AC8ECA9A38 /* VerifiedArtifactReaderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
