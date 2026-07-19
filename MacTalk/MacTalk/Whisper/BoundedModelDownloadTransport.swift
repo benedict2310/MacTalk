@@ -14,9 +14,26 @@ struct DownloadArtifactIdentity: Codable, Hashable, Sendable {
     let sha256: String
     let sizeBytes: Int64
 
+    /// Canonical JSON with sorted keys is hashed for the partial slot name. Length
+    /// framing is implicit in JSON and prevents delimiter/control-character
+    /// collisions between otherwise distinct identities.
     var canonicalKey: String {
-        [String(schemaVersion), provider, modelID, sourceRepository, revision,
-         artifactPath, filename, sha256, String(sizeBytes)].joined(separator: "\u{1f}")
+        let object: [String: Any] = [
+            "artifactPath": artifactPath,
+            "filename": filename,
+            "modelID": modelID,
+            "provider": provider,
+            "revision": revision,
+            "schemaVersion": schemaVersion,
+            "sha256": sha256,
+            "sizeBytes": sizeBytes,
+            "sourceRepository": sourceRepository
+        ]
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            preconditionFailure("DownloadArtifactIdentity must be JSON encodable")
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -80,10 +97,16 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     fileprivate let allowTestCredentialsOnLoopback: Bool
     private let sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)?
     private struct State {
-        var activeOperation: UUID?
-        var activeTasks: [UUID: URLSessionDataTask]
+        var nextGeneration: UInt64 = 0
+        var activeGeneration: UInt64?
+        var generationByCaller: [UUID: UInt64] = [:]
+        var cancelledCallers: Set<UUID> = []
+        var cancelledGenerations: Set<UInt64> = []
+        var supersededGenerations: Set<UInt64> = []
+        var claimedGenerations: Set<UInt64> = []
+        var activeTasks: [UInt64: URLSessionDataTask] = [:]
     }
-    private let state = OSAllocatedUnfairLock(initialState: State(activeOperation: nil, activeTasks: [:]))
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     init(capacity: VolumeCapacityProviding = SystemVolumeCapacityProvider(),
          allowInsecureLoopback: Bool = false,
@@ -96,51 +119,51 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     }
 
     func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        try await withTaskCancellationHandler(operation: {
+            try await downloadImpl(request)
+        }, onCancel: { [weak self] in
+            self?.cancel(operationID: request.operationID)
+        })
+    }
+
+    private func downloadImpl(_ request: BoundedModelDownloadRequest) async throws -> URL {
         try validate(request)
-        let operation = request.operationID
-        beginOperation(operation)
+        let operation = beginOperation(request.operationID)
         defer {
             state.withLock {
                 $0.activeTasks[operation] = nil
-                if $0.activeOperation == operation { $0.activeOperation = nil }
+                if $0.activeGeneration == operation { $0.activeGeneration = nil }
+                if $0.generationByCaller[request.operationID] == operation { $0.generationByCaller[request.operationID] = nil }
             }
         }
 
         let workspace = request.workspaceRoot
         try secureWorkspace(workspace)
         let identityDirectory = try Self.identityDirectoryName(for: request.identity)
-        let partials = workspace.appendingPathComponent("partials", isDirectory: true)
-        let slot = partials.appendingPathComponent(identityDirectory, isDirectory: true)
-        let completed = workspace.appendingPathComponent("completed", isDirectory: true)
-        try secureDirectory(partials)
-        try secureDirectory(slot)
-        try secureDirectory(completed)
-        let part = slot.appendingPathComponent("payload.part")
-        let metadataURL = slot.appendingPathComponent("payload.part.json")
+        let anchor = try WorkspaceAnchor(root: workspace, slotName: identityDirectory, filename: request.identity.filename)
         let mirrorURLs = request.mirrors
         var lastError: BoundedModelDownloadError?
 
         for mirror in mirrorURLs {
             try Task.checkCancellation()
-            guard isCurrent(operation) else { throw BoundedModelDownloadError.superseded }
-            var offset = try prepareSlot(part: part, metadataURL: metadataURL, request: request, mirror: mirror, operation: operation)
+            guard isCurrent(operation) else { throw operationError(operation) }
+            var resume = try prepareSlot(anchor: anchor, request: request, mirror: mirror, operation: operation)
             var retriedRangeIgnored = false
             do {
                 while true {
                     do {
-                        try preflight(request, admittedOffset: offset)
-                        let result = try await runAttempt(request: request, mirror: mirror, part: part, metadataURL: metadataURL, offset: offset, operation: operation)
+                        try preflight(request, admittedOffset: resume.offset)
+                        let result = try await runAttempt(request: request, anchor: anchor, mirror: mirror, offset: resume.offset, validator: resume.validator, operation: operation)
                         try requireCurrent(operation)
-                        offset = result
-                        guard offset == request.identity.sizeBytes else { throw BoundedModelDownloadError.incomplete }
-                        let destination = completed.appendingPathComponent(request.identity.filename)
-                        try verifyAndPromote(part: part, metadataURL: metadataURL, to: destination, identity: request.identity, operation: operation)
-                        return destination
+                        resume.offset = result
+                        guard resume.offset == request.identity.sizeBytes else { throw BoundedModelDownloadError.incomplete }
+                        try verifyAndPromote(anchor: anchor, identity: request.identity, operation: operation)
+                        return anchor.destinationURL
                     } catch let error as BoundedModelDownloadError
-                        where offset > 0 && !retriedRangeIgnored && Self.isResumeRetryable(error) {
+                        where resume.offset > 0 && !retriedRangeIgnored && Self.isResumeRetryable(error) {
                         retriedRangeIgnored = true
-                        try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
-                        offset = 0
+                        try clearSlotIfCurrent(anchor: anchor, operation: operation)
+                        resume = ResumeState(offset: 0, validator: nil)
                         // A stale or malformed resume response is retried exactly
                         // once without a Range on this same mirror. No bytes from
                         // the rejected response were admitted.
@@ -150,33 +173,48 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
             } catch BoundedModelDownloadError.interrupted {
                 throw BoundedModelDownloadError.interrupted
             } catch BoundedModelDownloadError.cancelled {
-                try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
+                try clearSlotIfCurrent(anchor: anchor, operation: operation)
                 throw BoundedModelDownloadError.cancelled
             } catch BoundedModelDownloadError.superseded {
-                try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
+                try clearSlotIfCurrent(anchor: anchor, operation: operation)
                 throw BoundedModelDownloadError.superseded
             } catch BoundedModelDownloadError.insufficientSpace(let required, let available) {
                 throw BoundedModelDownloadError.insufficientSpace(required: required, available: available)
             } catch let error as BoundedModelDownloadError {
                 lastError = error
-                try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
+                try clearSlotIfCurrent(anchor: anchor, operation: operation)
                 continue
             } catch {
                 lastError = .transport(error.localizedDescription)
-                try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
+                try clearSlotIfCurrent(anchor: anchor, operation: operation)
                 continue
             }
         }
-        throw lastError ?? BoundedModelDownloadError.transport("all mirrors failed")
+        throw lastError ?? operationError(operation)
     }
 
-    func cancel(operationID: UUID) {
-        let task = state.withLock { $0.activeTasks[operationID] }
+    fileprivate func cancelGeneration(_ generation: UInt64) {
+        let task = state.withLock { state -> URLSessionDataTask? in
+            state.cancelledGenerations.insert(generation)
+            return state.activeTasks[generation]
+        }
         task?.cancel()
     }
 
-    private func runAttempt(request: BoundedModelDownloadRequest, mirror: URL, part: URL, metadataURL: URL, offset: Int64, operation: UUID) async throws -> Int64 {
-        let delegate = AttemptDelegate(transport: self, request: request, mirror: mirror, part: part, metadataURL: metadataURL, initialOffset: offset, operation: operation, capacity: capacity)
+    func cancel(operationID: UUID) {
+        let task: URLSessionDataTask? = state.withLock { state in
+            state.cancelledCallers.insert(operationID)
+            if let generation = state.generationByCaller[operationID] {
+                state.cancelledGenerations.insert(generation)
+                return state.activeTasks[generation]
+            }
+            return nil
+        }
+        task?.cancel()
+    }
+
+    private func runAttempt(request: BoundedModelDownloadRequest, anchor: WorkspaceAnchor, mirror: URL, offset: Int64, validator: String?, operation: UInt64) async throws -> Int64 {
+        let delegate = AttemptDelegate(transport: self, request: request, anchor: anchor, mirror: mirror, initialOffset: offset, operation: operation, capacity: capacity)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.urlCredentialStorage = nil
@@ -189,7 +227,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         if offset > 0 {
             urlRequest.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
-            urlRequest.setValue(request.identity.sha256, forHTTPHeaderField: "If-Range")
+            if let validator { urlRequest.setValue(validator, forHTTPHeaderField: "If-Range") }
         }
         if let token = request.credentialToken,
            isOfficialCredentialURL(mirror) || (allowTestCredentialsOnLoopback && isLoopbackHTTPURL(mirror)) {
@@ -239,34 +277,51 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         return required
     }
 
-    private func isCurrent(_ operation: UUID) -> Bool { state.withLock { $0.activeOperation == operation } }
-
-    private func beginOperation(_ operation: UUID) {
-        let previousTask = state.withLock { state -> URLSessionDataTask? in
-            let previousTask = state.activeOperation.flatMap { state.activeTasks[$0] }
-            state.activeOperation = operation
-            return previousTask
-        }
-        previousTask?.cancel()
+    private func isCurrent(_ operation: UInt64) -> Bool {
+        state.withLock { $0.activeGeneration == operation && !$0.cancelledGenerations.contains(operation) }
     }
 
-    private func register(task: URLSessionDataTask, for operation: UUID) -> Bool {
-        state.withLock { state in
-            guard state.activeOperation == operation else { return false }
+    private func operationError(_ operation: UInt64) -> BoundedModelDownloadError {
+        state.withLock { $0.supersededGenerations.contains(operation) ? .superseded : .cancelled }
+    }
+
+    private func beginOperation(_ caller: UUID) -> UInt64 {
+        let result: (UInt64, URLSessionDataTask?) = state.withLock { state in
+            state.nextGeneration &+= 1
+            let generation = state.nextGeneration
+            let oldTask = state.activeGeneration.flatMap { state.activeTasks[$0] }
+            if let old = state.activeGeneration { state.supersededGenerations.insert(old) }
+            state.activeGeneration = generation
+            let wasCancelledBeforeRegistration = state.cancelledCallers.remove(caller) != nil
+            state.generationByCaller[caller] = generation
+            if wasCancelledBeforeRegistration { state.cancelledGenerations.insert(generation) }
+            return (generation, oldTask)
+        }
+        result.1?.cancel()
+        return result.0
+    }
+
+    private func register(task: URLSessionDataTask, for operation: UInt64) -> Bool {
+        let accepted = state.withLock { state -> Bool in
+            guard state.activeGeneration == operation,
+                  !state.cancelledGenerations.contains(operation) else { return false }
             state.activeTasks[operation] = task
             return true
         }
+        if !accepted { task.cancel() }
+        return accepted
     }
 
-    private func requireCurrent(_ operation: UUID) throws {
-        guard isCurrent(operation) else { throw BoundedModelDownloadError.superseded }
+    private func requireCurrent(_ operation: UInt64) throws {
+        guard isCurrent(operation) else { throw operationError(operation) }
     }
 
-    fileprivate func withCurrentOperation<T: Sendable>(_ operation: UUID, _ body: @Sendable () throws -> T) throws -> T {
-        try state.withLock {
-            guard $0.activeOperation == operation else { throw BoundedModelDownloadError.superseded }
-            return try body()
-        }
+    /// Checks state without holding the lock while doing filesystem or hashing I/O.
+    fileprivate func withCurrentOperation<T: Sendable>(_ operation: UInt64, _ body: @Sendable () throws -> T) throws -> T {
+        try requireCurrent(operation)
+        let value = try body()
+        try requireCurrent(operation)
+        return value
     }
 
     private func isSafeFilename(_ value: String) -> Bool {
@@ -310,67 +365,67 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         guard fchmod(fd, 0o700) == 0, fstat(fd, &st) == 0, UInt16(st.st_mode & 0o777) == 0o700 else { throw BoundedModelDownloadError.invalidIdentity }
     }
 
-    private func prepareSlot(part: URL, metadataURL: URL, request: BoundedModelDownloadRequest, mirror: URL, operation: UUID) throws -> Int64 {
+    private struct ResumeState { var offset: Int64; var validator: String? }
+
+    private func prepareSlot(anchor: WorkspaceAnchor, request: BoundedModelDownloadRequest, mirror: URL, operation: UInt64) throws -> ResumeState {
         _ = try withCurrentOperation(operation) {
-            if !FileManager.default.fileExists(atPath: part.path) || !FileManager.default.fileExists(atPath: metadataURL.path) {
-                try clearSlot(part: part, metadataURL: metadataURL)
-            }
+            if !anchor.existsPart || !anchor.existsMetadata { try anchor.clear() }
         }
         do {
-            let metadata = try JSONDecoder().decode(PartialMetadata.self, from: try readSecureFile(metadataURL, maxBytes: 1 << 20))
+            let metadata = try JSONDecoder().decode(PartialMetadata.self, from: try anchor.readMetadata(maxBytes: 1 << 20))
             guard metadata.identity == request.identity, metadata.mirror == mirror.absoluteString else { throw BoundedModelDownloadError.invalidResumeState }
-            let fd = open(part.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            let fd = anchor.openPart(readOnly: true)
             guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
             defer { close(fd) }
-            var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { throw BoundedModelDownloadError.invalidResumeState }
+            var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1 else { throw BoundedModelDownloadError.invalidResumeState }
             guard st.st_size >= 0, st.st_size <= request.identity.sizeBytes else { throw BoundedModelDownloadError.invalidResumeState }
             try requireCurrent(operation)
-            return Int64(st.st_size)
+            let validator = metadata.validator.flatMap { value in
+                value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") ? value : nil
+            }
+            return ResumeState(offset: Int64(st.st_size), validator: validator)
         } catch {
-            try clearSlotIfCurrent(part: part, metadataURL: metadataURL, operation: operation)
-            return 0
+            try clearSlotIfCurrent(anchor: anchor, operation: operation)
+            return ResumeState(offset: 0, validator: nil)
         }
     }
 
-    private func clearSlotIfCurrent(part: URL, metadataURL: URL, operation: UUID) throws {
-        do { try withCurrentOperation(operation) { try clearSlot(part: part, metadataURL: metadataURL) } }
-        catch BoundedModelDownloadError.superseded { }
+    private func clearSlotIfCurrent(anchor: WorkspaceAnchor, operation: UInt64) throws {
+        // A canceled operation owns cleanup until a newer generation replaces it.
+        let permitted = state.withLock { $0.activeGeneration == operation }
+        guard permitted else { return }
+        try anchor.clear()
     }
 
-    private func clearSlot(part: URL, metadataURL: URL) throws {
-        try? FileManager.default.removeItem(at: part)
-        try? FileManager.default.removeItem(at: metadataURL)
-    }
-
-    private func verify(part: URL, identity: DownloadArtifactIdentity) throws {
-        let fd = open(part.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw BoundedModelDownloadError.incomplete }; defer { close(fd) }
-        var st = stat(); guard fstat(fd, &st) == 0, Int64(st.st_size) == identity.sizeBytes else { throw BoundedModelDownloadError.incomplete }
+    private func verify(fd: Int32, identity: DownloadArtifactIdentity) throws {
+        guard fd >= 0 else { throw BoundedModelDownloadError.incomplete }; defer { close(fd) }
+        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, Int64(st.st_size) == identity.sizeBytes else { throw BoundedModelDownloadError.incomplete }
         var hasher = SHA256(); var buffer = [UInt8](repeating: 0, count: 64 * 1024); var total: Int64 = 0
         while true { let n = read(fd, &buffer, buffer.count); if n < 0 { throw BoundedModelDownloadError.incomplete }; if n == 0 { break }; hasher.update(data: Data(buffer[0..<n])); total += Int64(n) }
         let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard total == identity.sizeBytes, hash == identity.sha256 else { throw BoundedModelDownloadError.checksumMismatch }
     }
 
-    private func verifyAndPromote(part: URL, metadataURL: URL, to destination: URL, identity: DownloadArtifactIdentity, operation: UUID) throws {
-        try withCurrentOperation(operation) {
-            try verify(part: part, identity: identity)
-            let fileManager = FileManager.default
-            if fileManager.fileExists(atPath: destination.path) {
-                _ = try fileManager.replaceItemAt(destination, withItemAt: part,
-                                                  backupItemName: nil,
-                                                  options: .usingNewMetadataOnly)
-            } else {
-                try fileManager.moveItem(at: part, to: destination)
-            }
-            try? FileManager.default.removeItem(at: metadataURL)
+    private func verifyAndPromote(anchor: WorkspaceAnchor, identity: DownloadArtifactIdentity, operation: UInt64) throws {
+        try requireCurrent(operation)
+        try verify(fd: anchor.openPart(readOnly: true), identity: identity)
+        try requireCurrent(operation)
+        let claimed = state.withLock { state -> Bool in
+            guard state.activeGeneration == operation, !state.cancelledGenerations.contains(operation), !state.supersededGenerations.contains(operation) else { return false }
+            state.claimedGenerations.insert(operation); return true
         }
+        guard claimed else { throw operationError(operation) }
+        try anchor.promote()
+        try anchor.removeMetadata()
     }
 
-    fileprivate func isOperationCurrent(_ operation: UUID) -> Bool { isCurrent(operation) }
+    fileprivate func isOperationCurrent(_ operation: UInt64) -> Bool { isCurrent(operation) }
 
-    fileprivate func admit(_ data: Data, to fd: Int32, offset: Int64, expected: Int64, operation: UUID) throws -> Int64 {
-        try withCurrentOperation(operation) {
-            try write(data, to: fd, offset: offset, expected: expected)
+    fileprivate func admit(_ data: Data, anchor: WorkspaceAnchor, to fd: Int32, offset: Int64, expected: Int64, operation: UInt64) throws -> Int64 {
+        try anchor.ioQueue.sync {
+            try withCurrentOperation(operation) {
+                try write(data, to: fd, offset: offset, expected: expected)
+            }
         }
     }
 
@@ -436,6 +491,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     struct PartialMetadata: Codable, Equatable {
         let identity: DownloadArtifactIdentity
         let mirror: String
+        let validator: String?
     }
 
     private func isOfficialCredentialURL(_ url: URL) -> Bool {
@@ -447,14 +503,124 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     }
 }
 
+private final class WorkspaceAnchor: @unchecked Sendable {
+    private static let queueLock = NSLock()
+    private nonisolated(unsafe) static var queues: [String: DispatchQueue] = [:]
+    let ioQueue: DispatchQueue
+    let rootURL: URL
+    let partURL: URL
+    let metadataURL: URL
+    let destinationURL: URL
+    private let slotFD: Int32
+    private let completedFD: Int32
+
+    var existsPart: Bool { accessAt(slotFD, name: "payload.part") }
+    var existsMetadata: Bool { accessAt(slotFD, name: "payload.part.json") }
+
+    init(root: URL, slotName: String, filename: String) throws {
+        rootURL = root
+        ioQueue = Self.queue(for: root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(slotName).path)
+        let rootFD = try Self.openRoot(root)
+        let partialsFD = try Self.openOrCreateDirectory("partials", relativeTo: rootFD)
+        slotFD = try Self.openOrCreateDirectory(slotName, relativeTo: partialsFD)
+        completedFD = try Self.openOrCreateDirectory("completed", relativeTo: rootFD)
+        close(rootFD); close(partialsFD)
+        partURL = root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(slotName, isDirectory: true).appendingPathComponent("payload.part")
+        metadataURL = partURL.deletingLastPathComponent().appendingPathComponent("payload.part.json")
+        destinationURL = root.appendingPathComponent("completed", isDirectory: true).appendingPathComponent(filename)
+    }
+
+    deinit { close(slotFD); close(completedFD) }
+
+    func openPart(readOnly: Bool) -> Int32 {
+        openat(slotFD, "payload.part", (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+    }
+
+    func clear() throws {
+        try ioQueue.sync {
+            guard unlinkat(slotFD, "payload.part", 0) == 0 || errno == ENOENT else { throw BoundedModelDownloadError.transport("cannot remove partial") }
+            guard unlinkat(slotFD, "payload.part.json", 0) == 0 || errno == ENOENT else { throw BoundedModelDownloadError.transport("cannot remove metadata") }
+        }
+    }
+
+    func removeMetadata() throws {
+        try ioQueue.sync {
+            guard unlinkat(slotFD, "payload.part.json", 0) == 0 || errno == ENOENT else { throw BoundedModelDownloadError.transport("cannot remove metadata") }
+        }
+    }
+
+    func readMetadata(maxBytes: Int) throws -> Data {
+        let fd = openat(slotFD, "payload.part.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
+        defer { close(fd) }
+        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, st.st_size >= 0, st.st_size <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
+        var data = Data(capacity: Int(st.st_size)); var bytes = [UInt8](repeating: 0, count: min(65536, maxBytes))
+        while true { let n = read(fd, &bytes, bytes.count); if n < 0 { throw BoundedModelDownloadError.invalidResumeState }; if n == 0 { break }; data.append(contentsOf: bytes[0..<n]); if data.count > maxBytes { throw BoundedModelDownloadError.invalidResumeState } }
+        return data
+    }
+
+    func persistMetadata(_ metadata: BoundedModelDownloadTransport.PartialMetadata) throws {
+        let data = try JSONEncoder().encode(metadata)
+        let temp = ".payload.part.json.tmp-\(UUID().uuidString)"
+        let fd = openat(slotFD, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot create metadata") }
+        var keep = true; defer { close(fd); if keep { _ = unlinkat(slotFD, temp, 0) } }
+        try data.withUnsafeBytes { raw in
+            var written = 0
+            while written < data.count { let n = Darwin.write(fd, raw.baseAddress!.advanced(by: written), data.count - written); guard n > 0 else { throw BoundedModelDownloadError.transport("cannot write metadata") }; written += n }
+        }
+        guard fchmod(fd, mode_t(0o600)) == 0, fsync(fd) == 0, renameat(slotFD, temp, slotFD, "payload.part.json") == 0 else { throw BoundedModelDownloadError.transport("cannot install metadata") }
+        keep = false
+    }
+
+    func promote() throws {
+        try ioQueue.sync {
+            try promoteUnlocked()
+        }
+    }
+
+    private func promoteUnlocked() throws {
+        let existing = openat(completedFD, destinationURL.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if existing >= 0 { var st = stat(); guard fstat(existing, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1 else { close(existing); throw BoundedModelDownloadError.transport("existing destination invalid") }; close(existing) }
+        guard renameat(slotFD, "payload.part", completedFD, destinationURL.lastPathComponent) == 0 else { throw BoundedModelDownloadError.transport("cannot promote payload") }
+    }
+
+    private static func queue(for key: String) -> DispatchQueue {
+        queueLock.lock(); defer { queueLock.unlock() }
+        if let queue = queues[key] { return queue }
+        let queue = DispatchQueue(label: "com.mactalk.download-slot.\(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined())")
+        queues[key] = queue
+        return queue
+    }
+
+    private static func openRoot(_ url: URL) throws -> Int32 {
+        let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
+        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o700 else { close(fd); throw BoundedModelDownloadError.invalidIdentity }
+        return fd
+    }
+
+    private static func openOrCreateDirectory(_ name: String, relativeTo parent: Int32) throws -> Int32 {
+        var fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0 && errno == ENOENT { guard mkdirat(parent, name, mode_t(0o700)) == 0 || errno == EEXIST else { throw BoundedModelDownloadError.invalidIdentity }; fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        guard fd >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
+        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid() else { close(fd); throw BoundedModelDownloadError.invalidIdentity }
+        if (st.st_mode & 0o777) != 0o700, fchmod(fd, mode_t(0o700)) != 0 { close(fd); throw BoundedModelDownloadError.invalidIdentity }
+        guard fstat(fd, &st) == 0, (st.st_mode & 0o777) == 0o700 else { close(fd); throw BoundedModelDownloadError.invalidIdentity }
+        return fd
+    }
+
+    private func accessAt(_ parent: Int32, name: String) -> Bool { let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); if fd >= 0 { close(fd); return true }; return false }
+}
+
+
 private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private weak var transport: BoundedModelDownloadTransport?
     private let request: BoundedModelDownloadRequest
     private let mirror: URL
-    private let part: URL
-    private let metadataURL: URL
+    private let anchor: WorkspaceAnchor
     private let initialOffset: Int64
-    private let operation: UUID
+    private let operation: UInt64
     private let capacity: VolumeCapacityProviding
     private let allowInsecureLoopback: Bool
     private let lock = NSLock()
@@ -467,8 +633,8 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
     private var task: URLSessionTask?
     private var redirectCount = 0
 
-    init(transport: BoundedModelDownloadTransport, request: BoundedModelDownloadRequest, mirror: URL, part: URL, metadataURL: URL, initialOffset: Int64, operation: UUID, capacity: VolumeCapacityProviding) {
-        self.transport = transport; self.request = request; self.mirror = mirror; self.part = part; self.metadataURL = metadataURL; self.initialOffset = initialOffset; self.operation = operation; self.capacity = capacity; self.allowInsecureLoopback = transport.allowInsecureLoopback; self.offset = initialOffset
+    init(transport: BoundedModelDownloadTransport, request: BoundedModelDownloadRequest, anchor: WorkspaceAnchor, mirror: URL, initialOffset: Int64, operation: UInt64, capacity: VolumeCapacityProviding) {
+        self.transport = transport; self.request = request; self.anchor = anchor; self.mirror = mirror; self.initialOffset = initialOffset; self.operation = operation; self.capacity = capacity; self.allowInsecureLoopback = transport.allowInsecureLoopback; self.offset = initialOffset
     }
 
     func result() async throws -> Int64 {
@@ -498,12 +664,13 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
             guard length == expected else { completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedContentLength(length)); return }
         }
         guard let transport else { completionHandler(.cancel); fail(BoundedModelDownloadError.superseded); return }
+        let validator = Self.strongValidator(from: http)
         do {
             let opened = try transport.withCurrentOperation(operation) {
-                let opened = open(part.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                let opened = anchor.openPart(readOnly: false)
                 guard opened >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
                 do {
-                    try transport.persist(.init(identity: request.identity, mirror: mirror.absoluteString), at: metadataURL)
+                    try anchor.persistMetadata(.init(identity: request.identity, mirror: mirror.absoluteString, validator: validator))
                 } catch {
                     _ = close(opened)
                     throw error
@@ -526,7 +693,7 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
             let available = try capacity.availableCapacity(for: request.workspaceRoot)
             guard available >= required else { throw BoundedModelDownloadError.insufficientSpace(required: required, available: available) }
             lock.lock(); let currentOperation = offset; lock.unlock()
-            let next = try transport.admit(data, to: fd, offset: currentOperation, expected: request.identity.sizeBytes, operation: operation)
+            let next = try transport.admit(data, anchor: anchor, to: fd, offset: currentOperation, expected: request.identity.sizeBytes, operation: operation)
             lock.lock(); offset = next; lock.unlock()
             request.progress?(next, request.identity.sizeBytes)
         } catch { fail(error) }
@@ -564,8 +731,14 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
         }
     }
 
+    private static func strongValidator(from response: HTTPURLResponse) -> String? {
+        guard let value = response.value(forHTTPHeaderField: "ETag"),
+              value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") else { return nil }
+        return value
+    }
+
     func attach(task: URLSessionTask) { lock.lock(); self.task = task; lock.unlock() }
-    private func cancel() { lock.lock(); let task = self.task; lock.unlock(); task?.cancel(); fail(BoundedModelDownloadError.cancelled) }
+    private func cancel() { lock.lock(); let task = self.task; lock.unlock(); task?.cancel(); transport?.cancelGeneration(operation); fail(BoundedModelDownloadError.cancelled) }
     private func fail(_ error: Error) { finish(error: error) }
     private func finish(error: Error?) {
         lock.lock(); guard !finished else { lock.unlock(); return }; finished = true; terminalError = error; let continuation = self.continuation; self.continuation = nil; lock.unlock()

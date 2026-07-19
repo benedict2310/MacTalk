@@ -21,16 +21,19 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         BoundedModelDownloadRequest(identity: identity, mirrors: [server.url], workspaceRoot: root)
     }
 
-    private func seedPrefix(payload: Data, count: Int, identity: DownloadArtifactIdentity, mirror: URL, root: URL) throws {
+    private func seedPrefix(payload: Data, count: Int, identity: DownloadArtifactIdentity, mirror: URL, root: URL, validator: String? = nil) throws {
         let slot = root
             .appendingPathComponent("partials", isDirectory: true)
             .appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: identity), isDirectory: true)
         try FileManager.default.createDirectory(at: slot, withIntermediateDirectories: true)
         try Data(payload.prefix(count)).write(to: slot.appendingPathComponent("payload.part"), options: .atomic)
-        try JSONEncoder().encode(SeedMetadata(identity: identity, mirror: mirror.absoluteString)).write(to: slot.appendingPathComponent("payload.part.json"), options: .atomic)
+        let metadataURL = slot.appendingPathComponent("payload.part.json")
+        try JSONEncoder().encode(SeedMetadata(identity: identity, mirror: mirror.absoluteString, validator: validator)).write(to: metadataURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metadataURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: slot.appendingPathComponent("payload.part").path)
     }
 
-    private struct SeedMetadata: Codable { let identity: DownloadArtifactIdentity; let mirror: String }
+    private struct SeedMetadata: Codable { let identity: DownloadArtifactIdentity; let mirror: String; let validator: String? }
 
     private func root() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("mactalk-transport-\(UUID().uuidString)")
@@ -132,10 +135,10 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         try FileManager.default.createDirectory(at: slot, withIntermediateDirectories: true)
         let metadataURL = slot.appendingPathComponent("payload.part.json")
         let mirror = URL(string: "http://localhost:12345/fixture")!
-        let old = BoundedModelDownloadTransport.PartialMetadata(identity: id, mirror: mirror.absoluteString)
+        let old = BoundedModelDownloadTransport.PartialMetadata(identity: id, mirror: mirror.absoluteString, validator: nil)
         var changed = id
         changed = DownloadArtifactIdentity(schemaVersion: id.schemaVersion, provider: id.provider, modelID: "changed", sourceRepository: id.sourceRepository, revision: id.revision, artifactPath: id.artifactPath, filename: id.filename, sha256: id.sha256, sizeBytes: id.sizeBytes)
-        let new = BoundedModelDownloadTransport.PartialMetadata(identity: changed, mirror: mirror.absoluteString)
+        let new = BoundedModelDownloadTransport.PartialMetadata(identity: changed, mirror: mirror.absoluteString, validator: nil)
         let transport = BoundedModelDownloadTransport()
         try transport.persist(old, at: metadataURL)
         let writer = DispatchQueue.global(qos: .userInitiated)
@@ -184,12 +187,12 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         }
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let id = identity(for: payload)
-        try seedPrefix(payload: payload, count: 9_000, identity: id, mirror: server.url, root: root)
+        try seedPrefix(payload: payload, count: 9_000, identity: id, mirror: server.url, root: root, validator: "\"fixture-etag\"")
         let destination = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(BoundedModelDownloadRequest(identity: id, mirrors: [server.url], workspaceRoot: root))
         XCTAssertEqual(try Data(contentsOf: destination), payload)
         XCTAssertEqual(server.requestLog.count, 1)
         XCTAssertEqual(server.requestLog[0].headers["range"], "bytes=9000-")
-        XCTAssertEqual(server.requestLog[0].headers["if-range"], id.sha256)
+        XCTAssertEqual(server.requestLog[0].headers["if-range"], "\"fixture-etag\"")
     }
 
     func testIgnoredRangeGetsOneCleanSameMirrorRetry() async throws {
@@ -223,7 +226,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let counter = Counter()
         let server = try LoopbackHTTPServer { request in
             counter.lock.lock(); counter.calls += 1; let call = counter.calls; counter.lock.unlock()
-            if call == 1 { return .init(body: .drop(payload, admittedBytes: 9_000)) }
+            if call == 1 { return .init(headers: ["ETag": "\"strong-fixture\""], body: .drop(payload, admittedBytes: 9_000)) }
             guard let range = request.headers["range"], range == "bytes=9000-" else { return .init(status: 416) }
             return .init(status: 206, headers: ["Content-Length": "23000"], body: .fixed(Data(payload.dropFirst(9_000))), contentRange: "bytes 9000-31999/32000")
         }
@@ -240,6 +243,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let destination = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
         XCTAssertEqual(try Data(contentsOf: destination), payload)
         XCTAssertEqual(server.requestLog[1].headers["range"], "bytes=9000-")
+        XCTAssertEqual(server.requestLog[1].headers["if-range"], "\"strong-fixture\"")
     }
 
     func testEachIdentityFieldPreventsResumeReuse() async throws {
@@ -398,6 +402,88 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(try Data(contentsOf: destination), payload)
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.appendingPathComponent("partials").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id)).appendingPathComponent("payload.part").path))
+    }
+
+    func testWeakOrAbsentValidatorNeverBecomesIfRange() async throws {
+        let payload = Data(repeating: 31, count: 1_024)
+        let server = try LoopbackHTTPServer { request in
+            if request.headers["range"] != nil {
+                XCTAssertNil(request.headers["if-range"])
+                return .init(status: 206, headers: ["ETag": "W/\"weak\"", "Content-Length": "1020"], body: .fixed(Data(payload.dropFirst(4))), contentRange: "bytes 4-1023/1024")
+            }
+            return .init(body: .fixed(payload))
+        }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = identity(for: payload)
+        try seedPrefix(payload: payload, count: 4, identity: id, mirror: server.url, root: root)
+        _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
+    }
+
+    func testCanonicalIdentityFramingRejectsControlCharacterCollision() throws {
+        let payload = Data("canonical".utf8)
+        let base = identity(for: payload)
+        let first = DownloadArtifactIdentity(schemaVersion: 1, provider: "a\u{1f}b", modelID: "c", sourceRepository: base.sourceRepository, revision: base.revision, artifactPath: base.artifactPath, filename: base.filename, sha256: base.sha256, sizeBytes: base.sizeBytes)
+        let second = DownloadArtifactIdentity(schemaVersion: 1, provider: "a", modelID: "b\u{1f}c", sourceRepository: base.sourceRepository, revision: base.revision, artifactPath: base.artifactPath, filename: base.filename, sha256: base.sha256, sizeBytes: base.sizeBytes)
+        XCTAssertNotEqual(try BoundedModelDownloadTransport.identityDirectoryName(for: first), try BoundedModelDownloadTransport.identityDirectoryName(for: second))
+        let shaVariant = DownloadArtifactIdentity(schemaVersion: base.schemaVersion, provider: base.provider, modelID: base.modelID, sourceRepository: base.sourceRepository, revision: base.revision, artifactPath: base.artifactPath, filename: base.filename, sha256: String(repeating: "a", count: 64), sizeBytes: base.sizeBytes)
+        let sizeVariant = DownloadArtifactIdentity(schemaVersion: base.schemaVersion, provider: base.provider, modelID: base.modelID, sourceRepository: base.sourceRepository, revision: base.revision, artifactPath: base.artifactPath, filename: base.filename, sha256: base.sha256, sizeBytes: base.sizeBytes + 1)
+        XCTAssertNotEqual(try BoundedModelDownloadTransport.identityDirectoryName(for: base), try BoundedModelDownloadTransport.identityDirectoryName(for: shaVariant))
+        XCTAssertNotEqual(try BoundedModelDownloadTransport.identityDirectoryName(for: base), try BoundedModelDownloadTransport.identityDirectoryName(for: sizeVariant))
+    }
+
+    func testAnchoredWorkspacePromotionDoesNotFollowRootReplacement() async throws {
+        let payload = Data("anchored-payload".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); let moved = root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + "-moved")
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: moved) }
+        let id = identity(for: payload)
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let request = BoundedModelDownloadRequest(identity: id, mirrors: [server.url], workspaceRoot: root, progress: { received, total in
+            if received == total {
+                try? FileManager.default.moveItem(at: root, to: moved)
+                try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            }
+        })
+        _ = try await transport.download(request)
+        XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent("completed/\(id.filename)")), payload)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/\(id.filename)").path))
+    }
+
+    func testCancelBeforeTaskRegistrationIsRecorded() async throws {
+        let payload = Data("pre-cancel".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root)
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        transport.cancel(operationID: id)
+        do { _ = try await transport.download(request); XCTFail("pre-canceled operation must fail") }
+        catch BoundedModelDownloadError.cancelled { }
+        XCTAssertTrue(server.requestLog.isEmpty)
+    }
+
+    func testDuplicateCallerIDsUseDistinctGenerations() async throws {
+        let payload = Data(repeating: 37, count: 100_000)
+        let slow = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 512, delay: 0.002)) }
+        let fast = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(); let identity = identity(for: payload)
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let first = Task { try await transport.download(BoundedModelDownloadRequest(identity: identity, mirrors: [slow.url], operationID: id, workspaceRoot: root)) }
+        try await waitForRequest(slow)
+        let second = Task { try await transport.download(BoundedModelDownloadRequest(identity: identity, mirrors: [fast.url], operationID: id, workspaceRoot: root)) }
+        _ = try await second.value
+        do { _ = try await first.value; XCTFail("old generation must not publish") }
+        catch BoundedModelDownloadError.superseded { }
+        catch { XCTFail("duplicate caller ID must report superseded, got \(error)") }
+    }
+
+    func testLoopbackStopIsIdempotentAndClosesListener() throws {
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(Data())) }
+        XCTAssertFalse(server.isStopped)
+        server.stop(); server.stop()
+        XCTAssertTrue(server.isStopped)
     }
 
     private func waitForRequest(_ server: LoopbackHTTPServer) async throws {

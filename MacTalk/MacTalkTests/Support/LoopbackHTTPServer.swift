@@ -28,8 +28,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let response: @Sendable (Request) -> Response
     private let lock = NSLock()
     private var requests: [Request] = []
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var ready = DispatchSemaphore(value: 0)
     private(set) var port: UInt16 = 0
+    private(set) var isStopped = false
 
     init(response: @escaping @Sendable (Request) -> Response) throws {
         self.response = response
@@ -45,12 +47,29 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         guard ready.wait(timeout: .now() + 5) == .success, port != 0 else { throw ServerError.startFailed }
     }
 
-    deinit { listener.cancel() }
+    deinit { stop() }
+
+    /// Idempotently shuts down the listener and every accepted connection.
+    func stop() {
+        let active: [NWConnection] = lock.withLock {
+            guard !isStopped else { return [] }
+            isStopped = true
+            let values = Array(connections.values)
+            connections.removeAll()
+            return values
+        }
+        listener.cancel()
+        active.forEach { $0.cancel() }
+    }
 
     var url: URL { URL(string: "http://127.0.0.1:\(port)/artifact")! }
     var requestLog: [Request] { lock.lock(); defer { lock.unlock() }; return requests }
 
     private func accept(_ connection: NWConnection) {
+        lock.withLock { connections[ObjectIdentifier(connection)] = connection }
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            if case .cancelled = state, let connection { self?.lock.withLock { self?.connections[ObjectIdentifier(connection)] = nil } }
+        }
         connection.start(queue: queue)
         receive(connection, buffer: Data())
     }
@@ -60,6 +79,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             guard let self else { connection.cancel(); return }
             var buffer = buffer
             if let data { buffer.append(data) }
+            guard buffer.count <= 64 * 1024 else { connection.cancel(); return }
             if let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 let request = self.parseRequest(Data(buffer[..<headerEnd.lowerBound]))
                 self.lock.lock(); self.requests.append(request); self.lock.unlock()
@@ -136,4 +156,8 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     enum ServerError: Error { case startFailed }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T { lock(); defer { unlock() }; return body() }
 }
