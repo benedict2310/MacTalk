@@ -139,14 +139,13 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         var changed = id
         changed = DownloadArtifactIdentity(schemaVersion: id.schemaVersion, provider: id.provider, modelID: "changed", sourceRepository: id.sourceRepository, revision: id.revision, artifactPath: id.artifactPath, filename: id.filename, sha256: id.sha256, sizeBytes: id.sizeBytes)
         let new = BoundedModelDownloadTransport.PartialMetadata(identity: changed, mirror: mirror.absoluteString, validator: nil)
-        let transport = BoundedModelDownloadTransport()
-        try transport.persist(old, at: metadataURL)
+        try Self.persistMetadata(old, at: metadataURL)
         let writer = DispatchQueue.global(qos: .userInitiated)
         let finished = DispatchSemaphore(value: 0)
         writer.async {
             defer { finished.signal() }
             for index in 0..<1_000 {
-                try? transport.persist(index.isMultiple(of: 2) ? old : new, at: metadataURL)
+                try? Self.persistMetadata(index.isMultiple(of: 2) ? old : new, at: metadataURL)
             }
         }
         var observations = 0
@@ -404,6 +403,21 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.appendingPathComponent("partials").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id)).appendingPathComponent("payload.part").path))
     }
 
+    func testLastModifiedValidatorCanResumeWithoutETag() async throws {
+        let payload = Data(repeating: 30, count: 1_024)
+        let server = try LoopbackHTTPServer { request in
+            if request.headers["range"] != nil {
+                XCTAssertEqual(request.headers["if-range"], "Wed, 21 Oct 2015 07:28:00 GMT")
+                return .init(status: 206, headers: ["Content-Length": "1020"], body: .fixed(Data(payload.dropFirst(4))), contentRange: "bytes 4-1023/1024")
+            }
+            return .init(headers: ["Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"], body: .drop(payload, admittedBytes: 4))
+        }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = identity(for: payload)
+        do { _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root)); XCTFail("first request should interrupt") } catch BoundedModelDownloadError.interrupted { }
+        _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
+    }
+
     func testWeakOrAbsentValidatorNeverBecomesIfRange() async throws {
         let payload = Data(repeating: 31, count: 1_024)
         let server = try LoopbackHTTPServer { request in
@@ -431,6 +445,21 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertNotEqual(try BoundedModelDownloadTransport.identityDirectoryName(for: base), try BoundedModelDownloadTransport.identityDirectoryName(for: sizeVariant))
     }
 
+    func testCancellationAfterBodyBeforePromotionPreventsCommit() async throws {
+        let payload = Data(repeating: 24, count: 32_000)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let operationID = UUID()
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: operationID, workspaceRoot: root, progress: { received, total in
+            if received == total { transport.cancel(operationID: operationID) }
+        })
+        do { _ = try await transport.download(request); XCTFail("cancellation after body must prevent promotion") }
+        catch BoundedModelDownloadError.cancelled { }
+        let destination = root.appendingPathComponent("completed/fixture.bin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     func testAnchoredWorkspacePromotionDoesNotFollowRootReplacement() async throws {
         let payload = Data("anchored-payload".utf8)
         let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
@@ -450,6 +479,26 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/\(id.filename)").path))
     }
 
+    func testAnchoredIntermediateDirectoryReplacementCannotCaptureWrites() async throws {
+        let payload = Data("anchored-intermediate".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); let movedPartials = root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + "-partials-moved")
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: movedPartials) }
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], workspaceRoot: root, progress: { received, total in
+            if received == total {
+                let partials = root.appendingPathComponent("partials", isDirectory: true)
+                try? FileManager.default.moveItem(at: partials, to: movedPartials)
+                try? FileManager.default.createDirectory(at: partials, withIntermediateDirectories: true)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: partials.path)
+            }
+        })
+        let destination = try await transport.download(request)
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("partials").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: request.identity)).appendingPathComponent("payload.part").path))
+
+    }
+
     func testCancelBeforeTaskRegistrationIsRecorded() async throws {
         let payload = Data("pre-cancel".utf8)
         let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
@@ -463,7 +512,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertTrue(server.requestLog.isEmpty)
     }
 
-    func testDuplicateCallerIDsUseDistinctGenerations() async throws {
+    func testDuplicateCallerIDsAreRejectedBeforeSideEffects() async throws {
         let payload = Data(repeating: 37, count: 100_000)
         let slow = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 512, delay: 0.002)) }
         let fast = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
@@ -473,10 +522,12 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let first = Task { try await transport.download(BoundedModelDownloadRequest(identity: identity, mirrors: [slow.url], operationID: id, workspaceRoot: root)) }
         try await waitForRequest(slow)
         let second = Task { try await transport.download(BoundedModelDownloadRequest(identity: identity, mirrors: [fast.url], operationID: id, workspaceRoot: root)) }
-        _ = try await second.value
-        do { _ = try await first.value; XCTFail("old generation must not publish") }
-        catch BoundedModelDownloadError.superseded { }
-        catch { XCTFail("duplicate caller ID must report superseded, got \(error)") }
+        do { _ = try await second.value; XCTFail("duplicate caller ID must be rejected") }
+        catch BoundedModelDownloadError.duplicateOperationID { }
+        catch { XCTFail("duplicate caller ID must be rejected before side effects, got \(error)") }
+        _ = try await first.value
+        XCTAssertEqual(slow.requestLog.count, 1)
+        XCTAssertTrue(fast.requestLog.isEmpty)
     }
 
     func testLoopbackStopIsIdempotentAndClosesListener() throws {
@@ -484,6 +535,12 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertFalse(server.isStopped)
         server.stop(); server.stop()
         XCTAssertTrue(server.isStopped)
+        XCTAssertEqual(server.activeConnectionCount, 0)
+    }
+
+    private static func persistMetadata(_ metadata: BoundedModelDownloadTransport.PartialMetadata, at url: URL) throws {
+        try JSONEncoder().encode(metadata).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     private func waitForRequest(_ server: LoopbackHTTPServer) async throws {

@@ -61,6 +61,7 @@ struct BoundedModelDownloadRequest: Sendable {
 
 enum BoundedModelDownloadError: Error, Equatable, Sendable {
     case invalidIdentity
+    case duplicateOperationID
     case invalidMirror
     case insufficientSpace(required: Int64, available: Int64)
     case unexpectedStatus(Int)
@@ -104,9 +105,12 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         var cancelledGenerations: Set<UInt64> = []
         var supersededGenerations: Set<UInt64> = []
         var claimedGenerations: Set<UInt64> = []
+        var terminalErrors: [UInt64: BoundedModelDownloadError] = [:]
         var activeTasks: [UInt64: URLSessionDataTask] = [:]
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
+    private let slotRegistryLock = NSLock()
+    private var slotPermits: [String: NSLock] = [:]
 
     init(capacity: VolumeCapacityProviding = SystemVolumeCapacityProvider(),
          allowInsecureLoopback: Bool = false,
@@ -118,6 +122,9 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         self.sessionFactory = sessionFactory
     }
 
+    /// Returns the promoted path for compatibility. Callers must reopen and
+    /// revalidate the destination by descriptor before handing it to a native
+    /// model loader; this URL is not an immutable file capability.
     func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
         try await withTaskCancellationHandler(operation: {
             try await downloadImpl(request)
@@ -128,18 +135,30 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
 
     private func downloadImpl(_ request: BoundedModelDownloadRequest) async throws -> URL {
         try validate(request)
-        let operation = beginOperation(request.operationID)
+        let identityDirectory = try Self.identityDirectoryName(for: request.identity)
+        let slotKey = request.workspaceRoot.standardizedFileURL.path + "/partials/" + identityDirectory
+        let operation = try beginOperation(request.operationID, slotKey: slotKey)
         defer {
-            state.withLock {
-                $0.activeTasks[operation] = nil
-                if $0.activeGeneration == operation { $0.activeGeneration = nil }
-                if $0.generationByCaller[request.operationID] == operation { $0.generationByCaller[request.operationID] = nil }
+            state.withLock { state in
+                state.activeTasks[operation] = nil
+                if state.activeGeneration == operation { state.activeGeneration = nil }
+                if state.generationByCaller[request.operationID] == operation { state.generationByCaller[request.operationID] = nil }
+                if state.cancelledGenerations.contains(operation) {
+                    state.terminalErrors[operation] = .cancelled
+                } else if state.supersededGenerations.contains(operation) {
+                    state.terminalErrors[operation] = .superseded
+                }
+                state.cancelledGenerations.remove(operation)
+                state.supersededGenerations.remove(operation)
+                state.claimedGenerations.remove(operation)
+                if state.terminalErrors.count > 64 {
+                    let oldest = state.terminalErrors.keys.sorted().dropLast(64)
+                    oldest.forEach { state.terminalErrors[$0] = nil }
+                }
             }
         }
 
         let workspace = request.workspaceRoot
-        try secureWorkspace(workspace)
-        let identityDirectory = try Self.identityDirectoryName(for: request.identity)
         let anchor = try WorkspaceAnchor(root: workspace, slotName: identityDirectory, filename: request.identity.filename)
         let mirrorURLs = request.mirrors
         var lastError: BoundedModelDownloadError?
@@ -236,7 +255,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         let task = session.dataTask(with: urlRequest)
         guard register(task: task, for: operation) else {
             task.cancel()
-            throw BoundedModelDownloadError.superseded
+            throw operationError(operation)
         }
         delegate.attach(task: task)
         task.resume()
@@ -281,12 +300,22 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         state.withLock { $0.activeGeneration == operation && !$0.cancelledGenerations.contains(operation) }
     }
 
-    private func operationError(_ operation: UInt64) -> BoundedModelDownloadError {
-        state.withLock { $0.supersededGenerations.contains(operation) ? .superseded : .cancelled }
+    fileprivate func operationError(_ operation: UInt64) -> BoundedModelDownloadError {
+        state.withLock { state in
+            if let terminal = state.terminalErrors[operation] { return terminal }
+            if state.cancelledGenerations.contains(operation) { return .cancelled }
+            return state.supersededGenerations.contains(operation) ? .superseded : .cancelled
+        }
     }
 
-    private func beginOperation(_ caller: UUID) -> UInt64 {
-        let result: (UInt64, URLSessionDataTask?) = state.withLock { state in
+    private func beginOperation(_ caller: UUID, slotKey: String) throws -> UInt64 {
+        let permit = slotPermit(for: slotKey)
+        permit.lock()
+        defer { permit.unlock() }
+        let result: (UInt64, URLSessionDataTask?) = try state.withLock { state in
+            if state.generationByCaller[caller] != nil {
+                throw BoundedModelDownloadError.duplicateOperationID
+            }
             state.nextGeneration &+= 1
             let generation = state.nextGeneration
             let oldTask = state.activeGeneration.flatMap { state.activeTasks[$0] }
@@ -351,38 +380,22 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private func secureWorkspace(_ root: URL) throws {
-        guard root.isFileURL, root.path.hasPrefix("/"), !root.path.contains("..") else { throw BoundedModelDownloadError.invalidIdentity }
-        try secureDirectory(root)
-    }
-
-    private func secureDirectory(_ url: URL) throws {
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
-        defer { close(fd) }
-        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid() else { throw BoundedModelDownloadError.invalidIdentity }
-        guard fchmod(fd, 0o700) == 0, fstat(fd, &st) == 0, UInt16(st.st_mode & 0o777) == 0o700 else { throw BoundedModelDownloadError.invalidIdentity }
-    }
-
     private struct ResumeState { var offset: Int64; var validator: String? }
 
     private func prepareSlot(anchor: WorkspaceAnchor, request: BoundedModelDownloadRequest, mirror: URL, operation: UInt64) throws -> ResumeState {
         _ = try withCurrentOperation(operation) {
-            if !anchor.existsPart || !anchor.existsMetadata { try anchor.clear() }
+            if !anchor.existsPart || !anchor.existsMetadata { try self.clearSlotIfCurrent(anchor: anchor, operation: operation) }
         }
         do {
             let metadata = try JSONDecoder().decode(PartialMetadata.self, from: try anchor.readMetadata(maxBytes: 1 << 20))
             guard metadata.identity == request.identity, metadata.mirror == mirror.absoluteString else { throw BoundedModelDownloadError.invalidResumeState }
-            let fd = anchor.openPart(readOnly: true)
+            let fd = try anchor.openPart(readOnly: true)
             guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
             defer { close(fd) }
             var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1 else { throw BoundedModelDownloadError.invalidResumeState }
             guard st.st_size >= 0, st.st_size <= request.identity.sizeBytes else { throw BoundedModelDownloadError.invalidResumeState }
             try requireCurrent(operation)
-            let validator = metadata.validator.flatMap { value in
-                value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") ? value : nil
-            }
+            let validator = metadata.validator.flatMap(Self.validValidator)
             return ResumeState(offset: Int64(st.st_size), validator: validator)
         } catch {
             try clearSlotIfCurrent(anchor: anchor, operation: operation)
@@ -391,7 +404,11 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     }
 
     private func clearSlotIfCurrent(anchor: WorkspaceAnchor, operation: UInt64) throws {
-        // A canceled operation owns cleanup until a newer generation replaces it.
+        // Serialize stale cleanup against generation replacement and the final
+        // claim/rename. Cancellation itself never waits on this permit.
+        let permit = slotPermit(for: anchor.slotKey)
+        permit.lock()
+        defer { permit.unlock() }
         let permitted = state.withLock { $0.activeGeneration == operation }
         guard permitted else { return }
         try anchor.clear()
@@ -408,8 +425,10 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
 
     private func verifyAndPromote(anchor: WorkspaceAnchor, identity: DownloadArtifactIdentity, operation: UInt64) throws {
         try requireCurrent(operation)
-        try verify(fd: anchor.openPart(readOnly: true), identity: identity)
-        try requireCurrent(operation)
+        try verify(fd: try anchor.openPart(readOnly: true), identity: identity)
+        let permit = slotPermit(for: anchor.slotKey)
+        permit.lock()
+        defer { permit.unlock() }
         let claimed = state.withLock { state -> Bool in
             guard state.activeGeneration == operation, !state.cancelledGenerations.contains(operation), !state.supersededGenerations.contains(operation) else { return false }
             state.claimedGenerations.insert(operation); return true
@@ -417,6 +436,15 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         guard claimed else { throw operationError(operation) }
         try anchor.promote()
         try anchor.removeMetadata()
+    }
+
+    private func slotPermit(for key: String) -> NSLock {
+        slotRegistryLock.lock()
+        defer { slotRegistryLock.unlock() }
+        if let permit = slotPermits[key] { return permit }
+        let permit = NSLock()
+        slotPermits[key] = permit
+        return permit
     }
 
     fileprivate func isOperationCurrent(_ operation: UInt64) -> Bool { isCurrent(operation) }
@@ -442,56 +470,24 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         return offset + Int64(written)
     }
 
-    func persist(_ metadata: PartialMetadata, at url: URL) throws {
-        let data = try JSONEncoder().encode(metadata)
-        let parent = url.deletingLastPathComponent()
-        let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard parentFD >= 0 else { throw BoundedModelDownloadError.transport("cannot open metadata parent") }
-        defer { _ = close(parentFD) }
-        let temporaryName = ".payload.part.json.tmp-\(UUID().uuidString)"
-        let temporaryFD = openat(parentFD, temporaryName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
-        guard temporaryFD >= 0 else { throw BoundedModelDownloadError.transport("cannot create metadata temporary") }
-        var keepTemporary = true
-        defer {
-            _ = close(temporaryFD)
-            if keepTemporary { _ = unlinkat(parentFD, temporaryName, 0) }
-        }
-        try data.withUnsafeBytes { raw in
-            var written = 0
-            while written < data.count {
-                let count = Darwin.write(temporaryFD, raw.baseAddress!.advanced(by: written), data.count - written)
-                guard count > 0 else { throw BoundedModelDownloadError.transport("cannot write metadata temporary") }
-                written += count
-            }
-        }
-        guard fchmod(temporaryFD, mode_t(0o600)) == 0, fsync(temporaryFD) == 0 else { throw BoundedModelDownloadError.transport("cannot finalize metadata temporary") }
-        guard renameat(parentFD, temporaryName, parentFD, url.lastPathComponent) == 0 else { throw BoundedModelDownloadError.transport("cannot atomically replace metadata") }
-        keepTemporary = false
-    }
-
-    private func readSecureFile(_ url: URL, maxBytes: Int) throws -> Data {
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
-        defer { _ = close(fd) }
-        var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_size >= 0, info.st_size <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
-        var data = Data(capacity: Int(info.st_size))
-        var buffer = [UInt8](repeating: 0, count: min(64 * 1024, maxBytes))
-        while true {
-            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
-            if count < 0 { throw BoundedModelDownloadError.invalidResumeState }
-            if count == 0 { break }
-            data.append(contentsOf: buffer[0..<count])
-            guard data.count <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
-        }
-        return data
-    }
-
     struct PartialMetadata: Codable, Equatable {
         let identity: DownloadArtifactIdentity
         let mirror: String
         let validator: String?
+    }
+
+    fileprivate static func validValidator(_ value: String) -> String? {
+        if value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") {
+            return value
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in ["EEE',' dd MMM yyyy HH':'mm':'ss z", "EEEE',' dd-MMM-yy HH':'mm':'ss z", "EEE MMM d HH':'mm':'ss yyyy"] {
+            formatter.dateFormat = format
+            if formatter.date(from: value) != nil { return value }
+        }
+        return nil
     }
 
     private func isOfficialCredentialURL(_ url: URL) -> Bool {
@@ -508,9 +504,12 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     private nonisolated(unsafe) static var queues: [String: DispatchQueue] = [:]
     let ioQueue: DispatchQueue
     let rootURL: URL
+    let slotKey: String
     let partURL: URL
     let metadataURL: URL
     let destinationURL: URL
+    private let rootFD: Int32
+    private let partialsFD: Int32
     private let slotFD: Int32
     private let completedFD: Int32
 
@@ -519,21 +518,66 @@ private final class WorkspaceAnchor: @unchecked Sendable {
 
     init(root: URL, slotName: String, filename: String) throws {
         rootURL = root
-        ioQueue = Self.queue(for: root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(slotName).path)
-        let rootFD = try Self.openRoot(root)
-        let partialsFD = try Self.openOrCreateDirectory("partials", relativeTo: rootFD)
-        slotFD = try Self.openOrCreateDirectory(slotName, relativeTo: partialsFD)
-        completedFD = try Self.openOrCreateDirectory("completed", relativeTo: rootFD)
-        close(rootFD); close(partialsFD)
+        slotKey = root.standardizedFileURL.path + "/partials/" + slotName
+        ioQueue = Self.queue(for: slotKey)
+        let openedRootFD = try Self.openRoot(root)
+        do {
+            let openedPartialsFD = try Self.openOrCreateDirectory("partials", relativeTo: openedRootFD)
+            do {
+                let openedSlotFD = try Self.openOrCreateDirectory(slotName, relativeTo: openedPartialsFD)
+                do {
+                    let openedCompletedFD = try Self.openOrCreateDirectory("completed", relativeTo: openedRootFD)
+                    self.rootFD = openedRootFD
+                    self.partialsFD = openedPartialsFD
+                    self.slotFD = openedSlotFD
+                    self.completedFD = openedCompletedFD
+                } catch {
+                    close(openedSlotFD)
+                    throw error
+                }
+            } catch {
+                close(openedPartialsFD)
+                throw error
+            }
+        } catch {
+            close(openedRootFD)
+            throw error
+        }
         partURL = root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(slotName, isDirectory: true).appendingPathComponent("payload.part")
         metadataURL = partURL.deletingLastPathComponent().appendingPathComponent("payload.part.json")
         destinationURL = root.appendingPathComponent("completed", isDirectory: true).appendingPathComponent(filename)
     }
 
-    deinit { close(slotFD); close(completedFD) }
+    deinit {
+        close(slotFD)
+        close(completedFD)
+        close(partialsFD)
+        close(rootFD)
+    }
 
-    func openPart(readOnly: Bool) -> Int32 {
-        openat(slotFD, "payload.part", (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+    func openPart(readOnly: Bool) throws -> Int32 {
+        let flags = (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_NOFOLLOW | O_CLOEXEC
+        let fd = openat(slotFD, "payload.part", flags, mode_t(0o600))
+        guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
+        var st = stat()
+        guard fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == getuid(),
+              st.st_nlink == 1 else {
+            close(fd)
+            throw BoundedModelDownloadError.invalidResumeState
+        }
+        if !readOnly {
+            guard fchmod(fd, mode_t(0o600)) == 0 else {
+                close(fd)
+                throw BoundedModelDownloadError.transport("cannot secure partial")
+            }
+        }
+        guard fstat(fd, &st) == 0, (st.st_mode & 0o777) == 0o600 else {
+            close(fd)
+            throw BoundedModelDownloadError.invalidResumeState
+        }
+        return fd
     }
 
     func clear() throws {
@@ -569,7 +613,16 @@ private final class WorkspaceAnchor: @unchecked Sendable {
             var written = 0
             while written < data.count { let n = Darwin.write(fd, raw.baseAddress!.advanced(by: written), data.count - written); guard n > 0 else { throw BoundedModelDownloadError.transport("cannot write metadata") }; written += n }
         }
-        guard fchmod(fd, mode_t(0o600)) == 0, fsync(fd) == 0, renameat(slotFD, temp, slotFD, "payload.part.json") == 0 else { throw BoundedModelDownloadError.transport("cannot install metadata") }
+        var st = stat()
+        guard fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == getuid(),
+              st.st_nlink == 1,
+              fchmod(fd, mode_t(0o600)) == 0,
+              fstat(fd, &st) == 0,
+              (st.st_mode & 0o777) == 0o600,
+              fsync(fd) == 0,
+              renameat(slotFD, temp, slotFD, "payload.part.json") == 0 else { throw BoundedModelDownloadError.transport("cannot install metadata") }
         keep = false
     }
 
@@ -594,10 +647,36 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     }
 
     private static func openRoot(_ url: URL) throws -> Int32 {
-        let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
-        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o700 else { close(fd); throw BoundedModelDownloadError.invalidIdentity }
-        return fd
+        guard url.isFileURL, url.path.hasPrefix("/") else { throw BoundedModelDownloadError.invalidIdentity }
+        let raw = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !raw.isEmpty, !raw.contains(where: { $0 == "." || $0 == ".." || $0.utf8.contains(0) }) else { throw BoundedModelDownloadError.invalidIdentity }
+        let components = raw.first == "tmp" || raw.first == "var" ? ["private"] + raw : raw
+        var current = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard current >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
+        do {
+            for (index, component) in components.enumerated() {
+                var next = openat(current, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+                if next < 0 && errno == ENOENT {
+                    guard mkdirat(current, component, mode_t(0o700)) == 0 || errno == EEXIST else { throw BoundedModelDownloadError.invalidIdentity }
+                    next = openat(current, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+                }
+                guard next >= 0 else { throw BoundedModelDownloadError.invalidIdentity }
+                close(current)
+                current = next
+                var st = stat()
+                guard fstat(current, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { throw BoundedModelDownloadError.invalidIdentity }
+                if index == components.count - 1 {
+                    guard st.st_uid == getuid(),
+                          fchmod(current, mode_t(0o700)) == 0,
+                          fstat(current, &st) == 0,
+                          (st.st_mode & 0o777) == 0o700 else { throw BoundedModelDownloadError.invalidIdentity }
+                }
+            }
+            return current
+        } catch {
+            close(current)
+            throw error
+        }
     }
 
     private static func openOrCreateDirectory(_ name: String, relativeTo parent: Int32) throws -> Int32 {
@@ -659,15 +738,22 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
             guard let range = http.value(forHTTPHeaderField: "Content-Range"), range == "bytes \(initialOffset)-\(request.identity.sizeBytes - 1)/\(request.identity.sizeBytes)" else { completionHandler(.cancel); fail(BoundedModelDownloadError.invalidContentRange); return }
         } else if status != 200 { completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedStatus(status)); return }
         if let encoding = http.value(forHTTPHeaderField: "Content-Encoding"), !encoding.isEmpty && encoding.lowercased() != "identity" { completionHandler(.cancel); fail(BoundedModelDownloadError.invalidContentEncoding); return }
-        if let lengthString = http.value(forHTTPHeaderField: "Content-Length"), let length = Int64(lengthString) {
-            let expected = request.identity.sizeBytes - initialOffset
-            guard length == expected else { completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedContentLength(length)); return }
+        let expectedLength = request.identity.sizeBytes - initialOffset
+        if let lengthString = http.value(forHTTPHeaderField: "Content-Length") {
+            guard let length = Int64(lengthString), length >= 0 else {
+                completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedContentLength(-1)); return
+            }
+            guard length == expectedLength else {
+                completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedContentLength(length)); return
+            }
+        } else if initialOffset > 0 {
+            completionHandler(.cancel); fail(BoundedModelDownloadError.unexpectedContentLength(-1)); return
         }
         guard let transport else { completionHandler(.cancel); fail(BoundedModelDownloadError.superseded); return }
         let validator = Self.strongValidator(from: http)
         do {
             let opened = try transport.withCurrentOperation(operation) {
-                let opened = anchor.openPart(readOnly: false)
+                let opened = try anchor.openPart(readOnly: false)
                 guard opened >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
                 do {
                     try anchor.persistMetadata(.init(identity: request.identity, mirror: mirror.absoluteString, validator: validator))
@@ -686,7 +772,7 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard let transport else { fail(BoundedModelDownloadError.cancelled); return }
-        guard transport.isOperationCurrent(operation) else { fail(BoundedModelDownloadError.superseded); return }
+        guard transport.isOperationCurrent(operation) else { fail(transport.operationError(operation)); return }
         lock.lock(); let current = offset; lock.unlock()
         do {
             let required = try transport.requiredCapacity(aggregate: request.aggregateDiskBytesStillRequired, admittedOffset: current)
@@ -712,8 +798,12 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
         lock.lock(); let currentFD = fd; fd = -1; let wasFinished = finished; lock.unlock()
         if currentFD >= 0 { close(currentFD) }
         if wasFinished { return }
-        guard let transport, transport.isOperationCurrent(operation) else {
+        guard let transport else {
             fail(BoundedModelDownloadError.superseded)
+            return
+        }
+        guard transport.isOperationCurrent(operation) else {
+            fail(transport.operationError(operation))
             return
         }
         if let error {
@@ -732,9 +822,11 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
     }
 
     private static func strongValidator(from response: HTTPURLResponse) -> String? {
-        guard let value = response.value(forHTTPHeaderField: "ETag"),
-              value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") else { return nil }
-        return value
+        if let value = response.value(forHTTPHeaderField: "ETag"), let validator = BoundedModelDownloadTransport.validValidator(value) {
+            return validator
+        }
+        guard let lastModified = response.value(forHTTPHeaderField: "Last-Modified") else { return nil }
+        return BoundedModelDownloadTransport.validValidator(lastModified)
     }
 
     func attach(task: URLSessionTask) { lock.lock(); self.task = task; lock.unlock() }

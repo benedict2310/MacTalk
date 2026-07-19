@@ -35,7 +35,9 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
     init(response: @escaping @Sendable (Request) -> Response) throws {
         self.response = response
-        self.listener = try NWListener(using: .tcp, on: .any)
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host("127.0.0.1"), port: .any)
+        self.listener = try NWListener(using: parameters, on: .any)
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         listener.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
@@ -44,7 +46,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             }
         }
         listener.start(queue: queue)
-        guard ready.wait(timeout: .now() + 5) == .success, port != 0 else { throw ServerError.startFailed }
+        guard ready.wait(timeout: .now() + 5) == .success, port != 0 else {
+            listener.cancel()
+            throw ServerError.startFailed
+        }
     }
 
     deinit { stop() }
@@ -64,6 +69,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
     var url: URL { URL(string: "http://127.0.0.1:\(port)/artifact")! }
     var requestLog: [Request] { lock.lock(); defer { lock.unlock() }; return requests }
+    var activeConnectionCount: Int { lock.withLock { connections.count } }
 
     private func accept(_ connection: NWConnection) {
         lock.withLock { connections[ObjectIdentifier(connection)] = connection }
@@ -79,7 +85,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             guard let self else { connection.cancel(); return }
             var buffer = buffer
             if let data { buffer.append(data) }
-            guard buffer.count <= 64 * 1024 else { connection.cancel(); return }
+            guard buffer.count <= 64 * 1024 else {
+            connection.cancel()
+            return
+        }
             if let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 let request = self.parseRequest(Data(buffer[..<headerEnd.lowerBound]))
                 self.lock.lock(); self.requests.append(request); self.lock.unlock()
