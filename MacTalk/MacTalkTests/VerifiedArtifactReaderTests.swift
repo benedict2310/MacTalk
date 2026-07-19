@@ -178,13 +178,96 @@ final class VerifiedArtifactReaderTests: XCTestCase {
 
     func test_repeatedReadsDoNotLeakDescriptors() throws {
         let payload = Data("fixture".utf8)
-        try payload.write(to: rootURL.appendingPathComponent("fixture.bin"))
+        let nested = rootURL.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try payload.write(to: nested.appendingPathComponent("fixture.bin"))
         let reader = VerifiedArtifactReader(rootFD: rootFD)
+        let before = openFileDescriptorCount()
+
         for _ in 0..<100 {
-            XCTAssertEqual(try reader.read(entry(for: "fixture.bin", data: payload)).data, payload)
+            XCTAssertEqual(try reader.read(entry(for: "nested/fixture.bin", data: payload)).data, payload)
         }
+
+        let wrongDigest = GeneratedParakeetManifestEntry(
+            path: "nested/fixture.bin",
+            size: Int64(payload.count),
+            sha256: String(repeating: "0", count: 64)
+        )
+        for _ in 0..<100 {
+            XCTAssertThrowsError(try reader.read(wrongDigest)) { error in
+                guard case .checksumMismatch = error as? VerifiedArtifactReaderError else {
+                    return XCTFail("unexpected wrong-digest error: \(error)")
+                }
+            }
+        }
+
+        for _ in 0..<100 {
+            let missing = GeneratedParakeetManifestEntry(
+                path: "nested/missing.bin",
+                size: Int64(payload.count),
+                sha256: digest(payload)
+            )
+            XCTAssertThrowsError(try reader.read(missing))
+        }
+
+        let nonRegularURL = nested.appendingPathComponent("directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: nonRegularURL, withIntermediateDirectories: true)
+        let nonRegular = GeneratedParakeetManifestEntry(
+            path: "nested/directory",
+            size: Int64(payload.count),
+            sha256: digest(payload)
+        )
+        for _ in 0..<100 {
+            XCTAssertThrowsError(try reader.read(nonRegular)) { error in
+                XCTAssertEqual(error as? VerifiedArtifactReaderError, .notRegularFile)
+            }
+        }
+
+        let symlinkURL = nested.appendingPathComponent("symlink.bin")
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: nested.appendingPathComponent("fixture.bin"))
+        let symlink = GeneratedParakeetManifestEntry(
+            path: "nested/symlink.bin",
+            size: Int64(payload.count),
+            sha256: digest(payload)
+        )
+        for _ in 0..<100 {
+            XCTAssertThrowsError(try reader.read(symlink)) { error in
+                guard case .openFailed = error as? VerifiedArtifactReaderError else {
+                    return XCTFail("unexpected symlink error: \(error)")
+                }
+            }
+        }
+
+        XCTAssertEqual(openFileDescriptorCount(), before)
+    }
+
+    func test_fdCensusDetectsDuplicateThatRootFstatWouldMiss() throws {
+        let before = openFileDescriptorCount()
+        var duplicate = dup(rootFD)
+        XCTAssertGreaterThanOrEqual(duplicate, 0)
+        defer {
+            if duplicate >= 0 { _ = close(duplicate) }
+        }
+
         var info = stat()
         XCTAssertEqual(fstat(rootFD, &info), 0)
+        XCTAssertEqual(openFileDescriptorCount(), before + 1)
+
+        _ = close(duplicate)
+        duplicate = -1
+        XCTAssertEqual(openFileDescriptorCount(), before)
+    }
+
+    private func openFileDescriptorCount() -> Int {
+        let maximum = getdtablesize()
+        return (0..<maximum).reduce(into: 0) { count, descriptor in
+            errno = 0
+            if fcntl(Int32(descriptor), F_GETFD) >= 0 {
+                count += 1
+            } else {
+                XCTAssertEqual(errno, EBADF, "unexpected fcntl error for descriptor \(descriptor)")
+            }
+        }
     }
 
     private func entry(for path: String, data: Data) -> GeneratedParakeetManifestEntry {
