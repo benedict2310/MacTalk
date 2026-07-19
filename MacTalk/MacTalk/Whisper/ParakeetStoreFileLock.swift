@@ -4,13 +4,13 @@ import Foundation
 /// Coordinates cooperating MacTalk processes while they mutate or snapshot the
 /// Parakeet store. This is an advisory kernel lock: it does not protect
 /// against a hostile same-UID process that ignores the lock.
-public struct ParakeetStoreFileLock: Sendable {
-    public enum Mode: Sendable {
+struct ParakeetStoreFileLock: Sendable {
+    enum Mode: Sendable {
         case shared
         case exclusive
     }
 
-    public enum LockError: Error, Equatable, Sendable, CustomStringConvertible {
+    enum LockError: Error, Equatable, Sendable, CustomStringConvertible {
         case invalidStoreParent
         case storeParentNotDirectory
         case storeParentWrongOwner
@@ -23,7 +23,7 @@ public struct ParakeetStoreFileLock: Sendable {
         case statFailed(Int32)
         case flockFailed(Int32)
 
-        public var description: String {
+        var description: String {
             switch self {
             case .invalidStoreParent: return "store parent must be a file URL"
             case .storeParentNotDirectory: return "store parent is not a directory"
@@ -40,8 +40,8 @@ public struct ParakeetStoreFileLock: Sendable {
         }
     }
 
-    public final class Lease: @unchecked Sendable {
-        public let mode: Mode
+    final class Lease: @unchecked Sendable {
+        let mode: Mode
         private let stateLock = NSLock()
         private var fileDescriptor: Int32?
 
@@ -52,7 +52,7 @@ public struct ParakeetStoreFileLock: Sendable {
 
         /// Releases the kernel lease exactly once. Calling this method more than
         /// once is safe; deinitialization also releases an unreleased lease.
-        public func release() {
+        func release() {
             stateLock.lock()
             guard let fd = fileDescriptor else {
                 stateLock.unlock()
@@ -67,22 +67,25 @@ public struct ParakeetStoreFileLock: Sendable {
         deinit { release() }
     }
 
-    public let storeParent: URL
+    let storeParent: URL
     private let afterParentValidation: (@Sendable () -> Void)?
+    private let afterComponentOpened: (@Sendable (String) -> Void)?
 
-    public init(storeParent: URL) {
+    init(storeParent: URL) {
         self.storeParent = storeParent
         self.afterParentValidation = nil
+        self.afterComponentOpened = nil
     }
 
-    internal init(storeParent: URL, afterParentValidation: (@Sendable () -> Void)?) {
+    init(storeParent: URL, afterParentValidation: (@Sendable () -> Void)?, afterComponentOpened: (@Sendable (String) -> Void)? = nil) {
         self.storeParent = storeParent
         self.afterParentValidation = afterParentValidation
+        self.afterComponentOpened = afterComponentOpened
     }
 
     /// Attempts one nonblocking acquisition. A nil result proves that the
     /// kernel rejected this exact lock descriptor with EAGAIN/EWOULDBLOCK.
-    public func tryAcquire(_ mode: Mode) throws -> Lease? {
+    func tryAcquire(_ mode: Mode) throws -> Lease? {
         let fd = try openValidatedLockDescriptor()
         let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
         while true {
@@ -99,7 +102,7 @@ public struct ParakeetStoreFileLock: Sendable {
         }
     }
 
-    public func acquire(_ mode: Mode) async throws -> Lease {
+    func acquire(_ mode: Mode) async throws -> Lease {
         let fd = try openValidatedLockDescriptor()
         var closeOnExit = true
         defer {
@@ -135,69 +138,72 @@ public struct ParakeetStoreFileLock: Sendable {
     private func openValidatedLockDescriptor() throws -> Int32 {
         let parentFD = try openStoreParentDirectory()
         defer { _ = close(parentFD) }
-        afterParentValidation?()
         return try openLockFile(parentFD: parentFD)
     }
 
     private func openStoreParentDirectory() throws -> Int32 {
+        let components = try normalizedStoreComponents()
+        var currentFD = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard currentFD >= 0 else { throw LockError.openFailed(errno) }
+        defer {
+            if currentFD >= 0 { _ = close(currentFD) }
+        }
+        let systemPrefix = components.count >= 2 && components[0] == "private" && (components[1] == "tmp" || components[1] == "var") ? 2 : (components.first == "private" ? 1 : 0)
+
+        for (index, component) in components.enumerated() {
+            let nextFD = try openOrCreateDirectory(component, relativeTo: currentFD)
+            _ = close(currentFD)
+            currentFD = nextFD
+            try validateDirectoryDescriptor(currentFD, enforcePrivateMode: index == components.count - 1, systemComponent: index < systemPrefix)
+            afterComponentOpened?(component)
+        }
+        afterParentValidation?()
+        let result = currentFD
+        currentFD = -1
+        return result
+    }
+
+    private func normalizedStoreComponents() throws -> [String] {
         guard storeParent.isFileURL, storeParent.path.hasPrefix("/") else {
             throw LockError.invalidStoreParent
         }
-        try rejectSymlinkedStorePathComponents()
-        var info = stat()
-        if lstat(storeParent.path, &info) != 0 {
-            guard errno == ENOENT else { throw LockError.statFailed(errno) }
-            do {
-                try FileManager.default.createDirectory(at: storeParent, withIntermediateDirectories: true)
-            } catch {
-                throw LockError.openFailed(EIO)
-            }
+        let raw = storeParent.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !raw.isEmpty, !raw.contains(where: { $0 == "." || $0 == ".." }) else {
+            throw LockError.invalidStoreParent
         }
-        let directoryFD = open(storeParent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
-        guard directoryFD >= 0 else {
-            let code = errno
-            throw code == ELOOP ? LockError.storeParentNotDirectory : LockError.openFailed(code)
+        if raw.first == "tmp" || raw.first == "var" {
+            return ["private"] + raw
         }
-
-        guard fstat(directoryFD, &info) == 0 else {
-            let code = errno
-            _ = close(directoryFD)
-            throw LockError.statFailed(code)
-        }
-        guard (info.st_mode & S_IFMT) == S_IFDIR else {
-            _ = close(directoryFD)
-            throw LockError.storeParentNotDirectory
-        }
-        guard info.st_uid == getuid() else {
-            _ = close(directoryFD)
-            throw LockError.storeParentWrongOwner
-        }
-        let permissions = UInt16(info.st_mode & 0o777)
-        guard permissions == 0o700 else {
-            _ = close(directoryFD)
-            throw LockError.storeParentWrongPermissions(permissions)
-        }
-        return directoryFD
+        return raw
     }
 
-    private func rejectSymlinkedStorePathComponents() throws {
-        var current = URL(fileURLWithPath: "/", isDirectory: true)
-        let components = storeParent.path.split(separator: "/", omittingEmptySubsequences: true)
-        for (index, component) in components.enumerated() {
-            current.appendPathComponent(String(component), isDirectory: true)
-            var info = stat()
-            guard lstat(current.path, &info) == 0 else {
-                guard errno == ENOENT else { throw LockError.statFailed(errno) }
-                return
+    private func openOrCreateDirectory(_ component: String, relativeTo parentFD: Int32) throws -> Int32 {
+        let flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        var fd = openat(parentFD, component, flags)
+        if fd < 0 && errno == ENOENT {
+            guard mkdirat(parentFD, component, mode_t(0o700)) == 0 || errno == EEXIST else {
+                throw LockError.openFailed(errno)
             }
-            if (info.st_mode & S_IFMT) == S_IFLNK {
-                // macOS exposes /var and /tmp as system symlinks to /private;
-                // reject all caller-controlled symlink components.
-                if index == 0 && (component == "var" || component == "tmp") {
-                    continue
-                }
-                throw LockError.storeParentNotDirectory
-            }
+            fd = openat(parentFD, component, flags)
+        }
+        guard fd >= 0 else {
+            let code = errno
+            throw code == ELOOP || code == ENOTDIR ? LockError.storeParentNotDirectory : LockError.openFailed(code)
+        }
+        return fd
+    }
+
+    private func validateDirectoryDescriptor(_ fd: Int32, enforcePrivateMode: Bool, systemComponent: Bool) throws {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw LockError.statFailed(errno) }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { throw LockError.storeParentNotDirectory }
+        guard enforcePrivateMode, !systemComponent else { return }
+        guard info.st_uid == getuid() else { throw LockError.storeParentWrongOwner }
+        let permissions = UInt16(info.st_mode & 0o777)
+        if permissions != 0o700 {
+            guard fchmod(fd, mode_t(0o700)) == 0 else { throw LockError.openFailed(errno) }
+            guard fstat(fd, &info) == 0 else { throw LockError.statFailed(errno) }
+            guard UInt16(info.st_mode & 0o777) == 0o700 else { throw LockError.storeParentWrongPermissions(UInt16(info.st_mode & 0o777)) }
         }
     }
 

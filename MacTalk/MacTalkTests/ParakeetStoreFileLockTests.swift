@@ -150,6 +150,49 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         try? FileManager.default.removeItem(at: replacement)
     }
 
+    func test_createsMissingStoreParentWithExactPrivateModeUnderNormalUmask() async throws {
+        let base = try makeTemporaryStore()
+        let root = base.appendingPathComponent("missing/intermediate/leaf", isDirectory: true)
+        let previousUmask = umask(0o022)
+        defer { _ = umask(previousUmask) }
+        let lease = try await ParakeetStoreFileLock(storeParent: root).acquire(.shared)
+        lease.release()
+        XCTAssertEqual(try fileMode(root), 0o700)
+        XCTAssertEqual(try fileMode(root.deletingLastPathComponent()), 0o700)
+        XCTAssertEqual(try fileMode(root.appendingPathComponent(".mactalk-store.lock")), 0o600)
+    }
+
+    func test_existingCurrentUserStoreParentIsTightenedThroughDescriptor() async throws {
+        let base = try makeTemporaryStore()
+        let root = base.appendingPathComponent("leaf", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(root.path, 0o755), 0)
+        let lease = try await ParakeetStoreFileLock(storeParent: root).acquire(.shared)
+        lease.release()
+        XCTAssertEqual(try fileMode(root), 0o700)
+    }
+
+    func test_intermediateReplacementUsesAlreadyOpenedDescriptor() async throws {
+        let base = try makeTemporaryStore()
+        let segment = base.appendingPathComponent("segment", isDirectory: true)
+        let root = segment.appendingPathComponent("leaf", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(segment.path, 0o700), 0)
+        let renamed = base.appendingPathComponent("renamed", isDirectory: true)
+        let replacement = base.appendingPathComponent("segment-replacement", isDirectory: true)
+        let lock = ParakeetStoreFileLock(storeParent: root, afterParentValidation: nil, afterComponentOpened: { component in
+            guard component == "segment" else { return }
+            precondition(rename(segment.path, renamed.path) == 0)
+            precondition(mkdir(replacement.path, 0o700) == 0)
+            precondition(mkdir(replacement.appendingPathComponent("leaf").path, 0o700) == 0)
+            precondition(rename(replacement.path, segment.path) == 0)
+        })
+        let lease = try await lock.acquire(.exclusive)
+        lease.release()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.appendingPathComponent("leaf/.mactalk-store.lock").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: segment.appendingPathComponent("leaf/.mactalk-store.lock").path))
+    }
+
     func test_rootAndLockModesArePrivate() async throws {
         let root = try makeTemporaryStore()
         let lock = ParakeetStoreFileLock(storeParent: root)
@@ -186,16 +229,6 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         }
     }
 
-    func test_wrongStoreParentPermissionsAreRejected() async throws {
-        let root = try makeTemporaryStore()
-        XCTAssertEqual(chmod(root.path, 0o755), 0)
-        do {
-            _ = try await ParakeetStoreFileLock(storeParent: root).acquire(.exclusive)
-            XCTFail("world-readable store parent was accepted")
-        } catch let error as ParakeetStoreFileLock.LockError {
-            XCTAssertEqual(error, .storeParentWrongPermissions(0o755))
-        }
-    }
 
     func test_existingLockPermissionsAreRejected() async throws {
         let root = try makeTemporaryStore()
@@ -258,7 +291,9 @@ private final class LockProbeProcess: @unchecked Sendable {
     private let input: FileHandle
     private let output: FileHandle
     private let dataLock = NSLock()
-    private var data = Data()
+    private let readerQueue = DispatchQueue(label: "mactalk.lock-probe.stdout-reader")
+    private var lines = [String]()
+    private var partialLine = ""
 
     init(root: URL, mode: String, abrupt: Bool) throws {
         process = Process()
@@ -272,42 +307,23 @@ private final class LockProbeProcess: @unchecked Sendable {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("ParakeetStoreLockProbe")
-        print("Launching lock probe: \(executable.path) exists=\(FileManager.default.isExecutableFile(atPath: executable.path))")
         process.executableURL = executable
         process.arguments = ["--root", root.path, "--mode", mode] + (abrupt ? ["--abrupt"] : [])
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = FileHandle.standardError
-        output.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else {
-                handle.readabilityHandler = nil
-                return
-            }
-            self.dataLock.lock()
-            self.data.append(chunk)
-            self.dataLock.unlock()
-        }
         try process.run()
+        readerQueue.async { [weak self] in self?.readOutputUntilEOF() }
     }
+
+    deinit { _ = terminate() }
 
     func write(_ value: String) { input.write(value.data(using: .utf8)!) }
 
     func hasOutput(_ line: String) -> Bool {
-        if !process.isRunning {
-            output.readabilityHandler = nil
-            let remaining = output.readDataToEndOfFile()
-            if !remaining.isEmpty {
-                dataLock.lock()
-                data.append(remaining)
-                dataLock.unlock()
-            }
-        }
         dataLock.lock()
-        let snapshot = data
-        dataLock.unlock()
-        return String(data: snapshot, encoding: .utf8)?.contains(line) == true
+        defer { dataLock.unlock() }
+        return lines.contains(where: { $0.contains(line) }) || partialLine.contains(line)
     }
 
     func waitFor(_ line: String) async throws {
@@ -319,19 +335,47 @@ private final class LockProbeProcess: @unchecked Sendable {
         XCTFail("probe did not emit \(line); output=\(String(data: outputSnapshot(), encoding: .utf8) ?? "<invalid>")")
     }
 
+    private func readOutputUntilEOF() {
+        while true {
+            let chunk = output.availableData
+            guard !chunk.isEmpty else { return }
+            guard let text = String(data: chunk, encoding: .utf8) else { continue }
+            dataLock.lock()
+            partialLine.append(text)
+            let parts = partialLine.split(separator: "\n", omittingEmptySubsequences: false)
+            if partialLine.hasSuffix("\n") {
+                lines.append(contentsOf: parts.dropLast().map(String.init))
+                partialLine = ""
+            } else if let last = parts.last {
+                lines.append(contentsOf: parts.dropLast().map(String.init))
+                partialLine = String(last)
+            }
+            dataLock.unlock()
+        }
+    }
+
     private func outputSnapshot() -> Data {
         dataLock.lock()
         defer { dataLock.unlock() }
-        return data
+        return (lines + [partialLine]).joined(separator: "\n").data(using: .utf8) ?? Data()
     }
 
-    func waitForExit() -> Int32 {
-        process.waitUntilExit()
+    func waitForExit() -> Int32 { finishProcess(sendTermination: false) }
+
+    func terminate() -> Int32 { finishProcess(sendTermination: true) }
+
+    private func finishProcess(sendTermination: Bool) -> Int32 {
+        if process.isRunning && sendTermination { process.terminate() }
+        if process.isRunning { waitUntilExit(deadline: Date().addingTimeInterval(2)) }
+        if process.isRunning {
+            _ = kill(process.processIdentifier, SIGKILL)
+            waitUntilExit(deadline: Date().addingTimeInterval(2))
+        }
+        try? input.close()
         return process.terminationStatus
     }
 
-    func terminate() -> Int32 {
-        if process.isRunning { process.terminate(); process.waitUntilExit() }
-        return process.terminationStatus
+    private func waitUntilExit(deadline: Date) {
+        while process.isRunning && Date() < deadline { usleep(10_000) }
     }
 }
