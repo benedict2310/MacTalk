@@ -10,6 +10,7 @@
 		004B4E2123DD946C5E49355A /* StatusMenuPresenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7134DDBBC5F066F464B15543 /* StatusMenuPresenterTests.swift */; };
 		031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */; };
 		0462E9547F556371A242B595 /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */; };
+		075F958DE96AC5B0F2CBBE12 /* CoreMLByteAssetLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21353ADD4A2B70AF846BC2BE /* CoreMLByteAssetLoader.swift */; };
 		0804E7DC8A6B15ABA6101DAB /* AudioCaptureIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */; };
 		0AAAF6C7453DB903009A6B9E /* ASREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD599796D84855D50B261BE6 /* ASREngine.swift */; };
 		0AC807B1970D5526C85348C9 /* ConcurrencyStressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAD794CD9B38C6DF8CEE5F41 /* ConcurrencyStressTests.swift */; };
@@ -88,6 +89,7 @@
 		A6793E663C67A0D63408317E /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D465A46A98C40FCE2AC3C775 /* AppSettings.swift */; };
 		A843366A6B64CA916E0322C7 /* StatusBarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 842D1A1DB98DC2331ECEE659 /* StatusBarState.swift */; };
 		AA39FB6B87B1C66210E66439 /* PermissionFlowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD54862EE140DF20207C603B /* PermissionFlowCoordinatorTests.swift */; };
+		B1686C5A121C33BA3613F8BD /* VerifiedCoreMLByteAssetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E4B4CAD0586F4946841B9F9 /* VerifiedCoreMLByteAssetTests.swift */; };
 		B3F73ADD40DB9EFDFE8E8FA2 /* FileDescriptorCensus.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24F8409C75D653CE8D83807 /* FileDescriptorCensus.swift */; };
 		B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */; };
 		BA9FFF3F1CCA6EB8B399BC2C /* PermissionFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96000BE65E6ABE18BF19F1EC /* PermissionFlowCoordinator.swift */; };
@@ -152,8 +154,10 @@
 		17582BFD99988F2714042AC0 /* ProductionModelDownloadClients.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionModelDownloadClients.swift; sourceTree = "<group>"; };
 		17A686CDEF44401730A9967E /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIntegrationTests.swift; sourceTree = "<group>"; };
+		1E4B4CAD0586F4946841B9F9 /* VerifiedCoreMLByteAssetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedCoreMLByteAssetTests.swift; sourceTree = "<group>"; };
 		1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Phase4IntegrationTests.swift; sourceTree = "<group>"; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		21353ADD4A2B70AF846BC2BE /* CoreMLByteAssetLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLByteAssetLoader.swift; sourceTree = "<group>"; };
 		2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowGate.swift; sourceTree = "<group>"; };
 		296D377B491B533E892B72E7 /* ParakeetStoreLockProbe */ = {isa = PBXFileReference; includeInIndex = 0; path = ParakeetStoreLockProbe; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AFD8BE26638F615B5F70CE6 /* ModelIntegrityVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelIntegrityVerifier.swift; sourceTree = "<group>"; };
@@ -385,6 +389,7 @@
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
 				94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */,
 				5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */,
+				1E4B4CAD0586F4946841B9F9 /* VerifiedCoreMLByteAssetTests.swift */,
 				7E941B64ED397BCBE7EDB9DD /* Support */,
 			);
 			name = MacTalkTests;
@@ -473,6 +478,7 @@
 		EC102091F95F4F22C506A66B /* Whisper */ = {
 			isa = PBXGroup;
 			children = (
+				21353ADD4A2B70AF846BC2BE /* CoreMLByteAssetLoader.swift */,
 				B49E15763ACA20452A4EEDB3 /* GeneratedModelProvenance.swift */,
 				A05B8871EE4F8B2B748B4118 /* ModelCatalog.swift */,
 				B73B5CA06A58EAB6FA37C6B6 /* ModelDownloader.swift */,
@@ -491,6 +497,13 @@
 				F8BDC86480E09233F303814D /* WhisperBridge.mm */,
 			);
 			path = Whisper;
+			sourceTree = "<group>";
+		};
+		"TEMP_3701B2C6-6A92-4F6D-957C-75E9091F55DD" /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Fixtures;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -518,6 +531,7 @@
 			buildConfigurationList = 8CDCA790A2D610D2D0EDB0B8 /* Build configuration list for PBXNativeTarget "MacTalkTests" */;
 			buildPhases = (
 				E75404797F6C1F792E41C4A1 /* Sources */,
+				C6F3A3C33232374A3E102E1A /* Copy Verified CoreML Fixture */,
 			);
 			buildRules = (
 			);
@@ -654,6 +668,30 @@
 			shellPath = /bin/sh;
 			shellScript = "#!/bin/bash\nset -euo pipefail\n# CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch\n# This must run AFTER Xcode's CodeSign phase\n# IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds\n\n# Unsigned CI/test builds intentionally skip this release-only phase.\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" != \"YES\" ]; then\n  echo \"⏭️  [Post-Build] Code signing disabled by build settings\"\n  exit 0\nfi\n\nSIGNING_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}\"\nif [ -z \"$SIGNING_IDENTITY\" ] || [ \"$SIGNING_IDENTITY\" = \"-\" ]; then\n  echo \"❌ [Post-Build] No signing identity is available\" >&2\n  exit 1\nfi\n\necho \"🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY\"\n\n# Re-sign all dylibs in Frameworks with the same certificate as the app.\nfound_library=false\nfor lib in \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"/*.dylib; do\n  if [ -f \"$lib\" ]; then\n    found_library=true\n    codesign --force --options runtime --timestamp --sign \"$SIGNING_IDENTITY\" \"$lib\"\n    echo \"   ✅ Signed: $(basename \"$lib\")\"\n  fi\ndone\nif [ \"$found_library\" != true ]; then\n  echo \"❌ [Post-Build] No nested dylibs were found to sign\" >&2\n  exit 1\nfi\n\n# Re-sign the app bundle with the same certificate. Preserve the\n# entitlements generated by Xcode and keep the hardened-runtime flag.\necho \"🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY\"\ncodesign --force --options runtime --timestamp --sign \"$SIGNING_IDENTITY\" \\\n  --preserve-metadata=entitlements,requirements,flags \\\n  \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\"\n\necho \"✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY\"\n";
 		};
+		C6F3A3C33232374A3E102E1A /* Copy Verified CoreML Fixture */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/model.mlmodel",
+				"$(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/weights/weight.bin",
+				"$(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/fixture-manifest.json",
+			);
+			name = "Copy Verified CoreML Fixture";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/model.mlmodel",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/weights/weight.bin",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/fixture-manifest.json",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "#!/bin/bash\nset -euo pipefail\nsource_fixture=\"${PROJECT_DIR}/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture\"\ncopy_fixture() {\n  local fixture=\"$1\"\n  mkdir -p \"$fixture/weights\"\n  cp -f \"$source_fixture/model.mlmodel\" \"$fixture/model.mlmodel\"\n  cp -f \"$source_fixture/weights/weight.bin\" \"$fixture/weights/weight.bin\"\n  cp -f \"$source_fixture/fixture-manifest.json\" \"$fixture/fixture-manifest.json\"\n}\ncopy_fixture \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/VerifiedCoreMLFixture\"\nnested=\"${BUILT_PRODUCTS_DIR}/MacTalk.app/Contents/PlugIns/MacTalkTests.xctest/Contents/Resources/VerifiedCoreMLFixture\"\nif [ -d \"$(dirname \"$nested\")\" ]; then\n  copy_fixture \"$nested\"\nfi\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -684,6 +722,7 @@
 				5DEA73CAF2F5F8B48FE6F1BD /* AudioWaveView.swift in Sources */,
 				6B24766DCFE64F0C7CA7DE74 /* AutoInsertManager.swift in Sources */,
 				7486E5D8E45604B26A540018 /* ClipboardManager.swift in Sources */,
+				075F958DE96AC5B0F2CBBE12 /* CoreMLByteAssetLoader.swift in Sources */,
 				0462E9547F556371A242B595 /* DebugLogger.swift in Sources */,
 				6D91D3F129A5432C90AFDA36 /* EngineLifecycleCoordinator.swift in Sources */,
 				416496001FD72456227393F3 /* EngineSelectionLoader.swift in Sources */,
@@ -778,6 +817,7 @@
 				5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */,
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
 				23FB52B28101D8AC8ECA9A38 /* VerifiedArtifactReaderTests.swift in Sources */,
+				B1686C5A121C33BA3613F8BD /* VerifiedCoreMLByteAssetTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

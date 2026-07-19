@@ -192,6 +192,34 @@ targets:
     platform: macOS
     sources:
       - path: MacTalk/MacTalkTests
+        excludes:
+          - Fixtures/VerifiedCoreMLFixture/**
+    postBuildScripts:
+      - name: Copy Verified CoreML Fixture
+        inputFiles:
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/model.mlmodel
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/weights/weight.bin
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/fixture-manifest.json
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/model.mlmodel
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/weights/weight.bin
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/fixture-manifest.json
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          source_fixture="${PROJECT_DIR}/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture"
+          copy_fixture() {
+            local fixture="$1"
+            mkdir -p "$fixture/weights"
+            cp -f "$source_fixture/model.mlmodel" "$fixture/model.mlmodel"
+            cp -f "$source_fixture/weights/weight.bin" "$fixture/weights/weight.bin"
+            cp -f "$source_fixture/fixture-manifest.json" "$fixture/fixture-manifest.json"
+          }
+          copy_fixture "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/VerifiedCoreMLFixture"
+          nested="${BUILT_PRODUCTS_DIR}/MacTalk.app/Contents/PlugIns/MacTalkTests.xctest/Contents/Resources/VerifiedCoreMLFixture"
+          if [ -d "$(dirname "$nested")" ]; then
+            copy_fixture "$nested"
+          fi
     settings:
       BUNDLE_LOADER: "$(TEST_HOST)"
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MacTalk.app/Contents/MacOS/MacTalk"
@@ -200,7 +228,6 @@ targets:
     dependencies:
       - target: MacTalk
       - target: ParakeetStoreLockProbe
-
   ParakeetStoreLockProbe:
     type: tool
     platform: macOS
