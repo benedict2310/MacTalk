@@ -42,6 +42,47 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         try? FileManager.default.removeItem(at: replacement)
     }
 
+    func test_cancellationReleasesSharedLeaseBeforeBlockedQueueRuns() async throws {
+        let fixture = try SourceFixture()
+        let queue = DispatchQueue(label: "mactalk.snapshot.blocked-cancellation")
+        let barrierStarted = DispatchSemaphore(value: 0)
+        let unblock = DispatchSemaphore(value: 0)
+        queue.async {
+            barrierStarted.signal()
+            unblock.wait()
+        }
+        XCTAssertEqual(barrierStarted.wait(timeout: .now() + 2), .success)
+
+        let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store, queue: queue)
+        let task = Task { try await provider.makeVerifiedSnapshot() }
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let deadline = Date().addingTimeInterval(2)
+        var sharedLeaseConfirmed = false
+        while Date() < deadline {
+            if let exclusive = try lock.tryAcquire(.exclusive) {
+                exclusive.release()
+                try await Task.sleep(for: .milliseconds(5))
+                continue
+            }
+            sharedLeaseConfirmed = true
+            break
+        }
+        XCTAssertTrue(sharedLeaseConfirmed, "snapshot never acquired its shared lease")
+
+        task.cancel()
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor, "cancellation must release the lease while the queue remains blocked")
+        successor?.release()
+
+        unblock.signal()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled snapshot unexpectedly succeeded")
+        } catch let error as ParakeetSourceSnapshotError {
+            XCTAssertEqual(error, .cancelled)
+        }
+    }
+
     func test_cancellationReleasesSharedLeaseWithoutPartialSnapshot() async throws {
         let fixture = try SourceFixture()
         let started = DispatchSemaphore(value: 0)
@@ -52,8 +93,10 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         })
         let task = Task { try await provider.makeVerifiedSnapshot() }
         XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            release.signal()
+        }
         task.cancel()
-        release.signal()
         do {
             _ = try await task.value
             XCTFail("cancelled snapshot unexpectedly succeeded")
@@ -83,54 +126,73 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         let identity = fixture.identity
         let json = "{\"formatVersion\":1,\"formatVersion\":1,\"repository\":\"\(identity.repository)\",\"revision\":\"\(identity.revision)\",\"fluidAudioRevision\":\"\(identity.fluidAudioRevision)\",\"canonicalProvenanceSHA256\":\"\(identity.canonicalProvenanceSHA256)\"}"
         try Data(json.utf8).write(to: marker)
+        let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: fixture.store).makeVerifiedSnapshot()
+            _ = try await provider.makeVerifiedSnapshot()
             XCTFail("duplicate marker key accepted")
         } catch let error as ParakeetSourceSnapshotError {
             XCTAssertEqual(error, .markerDuplicateKey("formatVersion"))
         }
+        try assertFailureReleased(parent: fixture.parent)
     }
 
     func testExtraSymlinkAndWrongStructuralRoleFailClosed() async throws {
         let extra = try SourceFixture()
         try Data("extra".utf8).write(to: extra.source.appendingPathComponent("unexpected.bin"))
+        let extraProvider = VerifiedParakeetSourceSnapshotProvider(store: extra.store)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: extra.store).makeVerifiedSnapshot()
+            _ = try await extraProvider.makeVerifiedSnapshot()
             XCTFail("extra file accepted")
         } catch { }
+        try assertFailureReleased(parent: extra.parent)
 
         let symlink = try SourceFixture()
         let target = symlink.source.appendingPathComponent(symlink.entries[0].path)
         try FileManager.default.removeItem(at: target)
         try FileManager.default.createSymbolicLink(at: target, withDestinationURL: symlink.source.appendingPathComponent("parakeet_vocab.json"))
+        let symlinkProvider = VerifiedParakeetSourceSnapshotProvider(store: symlink.store)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: symlink.store).makeVerifiedSnapshot()
+            _ = try await symlinkProvider.makeVerifiedSnapshot()
             XCTFail("symlink accepted")
         } catch { }
+        try assertFailureReleased(parent: symlink.parent)
 
         let wrongRole = try SourceFixture()
         var entries = wrongRole.entries
         entries[0] = GeneratedParakeetManifestEntry(path: entries[0].path, size: entries[0].size, sha256: entries[0].sha256, component: entries[0].component, role: "weights")
         let alteredStore = ParakeetSourceStore(parent: wrongRole.parent, sourceDirectoryName: wrongRole.sourceName, entries: entries, identity: wrongRole.identity)
+        let roleProvider = VerifiedParakeetSourceSnapshotProvider(store: alteredStore)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: alteredStore).makeVerifiedSnapshot()
+            _ = try await roleProvider.makeVerifiedSnapshot()
             XCTFail("wrong structural role accepted")
         } catch { }
+        try assertFailureReleased(parent: wrongRole.parent)
     }
 
     func test_identityMismatchAndIncompleteSetsFailClosed() async throws {
         let fixture = try SourceFixture()
         let badIdentity = ParakeetSourceIdentity(formatVersion: 1, repository: "wrong", revision: fixture.identity.revision, fluidAudioRevision: fixture.identity.fluidAudioRevision, canonicalProvenanceSHA256: fixture.identity.canonicalProvenanceSHA256)
         let badStore = ParakeetSourceStore(parent: fixture.parent, sourceDirectoryName: fixture.sourceName, entries: fixture.entries, identity: badIdentity)
+        let identityProvider = VerifiedParakeetSourceSnapshotProvider(store: badStore)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: badStore).makeVerifiedSnapshot()
+            _ = try await identityProvider.makeVerifiedSnapshot()
             XCTFail("identity mismatch accepted")
         } catch { }
+        try assertFailureReleased(parent: fixture.parent)
         try FileManager.default.removeItem(at: fixture.source.appendingPathComponent("parakeet_vocab.json"))
+        let incompleteProvider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store)
         do {
-            _ = try await VerifiedParakeetSourceSnapshotProvider(store: fixture.store).makeVerifiedSnapshot()
+            _ = try await incompleteProvider.makeVerifiedSnapshot()
             XCTFail("incomplete source accepted")
         } catch { }
+        try assertFailureReleased(parent: fixture.parent)
+    }
+
+    private func assertFailureReleased(parent: URL) throws {
+        let lock = ParakeetStoreFileLock(storeParent: parent)
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor, "failed snapshot must release its shared lease")
+        successor?.release()
     }
 }
 

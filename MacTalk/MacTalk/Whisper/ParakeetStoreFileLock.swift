@@ -64,6 +64,17 @@ struct ParakeetStoreFileLock: Sendable {
             return try body(descriptor)
         }
 
+        /// Borrows the validated parent descriptor when the lease has not yet
+        /// been released. Cancellation may release the lease before the
+        /// serial snapshot queue begins; callers must treat nil as a canceled
+        /// operation rather than dereferencing a closed descriptor.
+        func withStoreParentDescriptorIfAvailable<T>(_ body: (Int32) throws -> T) rethrows -> T? {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard let descriptor = storeParentDescriptor else { return nil }
+            return try body(descriptor)
+        }
+
         /// Releases the kernel lease exactly once. Calling this method more than
         /// once is safe; deinitialization also releases an unreleased lease.
         func release() {

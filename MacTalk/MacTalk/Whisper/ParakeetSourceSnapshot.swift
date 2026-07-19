@@ -103,8 +103,11 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     do {
-                        let snapshot = try lease.withStoreParentDescriptor { parentFD in
+                        try cancellation.check()
+                        guard let snapshot = try lease.withStoreParentDescriptorIfAvailable({ parentFD in
                             try self.readSnapshot(parentFD: parentFD, cancellation: cancellation)
+                        }) else {
+                            throw ParakeetSourceSnapshotError.cancelled
                         }
                         lease.release()
                         continuation.resume(returning: snapshot)
@@ -116,6 +119,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
             }
         }, onCancel: {
             cancellation.cancel()
+            lease.release()
         })
     }
 
