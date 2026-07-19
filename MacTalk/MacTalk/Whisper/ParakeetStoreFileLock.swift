@@ -154,7 +154,7 @@ struct ParakeetStoreFileLock: Sendable {
             let nextFD = try openOrCreateDirectory(component, relativeTo: currentFD)
             _ = close(currentFD)
             currentFD = nextFD
-            try validateDirectoryDescriptor(currentFD, enforcePrivateMode: index == components.count - 1, systemComponent: index < systemPrefix)
+            try validateDirectoryDescriptor(currentFD, enforcePrivateMode: index == components.count - 1, systemComponent: index < systemPrefix && index < components.count - 1)
             afterComponentOpened?(component)
         }
         afterParentValidation?()

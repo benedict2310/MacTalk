@@ -203,6 +203,36 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         XCTAssertFalse(root.path.contains("Application Support/MacTalk"))
     }
 
+    func test_systemDirectoryRootsFailClosedWithoutCreatingLockOrChangingMode() async throws {
+        let paths = ["/tmp", "/private/tmp", "/var", "/private", "/private/var"]
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            let root = URL(fileURLWithPath: path, isDirectory: true)
+            let lockPath = root.appendingPathComponent(".mactalk-store.lock")
+            var beforeLock = stat()
+            let lockExisted = lstat(lockPath.path, &beforeLock) == 0
+            XCTAssertFalse(lockExisted, "test requires no pre-existing system lock at \(lockPath.path)")
+            guard !lockExisted else { continue }
+
+            let beforeMode = try fileMode(root)
+            defer {
+                var createdLock = stat()
+                if lstat(lockPath.path, &createdLock) == 0 {
+                    XCTAssertEqual(unlink(lockPath.path), 0, "test cleanup must remove only a lock created by this test")
+                }
+            }
+
+            do {
+                _ = try await ParakeetStoreFileLock(storeParent: root).acquire(.exclusive)
+                XCTFail("system directory root was accepted")
+            } catch {
+                // expected
+            }
+            var afterLock = stat()
+            XCTAssertNotEqual(lstat(lockPath.path, &afterLock), 0, "system directory must not receive a MacTalk lock")
+            XCTAssertEqual(try fileMode(root), beforeMode, "system directory mode must not be changed")
+        }
+    }
+
     func test_symlinkedStoreParentAndIntermediateAreRejected() async throws {
         let root = try makeTemporaryStore()
         let target = root.appendingPathComponent("target", isDirectory: true)
