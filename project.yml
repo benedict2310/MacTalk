@@ -199,6 +199,18 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MacTalk
+      - target: ParakeetStoreLockProbe
+
+  ParakeetStoreLockProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Tools/ParakeetStoreLockProbe
+      - path: MacTalk/MacTalk/Whisper/ParakeetStoreFileLock.swift
+    settings:
+      SWIFT_VERSION: "6.0"
+      SWIFT_STRICT_CONCURRENCY: complete
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 schemes:
   MacTalk:

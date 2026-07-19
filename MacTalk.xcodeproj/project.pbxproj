@@ -43,10 +43,12 @@
 		520D5CB08C0BEE4FBB233F47 /* NativeWhisperEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA82C17EF6BC9027FA3048E8 /* NativeWhisperEngineTests.swift */; };
 		5240DE52D8D793490ABBEA78 /* TestHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81ABE900575F1149ED6F49B /* TestHelpers.swift */; };
 		5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */; };
+		59F98F4D1C39620968C21881 /* Probe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500BF5A68FDA36C8BD7C1020 /* Probe.swift */; };
 		5A70A77ED62B8C36C9D8DB55 /* RealModelLaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED777F1046A4254BCB252ACC /* RealModelLaneTests.swift */; };
 		5AEA53717EA74573AC492E8E /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010CEA95FBEAAA77534F6D1D /* ModelStore.swift */; };
 		5D36A4C9998C2C966067EE0C /* ModelSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E05DF575E71C6393CD98181 /* ModelSecurityTests.swift */; };
 		5DEA73CAF2F5F8B48FE6F1BD /* AudioWaveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC01F39AE8E11E437C3DB59 /* AudioWaveView.swift */; };
+		5ECC9DC74C0255852D7D10D4 /* ParakeetStoreFileLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */; };
 		5F1333172A225DFE267FC2AE /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17A686CDEF44401730A9967E /* Metal.framework */; };
 		6B24766DCFE64F0C7CA7DE74 /* AutoInsertManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */; };
 		6CA60FEE44034413EF9AD91D /* ParakeetBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = F902ABAAF29E3BD4DC3E4C6B /* ParakeetBootstrap.swift */; };
@@ -89,12 +91,14 @@
 		BF7779BE4CF099D3CC1F8874 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 739E2B7B812EDEAFD334D7C2 /* Assets.xcassets */; };
 		C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */; };
 		C289FCFA43BC6160F45CC5EF /* AudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F45EAFB3246883475BF41D0 /* AudioCapture.swift */; };
+		C5643687B27C77F9FFDBE917 /* ParakeetStoreFileLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */; };
 		C660FD6794D4333446D08410 /* ShortcutCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37B2DC4DFB8C1C1AF92D668A /* ShortcutCoordinatorTests.swift */; };
 		CB36CD51A8713642F3EF11A6 /* ModelIntegrityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43939A73281D9B60CA7A0912 /* ModelIntegrityTests.swift */; };
 		CD8CFF3413450B0B52DDC9EB /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3370D324AA3BB2E3D65289F3 /* CoreML.framework */; };
 		CF52A5E4EEFEA0AD489CAF78 /* AudioHardwareValidationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FBF01E284CBD93030272C6 /* AudioHardwareValidationRecorder.swift */; };
 		D12ACE6C04D0BC9571BF1736 /* AppPickerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2F549ED7DBEBADC45C4429 /* AppPickerIntegrationTests.swift */; };
 		D30730DD55EF6782ED8C7CEF /* StatusBarControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */; };
+		D5143ACACF28E23AD438D1C6 /* ParakeetStoreFileLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C6E2D3BCC69BCB9F8085CE8 /* ParakeetStoreFileLockTests.swift */; };
 		DB47CCD04FB7C1B3419C7F33 /* ModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6A14DF13BE05A8263A8449 /* ModelManager.swift */; };
 		DE9B54ADAF88CE6777F6F784 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D16C4E018975F87D9DE6D45F /* Accelerate.framework */; };
 		DFFE8483B6228AAECF551FF2 /* ModelDownloadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEBF2DAAD3C5BAB9F33E30E2 /* ModelDownloadCoordinatorTests.swift */; };
@@ -121,6 +125,13 @@
 			remoteGlobalIDString = A940A5D44273CD14442159B0;
 			remoteInfo = MacTalk;
 		};
+		E8D2D0C9D753053B9D4D5BF3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9FDA4BF698C7EF8D7EBEEEA3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0FF76B7E7FF332C71CEDB588;
+			remoteInfo = ParakeetStoreLockProbe;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -139,6 +150,7 @@
 		1F66260E9CB017B88EBDDD44 /* Phase4IntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Phase4IntegrationTests.swift; sourceTree = "<group>"; };
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowGate.swift; sourceTree = "<group>"; };
+		296D377B491B533E892B72E7 /* ParakeetStoreLockProbe */ = {isa = PBXFileReference; includeInIndex = 0; path = ParakeetStoreLockProbe; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AFD8BE26638F615B5F70CE6 /* ModelIntegrityVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelIntegrityVerifier.swift; sourceTree = "<group>"; };
 		31C64476BEB27CFE9AB9D1E2 /* TimestampedAudioComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimestampedAudioComposer.swift; sourceTree = "<group>"; };
 		3370D324AA3BB2E3D65289F3 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
@@ -151,6 +163,7 @@
 		44DB11AF678F4F2CB4A12F7A /* ScreenAudioCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenAudioCaptureTests.swift; sourceTree = "<group>"; };
 		4E05DF575E71C6393CD98181 /* ModelSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSecurityTests.swift; sourceTree = "<group>"; };
 		4FF9AD343E04BC2892622DA6 /* StatusMenuPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuPresenter.swift; sourceTree = "<group>"; };
+		500BF5A68FDA36C8BD7C1020 /* Probe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = "<group>"; };
 		59E9EED0C012BA63AE29807D /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 		5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinatorTests.swift; sourceTree = "<group>"; };
 		63E40FCC9174C4CE0C094B6E /* DeterministicHarnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicHarnessTests.swift; sourceTree = "<group>"; };
@@ -168,6 +181,7 @@
 		74DAEDA2792B773A15191DA0 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetEngineTests.swift; sourceTree = "<group>"; };
 		7F8FE4AB019087397C11051E /* RecordingSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetStoreFileLock.swift; sourceTree = "<group>"; };
 		81F3CF3EAB00EA975604C5A1 /* PrivacyLoggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyLoggingTests.swift; sourceTree = "<group>"; };
 		82805B10DEB40AF6D7AA27B1 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
 		83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowIntegrationTests.swift; sourceTree = "<group>"; };
@@ -181,6 +195,7 @@
 		98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureIntegrationTests.swift; sourceTree = "<group>"; };
 		99A4C39846B535DD6C82069F /* SettingsWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowControllerTests.swift; sourceTree = "<group>"; };
 		99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMixerTests.swift; sourceTree = "<group>"; };
+		9C6E2D3BCC69BCB9F8085CE8 /* ParakeetStoreFileLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetStoreFileLockTests.swift; sourceTree = "<group>"; };
 		9D5BDB30038EE514B48799F0 /* ModelProvenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelProvenanceTests.swift; sourceTree = "<group>"; };
 		9F47A02A2E1A27D8EFA5C66E /* HUDWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowController.swift; sourceTree = "<group>"; };
 		9F9928C31339CAC2A2015117 /* AppAudioSourceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinator.swift; sourceTree = "<group>"; };
@@ -284,9 +299,19 @@
 			children = (
 				86A1E94F88C5F2762884BEBA /* MacTalk */,
 				6B6BA2213193562FE47B8CCA /* MacTalkTests */,
+				4F28150754E7DC97205393A6 /* ParakeetStoreLockProbe */,
 				B0AA9747308BDCD245FD54B1 /* Frameworks */,
 				E3E4349D029ADCE6EF30BE35 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		4F28150754E7DC97205393A6 /* ParakeetStoreLockProbe */ = {
+			isa = PBXGroup;
+			children = (
+				500BF5A68FDA36C8BD7C1020 /* Probe.swift */,
+			);
+			name = ParakeetStoreLockProbe;
+			path = Tools/ParakeetStoreLockProbe;
 			sourceTree = "<group>";
 		};
 		5FC8D1D6C4F04D17B17437B9 /* Utilities */ = {
@@ -331,6 +356,7 @@
 				D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */,
 				677415A9FCDE4847F18D4C94 /* OutputCoordinatorTests.swift */,
 				7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */,
+				9C6E2D3BCC69BCB9F8085CE8 /* ParakeetStoreFileLockTests.swift */,
 				BD54862EE140DF20207C603B /* PermissionFlowCoordinatorTests.swift */,
 				83FB28873DB48764A6122C9D /* PermissionFlowIntegrationTests.swift */,
 				E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */,
@@ -418,6 +444,7 @@
 			children = (
 				E29FD80FD4655CCCEB58F754 /* MacTalk.app */,
 				F56455613F439A82FDAE5FB0 /* MacTalkTests.xctest */,
+				296D377B491B533E892B72E7 /* ParakeetStoreLockProbe */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -435,6 +462,7 @@
 				F902ABAAF29E3BD4DC3E4C6B /* ParakeetBootstrap.swift */,
 				09619C8C32029E72614A1683 /* ParakeetEngine.swift */,
 				858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */,
+				8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */,
 				6D6A281ADAFA30F63A003298 /* SHA256Streamer.swift */,
 				F7D1282BF5D1667A5FA43179 /* WhisperBridge.h */,
 				F8BDC86480E09233F303814D /* WhisperBridge.mm */,
@@ -445,6 +473,23 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0FF76B7E7FF332C71CEDB588 /* ParakeetStoreLockProbe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DBC57950D4CD5D20BA9F1314 /* Build configuration list for PBXNativeTarget "ParakeetStoreLockProbe" */;
+			buildPhases = (
+				4114DA68EDAF9049B16C75E6 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ParakeetStoreLockProbe;
+			packageProductDependencies = (
+			);
+			productName = ParakeetStoreLockProbe;
+			productReference = 296D377B491B533E892B72E7 /* ParakeetStoreLockProbe */;
+			productType = "com.apple.product-type.tool";
+		};
 		9637E030201FCCE35BD749F4 /* MacTalkTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8CDCA790A2D610D2D0EDB0B8 /* Build configuration list for PBXNativeTarget "MacTalkTests" */;
@@ -455,6 +500,7 @@
 			);
 			dependencies = (
 				FB4A1A8FE246F475FDC8F7EE /* PBXTargetDependency */,
+				6E7D77BEF69FCFFD1755893B /* PBXTargetDependency */,
 			);
 			name = MacTalkTests;
 			packageProductDependencies = (
@@ -519,6 +565,7 @@
 			targets = (
 				A940A5D44273CD14442159B0 /* MacTalk */,
 				9637E030201FCCE35BD749F4 /* MacTalkTests */,
+				0FF76B7E7FF332C71CEDB588 /* ParakeetStoreLockProbe */,
 			);
 		};
 /* End PBXProject section */
@@ -587,6 +634,15 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		4114DA68EDAF9049B16C75E6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5643687B27C77F9FFDBE917 /* ParakeetStoreFileLock.swift in Sources */,
+				59F98F4D1C39620968C21881 /* Probe.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9C035754F244D13DF5DA149A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -624,6 +680,7 @@
 				6CA60FEE44034413EF9AD91D /* ParakeetBootstrap.swift in Sources */,
 				93BD41773F100E2B0F8FA5C6 /* ParakeetEngine.swift in Sources */,
 				40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */,
+				5ECC9DC74C0255852D7D10D4 /* ParakeetStoreFileLock.swift in Sources */,
 				31AF70C191CCF991E619649E /* PerformanceMonitor.swift in Sources */,
 				BA9FFF3F1CCA6EB8B399BC2C /* PermissionFlowCoordinator.swift in Sources */,
 				E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */,
@@ -676,6 +733,7 @@
 				40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */,
 				4D52B02AC9D2B5F3F0054644 /* OutputCoordinatorTests.swift in Sources */,
 				B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */,
+				D5143ACACF28E23AD438D1C6 /* ParakeetStoreFileLockTests.swift in Sources */,
 				AA39FB6B87B1C66210E66439 /* PermissionFlowCoordinatorTests.swift in Sources */,
 				5795CE4423A03C2D6662EF5E /* PermissionFlowIntegrationTests.swift in Sources */,
 				031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */,
@@ -698,6 +756,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		6E7D77BEF69FCFFD1755893B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0FF76B7E7FF332C71CEDB588 /* ParakeetStoreLockProbe */;
+			targetProxy = E8D2D0C9D753053B9D4D5BF3 /* PBXContainerItemProxy */;
+		};
 		FB4A1A8FE246F475FDC8F7EE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A940A5D44273CD14442159B0 /* MacTalk */;
@@ -762,6 +825,22 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.app;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = MacTalk/MacTalk/Whisper/WhisperBridge.h;
+			};
+			name = Debug;
+		};
+		418ADB59329C20C0D10F1B01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.ParakeetStoreLockProbe;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -950,6 +1029,22 @@
 			};
 			name = Release;
 		};
+		9A2D168C04802AB8495017D6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.ParakeetStoreLockProbe;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		ADD9814C196E921D8C938C9B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1069,6 +1164,22 @@
 			};
 			name = Release;
 		};
+		DFD8EC957B5D8800BB8CD3BF /* DebugTSan */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mactalk.ParakeetStoreLockProbe;
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = DebugTSan;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1098,6 +1209,16 @@
 				298F1466BCF0F2BD3B0C17A2 /* Debug */,
 				B603FEBFFC5B01628E98AEDF /* DebugTSan */,
 				D93111286488D42DB11D36AC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DBC57950D4CD5D20BA9F1314 /* Build configuration list for PBXNativeTarget "ParakeetStoreLockProbe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				418ADB59329C20C0D10F1B01 /* Debug */,
+				DFD8EC957B5D8800BB8CD3BF /* DebugTSan */,
+				9A2D168C04802AB8495017D6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
