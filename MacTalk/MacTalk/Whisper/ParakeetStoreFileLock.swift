@@ -44,10 +44,24 @@ struct ParakeetStoreFileLock: Sendable {
         let mode: Mode
         private let stateLock = NSLock()
         private var fileDescriptor: Int32?
+        private var storeParentDescriptor: Int32?
 
-        fileprivate init(fileDescriptor: Int32, mode: Mode) {
+        fileprivate init(fileDescriptor: Int32, storeParentDescriptor: Int32, mode: Mode) {
             self.fileDescriptor = fileDescriptor
+            self.storeParentDescriptor = storeParentDescriptor
             self.mode = mode
+        }
+
+        /// Borrows the validated parent directory descriptor while holding the
+        /// lease state lock. Release cannot close the descriptor until this
+        /// synchronous borrow returns.
+        func withStoreParentDescriptor<T>(_ body: (Int32) throws -> T) rethrows -> T {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard let descriptor = storeParentDescriptor else {
+                preconditionFailure("store lock lease has been released")
+            }
+            return try body(descriptor)
         }
 
         /// Releases the kernel lease exactly once. Calling this method more than
@@ -59,9 +73,12 @@ struct ParakeetStoreFileLock: Sendable {
                 return
             }
             fileDescriptor = nil
+            let parentFD = storeParentDescriptor
+            storeParentDescriptor = nil
             stateLock.unlock()
             _ = flock(fd, LOCK_UN)
             _ = close(fd)
+            if let parentFD { _ = close(parentFD) }
         }
 
         deinit { release() }
@@ -86,15 +103,18 @@ struct ParakeetStoreFileLock: Sendable {
     /// Attempts one nonblocking acquisition. A nil result proves that the
     /// kernel rejected this exact lock descriptor with EAGAIN/EWOULDBLOCK.
     func tryAcquire(_ mode: Mode) throws -> Lease? {
-        let fd = try openValidatedLockDescriptor()
+        let descriptors = try openValidatedLockDescriptor()
+        let parentFD = descriptors.0
+        let fd = descriptors.1
         let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
         while true {
             guard flock(fd, operation) != 0 else {
-                return Lease(fileDescriptor: fd, mode: mode)
+                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode)
             }
             let code = errno
             if code == EINTR { continue }
             _ = close(fd)
+            _ = close(parentFD)
             if code == EAGAIN || code == EWOULDBLOCK {
                 return nil
             }
@@ -103,10 +123,15 @@ struct ParakeetStoreFileLock: Sendable {
     }
 
     func acquire(_ mode: Mode) async throws -> Lease {
-        let fd = try openValidatedLockDescriptor()
+        let descriptors = try openValidatedLockDescriptor()
+        let parentFD = descriptors.0
+        let fd = descriptors.1
         var closeOnExit = true
         defer {
-            if closeOnExit { _ = close(fd) }
+            if closeOnExit {
+                _ = close(fd)
+                _ = close(parentFD)
+            }
         }
 
         let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
@@ -120,7 +145,7 @@ struct ParakeetStoreFileLock: Sendable {
                     throw error
                 }
                 closeOnExit = false
-                return Lease(fileDescriptor: fd, mode: mode)
+                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode)
             }
 
             let code = errno
@@ -135,10 +160,15 @@ struct ParakeetStoreFileLock: Sendable {
         }
     }
 
-    private func openValidatedLockDescriptor() throws -> Int32 {
+    private func openValidatedLockDescriptor() throws -> (Int32, Int32) {
         let parentFD = try openStoreParentDirectory()
-        defer { _ = close(parentFD) }
-        return try openLockFile(parentFD: parentFD)
+        do {
+            let lockFD = try openLockFile(parentFD: parentFD)
+            return (parentFD, lockFD)
+        } catch {
+            _ = close(parentFD)
+            throw error
+        }
     }
 
     private func openStoreParentDirectory() throws -> Int32 {

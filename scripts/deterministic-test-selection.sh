@@ -18,6 +18,7 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/ModelSecurityTests
   MacTalkTests/VerifiedArtifactReaderTests
   MacTalkTests/ParakeetStoreFileLockTests
+  MacTalkTests/ParakeetSourceSnapshotTests
   MacTalkTests/NotificationManagerTests
   MacTalkTests/OutputCoordinatorTests
   MacTalkTests/PermissionFlowCoordinatorTests

@@ -20,6 +20,7 @@ enum VerifiedArtifactReaderError: Error, Equatable, Sendable {
     case sizeMismatch(expected: Int64, actual: Int64)
     case shortRead(expected: Int, actual: Int)
     case readFailed(Int32)
+    case cancelled
     case unexpectedTrailingByte
     case checksumMismatch(expected: String, actual: String)
 }
@@ -49,13 +50,16 @@ struct VerifiedArtifactReader {
     private static let maximumSize: Int64 = 536_870_912
     private let rootFD: Int32
     private let hooks: TestHooks
+    private let cancellationCheck: @Sendable () -> Bool
 
-    init(rootFD: Int32, hooks: TestHooks = TestHooks()) {
+    init(rootFD: Int32, hooks: TestHooks = TestHooks(), cancellationCheck: @escaping @Sendable () -> Bool = { false }) {
         self.rootFD = rootFD
         self.hooks = hooks
+        self.cancellationCheck = cancellationCheck
     }
 
     func read(_ entry: GeneratedParakeetManifestEntry) throws -> VerifiedArtifactBytes {
+        try checkCancellation()
         let components = try validate(entry)
         var rootInfo = stat()
         guard fstat(rootFD, &rootInfo) == 0 else {
@@ -72,6 +76,7 @@ struct VerifiedArtifactReader {
         }
 
         for component in components.dropLast() {
+            try checkCancellation()
             let fd = try openChild(named: component, relativeTo: currentFD, directory: true)
             directoryFDs.append(fd)
             currentFD = fd
@@ -101,6 +106,7 @@ struct VerifiedArtifactReader {
         try data.withUnsafeMutableBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             while offset < expectedSize {
+                try checkCancellation()
                 let result = Darwin.read(finalFD, baseAddress.advanced(by: offset), expectedSize - offset)
                 if result < 0 {
                     if errno == EINTR { continue }
@@ -127,12 +133,17 @@ struct VerifiedArtifactReader {
             break
         }
 
+        try checkCancellation()
         let actualDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard actualDigest == entry.sha256 else {
             throw VerifiedArtifactReaderError.checksumMismatch(expected: entry.sha256, actual: actualDigest)
         }
         hooks.afterVerified?()
         return VerifiedArtifactBytes(identity: entry, data: data)
+    }
+
+    private func checkCancellation() throws {
+        if cancellationCheck() { throw VerifiedArtifactReaderError.cancelled }
     }
 
     private func validate(_ entry: GeneratedParakeetManifestEntry) throws -> [String] {
