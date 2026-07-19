@@ -11,10 +11,10 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         func availableCapacity(for url: URL) throws -> Int64 { calls += 1; return value }
     }
 
-    private func identity(for data: Data, size: Int64? = nil) -> DownloadArtifactIdentity {
+    private func identity(for data: Data, size: Int64? = nil, artifactPath: String = "fixture.bin", filename: String = "fixture.bin") -> DownloadArtifactIdentity {
         DownloadArtifactIdentity(schemaVersion: 1, provider: "fixture", modelID: "test", sourceRepository: "local",
-                                 revision: "0123456789abcdef0123456789abcdef01234567", artifactPath: "fixture.bin",
-                                 filename: "fixture.bin", sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), sizeBytes: size ?? Int64(data.count))
+                                 revision: "0123456789abcdef0123456789abcdef01234567", artifactPath: artifactPath,
+                                 filename: filename, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), sizeBytes: size ?? Int64(data.count))
     }
 
     private func request(identity: DownloadArtifactIdentity, server: LoopbackHTTPServer, root: URL) -> BoundedModelDownloadRequest {
@@ -105,6 +105,61 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let slot = root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id), isDirectory: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.appendingPathComponent("payload.part").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.appendingPathComponent("payload.part.json").path))
+    }
+
+    func testInvalidAggregateDiskRequirementFailsBeforeOpeningAnyRequest() async throws {
+        let payload = Data("payload".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = identity(for: payload)
+        for required in [Int64(0), Int64(-1), id.sizeBytes - 1, Int64.max - 1] {
+            do {
+                _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(
+                    BoundedModelDownloadRequest(identity: id, mirrors: [server.url], workspaceRoot: root,
+                                                aggregateDiskBytesStillRequired: required))
+                XCTFail("invalid aggregate requirement must fail: \\(required)")
+            } catch BoundedModelDownloadError.invalidIdentity { }
+            catch { XCTFail("unexpected error for aggregate \\(required): \\(error)") }
+        }
+        XCTAssertTrue(server.requestLog.isEmpty)
+    }
+
+    func testMetadataReplacementIsAlwaysOldOrNewWithoutDeleteGap() throws {
+        let payload = Data("metadata-payload".utf8)
+        let id = identity(for: payload)
+        let workspace = try root(); defer { try? FileManager.default.removeItem(at: workspace) }
+        let slot = workspace.appendingPathComponent("slot", isDirectory: true)
+        try FileManager.default.createDirectory(at: slot, withIntermediateDirectories: true)
+        let metadataURL = slot.appendingPathComponent("payload.part.json")
+        let mirror = URL(string: "http://localhost:12345/fixture")!
+        let old = BoundedModelDownloadTransport.PartialMetadata(identity: id, mirror: mirror.absoluteString)
+        var changed = id
+        changed = DownloadArtifactIdentity(schemaVersion: id.schemaVersion, provider: id.provider, modelID: "changed", sourceRepository: id.sourceRepository, revision: id.revision, artifactPath: id.artifactPath, filename: id.filename, sha256: id.sha256, sizeBytes: id.sizeBytes)
+        let new = BoundedModelDownloadTransport.PartialMetadata(identity: changed, mirror: mirror.absoluteString)
+        let transport = BoundedModelDownloadTransport()
+        try transport.persist(old, at: metadataURL)
+        let writer = DispatchQueue.global(qos: .userInitiated)
+        let finished = DispatchSemaphore(value: 0)
+        writer.async {
+            defer { finished.signal() }
+            for index in 0..<1_000 {
+                try? transport.persist(index.isMultiple(of: 2) ? old : new, at: metadataURL)
+            }
+        }
+        var observations = 0
+        var invalidObservation: Error?
+        while finished.wait(timeout: .now()) == .timedOut {
+            do {
+                let observed = try JSONDecoder().decode(BoundedModelDownloadTransport.PartialMetadata.self, from: Data(contentsOf: metadataURL))
+                XCTAssertTrue(observed == old || observed == new, "metadata reader observed an unexpected generation")
+                observations += 1
+            } catch {
+                invalidObservation = error
+                break
+            }
+        }
+        XCTAssertNil(invalidObservation, "metadata replacement exposed a delete gap: \(String(describing: invalidObservation))")
+        XCTAssertGreaterThan(observations, 0)
     }
 
     func testLowSpaceFailsBeforeOpeningAnyRequest() async throws {
@@ -246,6 +301,39 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/fixture.bin").path))
     }
 
+    func testFilenameAndArtifactPathMustBeStrictRelativeSafeValues() async throws {
+        let payload = Data("payload".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let invalid: [DownloadArtifactIdentity] = [
+            identity(for: payload, filename: ""), identity(for: payload, filename: "."),
+            identity(for: payload, filename: ".."), identity(for: payload, filename: "a/b"),
+            identity(for: payload, filename: "a\0b"), identity(for: payload, artifactPath: ""),
+            identity(for: payload, artifactPath: "/absolute"), identity(for: payload, artifactPath: "a//b"),
+            identity(for: payload, artifactPath: "a/./b"), identity(for: payload, artifactPath: "a/../b"),
+            identity(for: payload, artifactPath: "a\0b")
+        ]
+        for id in invalid {
+            do {
+                _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
+                XCTFail("unsafe identity must fail: \\(id.filename) / \\(id.artifactPath)")
+            } catch BoundedModelDownloadError.invalidIdentity { }
+            catch { XCTFail("unexpected identity error: \\(error)") }
+        }
+        XCTAssertTrue(server.requestLog.isEmpty)
+    }
+
+    func testDestinationRemainsDirectChildOfCompletedDirectory() async throws {
+        let payload = Data("payload".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = identity(for: payload, artifactPath: "nested/artifact.bin", filename: "artifact.bin")
+        let destination = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
+        XCTAssertEqual(destination.deletingLastPathComponent().lastPathComponent, "completed")
+        XCTAssertEqual(destination.lastPathComponent, "artifact.bin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested").path))
+    }
+
     func testCancellationDeletesPartialAndDoesNotTryAnotherMirror() async throws {
         let payload = Data(repeating: 14, count: 200_000)
         let server = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 1_024, delay: 0.01)) }
@@ -281,6 +369,35 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         do { _ = try await first.value; XCTFail("superseded operation must fail") }
         catch BoundedModelDownloadError.superseded { }
         catch { XCTFail("unexpected supersession error: \(error)") }
+    }
+
+    func testSameWorkspaceSameIdentitySupersessionCannotEraseNewPromotion() async throws {
+        let payload = Data(repeating: 23, count: 120_000)
+        let slow = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 1_024, delay: 0.01)) }
+        let fast = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let workspace = try root(); defer { try? FileManager.default.removeItem(at: workspace) }
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let id = identity(for: payload)
+        let first = Task {
+            try await transport.download(BoundedModelDownloadRequest(identity: id, mirrors: [slow.url], workspaceRoot: workspace))
+        }
+        try await waitForRequest(slow)
+        let second = Task {
+            try await transport.download(BoundedModelDownloadRequest(identity: id, mirrors: [fast.url], workspaceRoot: workspace))
+        }
+        let destination = try await second.value
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        do {
+            _ = try await first.value
+            XCTFail("superseded operation must fail")
+        } catch BoundedModelDownloadError.superseded {
+            // expected
+        } catch {
+            XCTFail("unexpected supersession error: \(error)")
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.appendingPathComponent("partials").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id)).appendingPathComponent("payload.part").path))
     }
 
     private func waitForRequest(_ server: LoopbackHTTPServer) async throws {
