@@ -12,6 +12,10 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         func availableCapacity(for url: URL) throws -> Int64 { calls += 1; return value }
     }
 
+    private final class TransportBox: @unchecked Sendable {
+        var transport: BoundedModelDownloadTransport?
+    }
+
     private func identity(for data: Data, size: Int64? = nil, artifactPath: String = "fixture.bin", filename: String = "fixture.bin") -> DownloadArtifactIdentity {
         DownloadArtifactIdentity(schemaVersion: 1, provider: "fixture", modelID: "test", sourceRepository: "local",
                                  revision: "0123456789abcdef0123456789abcdef01234567", artifactPath: artifactPath,
@@ -559,6 +563,25 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let second = try await transport.download(BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root))
         XCTAssertEqual(try Data(contentsOf: second), payload)
         XCTAssertEqual(server.requestLog.count, 2)
+    }
+
+    func testCancellationAfterBeginBeforeTaskRegistrationCancelsGeneration() async throws {
+        let payload = Data("registration-cancel".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let box = TransportBox()
+        box.transport = BoundedModelDownloadTransport(allowInsecureLoopback: true, sessionFactory: { configuration, delegate in
+            box.transport?.cancel(operationID: id)
+            return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        })
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root)
+        do {
+            _ = try await box.transport!.download(request)
+            XCTFail("cancellation before task registration must fail")
+        } catch BoundedModelDownloadError.cancelled { }
+        XCTAssertTrue(server.requestLog.isEmpty)
+        XCTAssertEqual(box.transport?.cancellationStateCountForTesting(), 0)
     }
 
     func testDuplicateCallerIDsAreRejectedBeforeSideEffects() async throws {
