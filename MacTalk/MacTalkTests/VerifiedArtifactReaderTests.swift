@@ -182,7 +182,7 @@ final class VerifiedArtifactReaderTests: XCTestCase {
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try payload.write(to: nested.appendingPathComponent("fixture.bin"))
         let reader = VerifiedArtifactReader(rootFD: rootFD)
-        let before = openFileDescriptorCount()
+        let before = FileDescriptorCensus.count()
 
         for _ in 0..<100 {
             XCTAssertEqual(try reader.read(entry(for: "nested/fixture.bin", data: payload)).data, payload)
@@ -238,11 +238,11 @@ final class VerifiedArtifactReaderTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(openFileDescriptorCount(), before)
+        XCTAssertEqual(FileDescriptorCensus.count(), before)
     }
 
     func test_fdCensusDetectsDuplicateThatRootFstatWouldMiss() throws {
-        let before = openFileDescriptorCount()
+        let before = FileDescriptorCensus.count()
         var duplicate = dup(rootFD)
         XCTAssertGreaterThanOrEqual(duplicate, 0)
         defer {
@@ -251,23 +251,11 @@ final class VerifiedArtifactReaderTests: XCTestCase {
 
         var info = stat()
         XCTAssertEqual(fstat(rootFD, &info), 0)
-        XCTAssertEqual(openFileDescriptorCount(), before + 1)
+        XCTAssertEqual(FileDescriptorCensus.count(), before + 1)
 
         _ = close(duplicate)
         duplicate = -1
-        XCTAssertEqual(openFileDescriptorCount(), before)
-    }
-
-    private func openFileDescriptorCount() -> Int {
-        let maximum = getdtablesize()
-        return (0..<maximum).reduce(into: 0) { count, descriptor in
-            errno = 0
-            if fcntl(Int32(descriptor), F_GETFD) >= 0 {
-                count += 1
-            } else {
-                XCTAssertEqual(errno, EBADF, "unexpected fcntl error for descriptor \(descriptor)")
-            }
-        }
+        XCTAssertEqual(FileDescriptorCensus.count(), before)
     }
 
     private func entry(for path: String, data: Data) -> GeneratedParakeetManifestEntry {

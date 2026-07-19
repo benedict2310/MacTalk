@@ -103,7 +103,12 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
 
     func makeVerifiedSnapshot() async throws -> VerifiedParakeetSourceSnapshot {
         let lock = ParakeetStoreFileLock(storeParent: store.parent)
-        let lease = try await lock.acquire(.shared)
+        let lease: ParakeetStoreFileLock.Lease
+        do {
+            lease = try await lock.acquire(.shared)
+        } catch is CancellationError {
+            throw ParakeetSourceSnapshotError.cancelled
+        }
         let cancellation = SnapshotCancellation()
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in

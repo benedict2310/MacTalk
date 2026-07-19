@@ -143,15 +143,48 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         successor.release()
     }
 
+    func test_cancellationWhileWaitingForSharedLeaseReturnsTypedErrorAndNoLateSnapshot() async throws {
+        let fixture = try SourceFixture()
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let holder = try await lock.acquire(.exclusive)
+        defer { holder.release() }
+
+        let result = Task { () -> Result<VerifiedParakeetSourceSnapshot, Error> in
+            do {
+                return .success(try await VerifiedParakeetSourceSnapshotProvider(store: fixture.store).makeVerifiedSnapshot())
+            } catch {
+                return .failure(error)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(try lock.tryAcquire(.shared), "exclusive holder must keep the snapshot waiting")
+
+        result.cancel()
+        let completed = await result.value
+        guard case let .failure(error) = completed else {
+            return XCTFail("cancelled snapshot unexpectedly produced a snapshot")
+        }
+        XCTAssertEqual(error as? ParakeetSourceSnapshotError, .cancelled)
+
+        holder.release()
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor, "cancelled snapshot must not acquire a late shared lease")
+        successor?.release()
+    }
+
     func test_fdopendirFailureReleasesDuplicatedDescriptorAndLease() async throws {
         let fixture = try SourceFixture()
         let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store, forceFdopendirFailure: true)
-        do {
-            _ = try await provider.makeVerifiedSnapshot()
-            XCTFail("forced fdopendir failure unexpectedly succeeded")
-        } catch let error as ParakeetSourceSnapshotError {
-            XCTAssertEqual(error, .sourceNotDirectory)
+        let before = FileDescriptorCensus.count()
+        for _ in 0..<100 {
+            do {
+                _ = try await provider.makeVerifiedSnapshot()
+                XCTFail("forced fdopendir failure unexpectedly succeeded")
+            } catch let error as ParakeetSourceSnapshotError {
+                XCTAssertEqual(error, .sourceNotDirectory)
+            }
         }
+        XCTAssertEqual(FileDescriptorCensus.count(), before, "forced fdopendir failures must not leak duplicated directory descriptors")
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
         let successor = try lock.tryAcquire(.exclusive)
         XCTAssertNotNil(successor, "fdopendir failure must release the lease")

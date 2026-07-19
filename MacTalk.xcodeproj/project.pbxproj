@@ -88,6 +88,7 @@
 		A6793E663C67A0D63408317E /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D465A46A98C40FCE2AC3C775 /* AppSettings.swift */; };
 		A843366A6B64CA916E0322C7 /* StatusBarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 842D1A1DB98DC2331ECEE659 /* StatusBarState.swift */; };
 		AA39FB6B87B1C66210E66439 /* PermissionFlowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD54862EE140DF20207C603B /* PermissionFlowCoordinatorTests.swift */; };
+		B3F73ADD40DB9EFDFE8E8FA2 /* FileDescriptorCensus.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24F8409C75D653CE8D83807 /* FileDescriptorCensus.swift */; };
 		B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */; };
 		BA9FFF3F1CCA6EB8B399BC2C /* PermissionFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96000BE65E6ABE18BF19F1EC /* PermissionFlowCoordinator.swift */; };
 		BAD2320D9521ED8C2B05863B /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AFDF15D9275C7B2662A6B51F /* FluidAudio */; };
@@ -232,6 +233,7 @@
 		D465A46A98C40FCE2AC3C775 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		DEBF2DAAD3C5BAB9F33E30E2 /* ModelDownloadCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadCoordinatorTests.swift; sourceTree = "<group>"; };
 		DF15AD5D6AC92C434EB036F8 /* HUDWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDWindowControllerTests.swift; sourceTree = "<group>"; };
+		E24F8409C75D653CE8D83807 /* FileDescriptorCensus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDescriptorCensus.swift; sourceTree = "<group>"; };
 		E29FD80FD4655CCCEB58F754 /* MacTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMonitor.swift; sourceTree = "<group>"; };
 		E56E468FDC7C54B3C1374991 /* PermissionsActor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsActor.swift; sourceTree = "<group>"; };
@@ -383,9 +385,18 @@
 				C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */,
 				94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */,
 				5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */,
+				7E941B64ED397BCBE7EDB9DD /* Support */,
 			);
 			name = MacTalkTests;
 			path = MacTalk/MacTalkTests;
+			sourceTree = "<group>";
+		};
+		7E941B64ED397BCBE7EDB9DD /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				E24F8409C75D653CE8D83807 /* FileDescriptorCensus.swift */,
+			);
+			path = Support;
 			sourceTree = "<group>";
 		};
 		86A1E94F88C5F2762884BEBA /* MacTalk */ = {
@@ -736,6 +747,7 @@
 				42404AA83AA3A55BF28903DA /* DeterministicHarnessTests.swift in Sources */,
 				4C672F5CAD90E8A6651D4B36 /* EngineLifecycleCoordinatorTests.swift in Sources */,
 				E0E3BD7B773ECE54B518C2C8 /* EngineSelectionLoaderTests.swift in Sources */,
+				B3F73ADD40DB9EFDFE8E8FA2 /* FileDescriptorCensus.swift in Sources */,
 				2ED06E3A6B8438E7C9888EAF /* HUDWindowControllerTests.swift in Sources */,
 				4D163AD872B121D4AACB612C /* HotkeyManagerTests.swift in Sources */,
 				DFFE8483B6228AAECF551FF2 /* ModelDownloadCoordinatorTests.swift in Sources */,
