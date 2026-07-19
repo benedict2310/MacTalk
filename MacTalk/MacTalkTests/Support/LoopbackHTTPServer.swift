@@ -26,6 +26,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "com.mactalk.loopback-http")
     private let response: @Sendable (Request) -> Response
+    private let beforeAcceptStateCheck: (@Sendable () -> Void)?
     private let lock = NSLock()
     private var requests: [Request] = []
     private var connections: [ObjectIdentifier: NWConnection] = [:]
@@ -33,8 +34,9 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private(set) var port: UInt16 = 0
     private(set) var isStopped = false
 
-    init(response: @escaping @Sendable (Request) -> Response) throws {
+    init(response: @escaping @Sendable (Request) -> Response, beforeAcceptStateCheck: (@Sendable () -> Void)? = nil) throws {
         self.response = response
+        self.beforeAcceptStateCheck = beforeAcceptStateCheck
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host("127.0.0.1"), port: .any)
         self.listener = try NWListener(using: parameters, on: .any)
@@ -72,26 +74,44 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     var activeConnectionCount: Int { lock.withLock { connections.count } }
 
     private func accept(_ connection: NWConnection) {
-        lock.withLock { connections[ObjectIdentifier(connection)] = connection }
+        beforeAcceptStateCheck?()
+        let identifier = ObjectIdentifier(connection)
+        let registered = lock.withLock { () -> Bool in
+            guard !isStopped else { return false }
+            connections[identifier] = connection
+            return true
+        }
+        guard registered else {
+            connection.cancel()
+            return
+        }
         connection.stateUpdateHandler = { [weak self, weak connection] state in
-            if case .cancelled = state, let connection { self?.lock.withLock { self?.connections[ObjectIdentifier(connection)] = nil } }
+            if case .cancelled = state, let connection {
+                self?.lock.withLock { self?.connections[ObjectIdentifier(connection)] = nil }
+            }
         }
         connection.start(queue: queue)
         receive(connection, buffer: Data())
     }
 
+    private func isActive(_ connection: NWConnection) -> Bool {
+        lock.withLock { !isStopped && connections[ObjectIdentifier(connection)] != nil }
+    }
+
     private func receive(_ connection: NWConnection, buffer: Data) {
+        guard isActive(connection) else { connection.cancel(); return }
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { connection.cancel(); return }
+            guard let self, self.isActive(connection) else { connection.cancel(); return }
             var buffer = buffer
             if let data { buffer.append(data) }
             guard buffer.count <= 64 * 1024 else {
-            connection.cancel()
-            return
-        }
+                connection.cancel()
+                return
+            }
             if let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) {
+                guard self.isActive(connection) else { connection.cancel(); return }
                 let request = self.parseRequest(Data(buffer[..<headerEnd.lowerBound]))
-                self.lock.lock(); self.requests.append(request); self.lock.unlock()
+                self.lock.withLock { self.requests.append(request) }
                 self.respond(connection, request: request)
             } else if !isComplete && error == nil {
                 self.receive(connection, buffer: buffer)
@@ -112,6 +132,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     private func respond(_ connection: NWConnection, request: Request) {
+        guard isActive(connection) else { connection.cancel(); return }
         let response = self.response(request)
         if let redirect = response.redirect {
             let head = "HTTP/1.1 302 Found\r\nLocation: \(redirect)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -141,6 +162,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     private func sendChunked(_ connection: NWConnection, data: Data, chunkSize: Int, offset: Int, delay: TimeInterval) {
+        guard isActive(connection) else { connection.cancel(); return }
         guard offset < data.count else {
             send(connection, data: Data("0\r\n\r\n".utf8), thenCancel: true)
             return
@@ -161,6 +183,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     private func send(_ connection: NWConnection, data: Data, thenCancel: Bool) {
+        guard isActive(connection) else { connection.cancel(); return }
         connection.send(content: data, completion: .contentProcessed { _ in if thenCancel { connection.cancel() } })
     }
 

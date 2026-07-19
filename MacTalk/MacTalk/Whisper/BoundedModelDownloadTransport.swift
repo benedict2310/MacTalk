@@ -102,7 +102,6 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         var nextGeneration: UInt64 = 0
         var activeGeneration: UInt64?
         var generationByCaller: [UUID: UInt64] = [:]
-        var cancelledCallers: Set<UUID> = []
         var cancelledGenerations: Set<UInt64> = []
         var supersededGenerations: Set<UInt64> = []
         var claimedGenerations: Set<UInt64> = []
@@ -229,14 +228,23 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
 
     func cancel(operationID: UUID) {
         let task: URLSessionDataTask? = state.withLock { state in
-            state.cancelledCallers.insert(operationID)
-            if let generation = state.generationByCaller[operationID], !state.claimedGenerations.contains(generation) {
-                state.cancelledGenerations.insert(generation)
-                return state.activeTasks[generation]
+            guard let generation = state.generationByCaller[operationID],
+                  !state.claimedGenerations.contains(generation),
+                  state.activeGeneration == generation else {
+                return nil
             }
-            return nil
+            state.cancelledGenerations.insert(generation)
+            return state.activeTasks[generation]
         }
         task?.cancel()
+    }
+
+    /// Internal test seam proving cancellation does not retain unknown caller
+    /// identifiers or completed generation state.
+    func cancellationStateCountForTesting() -> Int {
+        state.withLock { state in
+            state.cancelledGenerations.count + state.generationByCaller.count
+        }
     }
 
     private func runAttempt(request: BoundedModelDownloadRequest, anchor: WorkspaceAnchor, mirror: URL, offset: Int64, validator: String?, operation: UInt64) async throws -> Int64 {
@@ -334,9 +342,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
                 state.supersededGenerations.insert(old)
             }
             state.activeGeneration = generation
-            let wasCancelledBeforeRegistration = state.cancelledCallers.remove(caller) != nil
             state.generationByCaller[caller] = generation
-            if wasCancelledBeforeRegistration { state.cancelledGenerations.insert(generation) }
             return (generation, oldTask)
         }
         result.1?.cancel()
@@ -498,18 +504,31 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         let validator: String?
     }
 
-    fileprivate static func validValidator(_ value: String) -> String? {
-        if value.hasPrefix("\"") && value.hasSuffix("\"") && !value.hasPrefix("W/") {
+    static func validValidator(_ value: String) -> String? {
+        // Resume validators must be strong and byte-stable. An ETag is only
+        // accepted in its exact quoted form; escaped/interior quotes and all
+        // C0/DEL controls are rejected rather than normalized.
+        let bytes = Array(value.utf8)
+        if bytes.first == 0x22, bytes.last == 0x22, bytes.count >= 2 {
+            let opaque = bytes.dropFirst().dropLast()
+            guard opaque.allSatisfy({ $0 != 0x22 && $0 >= 0x20 && $0 != 0x7f }) else {
+                return nil
+            }
             return value
         }
+
+        // Accept only the RFC 9110 IMF-fixdate spelling. DateFormatter is
+        // explicitly non-lenient and a round trip prevents it accepting
+        // obsolete forms, normalized fields, trailing bytes, or invalid dates.
+        guard bytes.count == 29, value.unicodeScalars.allSatisfy({ $0.value < 0x80 }) else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        for format in ["EEE',' dd MMM yyyy HH':'mm':'ss z", "EEEE',' dd-MMM-yy HH':'mm':'ss z", "EEE MMM d HH':'mm':'ss yyyy"] {
-            formatter.dateFormat = format
-            if formatter.date(from: value) != nil { return value }
-        }
-        return nil
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.isLenient = false
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        guard let date = formatter.date(from: value), formatter.string(from: date) == value else { return nil }
+        return value
     }
 
     private func isOfficialCredentialURL(_ url: URL) -> Bool {

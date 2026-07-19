@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 import XCTest
 @testable import MacTalk
 
@@ -39,6 +40,20 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("mactalk-transport-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    func testStrongAndDateValidatorsRejectAdversarialValues() {
+        XCTAssertEqual(BoundedModelDownloadTransport.validValidator("\"opaque-tag\""), "\"opaque-tag\"")
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("W/\"opaque-tag\""))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"embedded\"quote\""))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"line\u{000d}\u{000a}break\""))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"control\u{0001}\""))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"trailing\" "))
+        XCTAssertEqual(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:37 GMT"), "Sun, 06 Nov 1994 08:49:37 GMT")
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 6 Nov 1994 08:49:37 GMT"))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:37 GMT "))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:60 GMT"))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sunday, 06-Nov-94 08:49:37 GMT"))
     }
 
     func testProductionTransportRejectsInsecureMirrors() async throws {
@@ -515,17 +530,35 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
 
     }
 
-    func testCancelBeforeTaskRegistrationIsRecorded() async throws {
-        let payload = Data("pre-cancel".utf8)
+    func testUnknownCancellationDoesNotPoisonFutureReuseOfCallerID() async throws {
+        let payload = Data("unknown-cancel".utf8)
         let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID()
-        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root)
         let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        for _ in 0..<100 {
+            transport.cancel(operationID: id)
+        }
+        XCTAssertEqual(transport.cancellationStateCountForTesting(), 0)
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root)
+        let destination = try await transport.download(request)
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertEqual(transport.cancellationStateCountForTesting(), 0)
+    }
+
+    func testCancellationAfterClaimDoesNotPoisonFutureReuseOfCallerID() async throws {
+        let payload = Data("claimed-cancel".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root)
+        _ = try await transport.download(request)
         transport.cancel(operationID: id)
-        do { _ = try await transport.download(request); XCTFail("pre-canceled operation must fail") }
-        catch BoundedModelDownloadError.cancelled { }
-        XCTAssertTrue(server.requestLog.isEmpty)
+        XCTAssertEqual(transport.cancellationStateCountForTesting(), 0)
+        let second = try await transport.download(BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root))
+        XCTAssertEqual(try Data(contentsOf: second), payload)
+        XCTAssertEqual(server.requestLog.count, 2)
     }
 
     func testDuplicateCallerIDsAreRejectedBeforeSideEffects() async throws {
@@ -552,6 +585,36 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         server.stop(); server.stop()
         XCTAssertTrue(server.isStopped)
         XCTAssertEqual(server.activeConnectionCount, 0)
+    }
+
+    func testLoopbackQueuedAcceptAfterStopNeverStartsOrResponds() throws {
+        let enteredAccept = DispatchSemaphore(value: 0)
+        let releaseAccept = DispatchSemaphore(value: 0)
+        let server = try LoopbackHTTPServer(response: { _ in
+            XCTFail("a connection accepted after stop must not respond")
+            return .init(body: .fixed(Data("unexpected".utf8)))
+        }, beforeAcceptStateCheck: {
+            enteredAccept.signal()
+            _ = releaseAccept.wait(timeout: .now() + 5)
+        })
+        let client = NWConnection(
+            host: NWEndpoint.Host("127.0.0.1"),
+            port: NWEndpoint.Port(rawValue: server.port)!,
+            using: .tcp
+        )
+        let clientQueue = DispatchQueue(label: "com.mactalk.loopback-stop-test")
+        client.start(queue: clientQueue)
+        XCTAssertEqual(enteredAccept.wait(timeout: .now() + 5), .success)
+        server.stop()
+        releaseAccept.signal()
+        for _ in 0..<100 where server.activeConnectionCount != 0 {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(server.isStopped)
+        XCTAssertEqual(server.activeConnectionCount, 0)
+        XCTAssertTrue(server.requestLog.isEmpty)
+        server.stop()
+        client.cancel()
     }
 
     private final class CancellationProbe: @unchecked Sendable {
