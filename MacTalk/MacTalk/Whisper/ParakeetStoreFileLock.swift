@@ -45,6 +45,8 @@ struct ParakeetStoreFileLock: Sendable {
         private let stateLock = NSLock()
         private var fileDescriptor: Int32?
         private var storeParentDescriptor: Int32?
+        private var activeBorrows = 0
+        private var releaseRequested = false
 
         fileprivate init(fileDescriptor: Int32, storeParentDescriptor: Int32, mode: Mode) {
             self.fileDescriptor = fileDescriptor
@@ -52,44 +54,83 @@ struct ParakeetStoreFileLock: Sendable {
             self.mode = mode
         }
 
-        /// Borrows the validated parent directory descriptor while holding the
-        /// lease state lock. Release cannot close the descriptor until this
-        /// synchronous borrow returns.
+        /// Borrows the validated parent descriptor without holding the state
+        /// lock while the caller performs blocking descriptor work. The active
+        /// borrow count keeps cancellation from closing either descriptor until
+        /// the body returns.
         func withStoreParentDescriptor<T>(_ body: (Int32) throws -> T) rethrows -> T {
             stateLock.lock()
-            defer { stateLock.unlock() }
-            guard let descriptor = storeParentDescriptor else {
+            guard let descriptor = beginBorrow() else {
+                stateLock.unlock()
                 preconditionFailure("store lock lease has been released")
             }
+            stateLock.unlock()
+            defer { endBorrow() }
             return try body(descriptor)
         }
 
         /// Borrows the validated parent descriptor when the lease has not yet
-        /// been released. Cancellation may release the lease before the
-        /// serial snapshot queue begins; callers must treat nil as a canceled
-        /// operation rather than dereferencing a closed descriptor.
+        /// been released. Cancellation may request release while the body is
+        /// active; the descriptors close only after the last active borrow.
         func withStoreParentDescriptorIfAvailable<T>(_ body: (Int32) throws -> T) rethrows -> T? {
             stateLock.lock()
-            defer { stateLock.unlock() }
-            guard let descriptor = storeParentDescriptor else { return nil }
+            guard let descriptor = beginBorrow() else {
+                stateLock.unlock()
+                return nil
+            }
+            stateLock.unlock()
+            defer { endBorrow() }
             return try body(descriptor)
+        }
+
+        private func beginBorrow() -> Int32? {
+            guard !releaseRequested, let descriptor = storeParentDescriptor else { return nil }
+            activeBorrows += 1
+            return descriptor
+        }
+
+        private func endBorrow() {
+            var descriptors: (Int32, Int32)?
+            stateLock.lock()
+            activeBorrows -= 1
+            if activeBorrows == 0 && releaseRequested {
+                descriptors = takeDescriptors()
+            }
+            stateLock.unlock()
+            close(descriptors)
         }
 
         /// Releases the kernel lease exactly once. Calling this method more than
         /// once is safe; deinitialization also releases an unreleased lease.
+        /// The request itself is nonblocking even when a snapshot is reading a
+        /// large artifact through the borrowed descriptor.
         func release() {
+            var descriptors: (Int32, Int32)?
             stateLock.lock()
-            guard let fd = fileDescriptor else {
+            guard !releaseRequested else {
                 stateLock.unlock()
                 return
             }
-            fileDescriptor = nil
-            let parentFD = storeParentDescriptor
-            storeParentDescriptor = nil
+            releaseRequested = true
+            if activeBorrows == 0 {
+                descriptors = takeDescriptors()
+            }
             stateLock.unlock()
+            close(descriptors)
+        }
+
+        private func takeDescriptors() -> (Int32, Int32)? {
+            guard let fd = fileDescriptor, let parentFD = storeParentDescriptor else { return nil }
+            fileDescriptor = nil
+            storeParentDescriptor = nil
+            return (fd, parentFD)
+        }
+
+        private func close(_ descriptors: (Int32, Int32)?) {
+            guard let (fd, parentFD) = descriptors else { return }
             _ = flock(fd, LOCK_UN)
-            _ = close(fd)
-            if let parentFD { _ = close(parentFD) }
+            _ = Darwin.close(fd)
+            _ = Darwin.close(parentFD)
         }
 
         deinit { release() }

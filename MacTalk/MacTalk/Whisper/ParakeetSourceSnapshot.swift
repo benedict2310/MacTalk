@@ -88,11 +88,17 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
     private let store: ParakeetSourceStore
     private let queue: DispatchQueue
     private let beforeArtifactRead: (@Sendable () -> Void)?
+    private let forceFdopendirFailure: Bool
 
-    init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil) {
+    convenience init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil) {
+        self.init(store: store, queue: queue, beforeArtifactRead: beforeArtifactRead, forceFdopendirFailure: false)
+    }
+
+    init(store: ParakeetSourceStore, queue: DispatchQueue? = nil, beforeArtifactRead: (@Sendable () -> Void)? = nil, forceFdopendirFailure: Bool) {
         self.store = store
         self.queue = queue ?? DispatchQueue(label: "com.mactalk.parakeet-source-snapshot", qos: .userInitiated)
         self.beforeArtifactRead = beforeArtifactRead
+        self.forceFdopendirFailure = forceFdopendirFailure
     }
 
     func makeVerifiedSnapshot() async throws -> VerifiedParakeetSourceSnapshot {
@@ -113,7 +119,11 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
                         continuation.resume(returning: snapshot)
                     } catch {
                         lease.release()
-                        continuation.resume(throwing: error)
+                        if case VerifiedArtifactReaderError.cancelled = error {
+                            continuation.resume(throwing: ParakeetSourceSnapshotError.cancelled)
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
             }
@@ -269,7 +279,15 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
     private func walk(fd: Int32, relativePath: String, expectedFiles: Set<String>, expectedDirectories: Set<String>, found: inout Set<String>, cancellation: SnapshotCancellation) throws {
         try cancellation.check()
         let listingFD = dup(fd)
-        guard listingFD >= 0, let directory = fdopendir(listingFD) else { throw ParakeetSourceSnapshotError.sourceNotDirectory }
+        guard listingFD >= 0 else { throw ParakeetSourceSnapshotError.sourceNotDirectory }
+        if forceFdopendirFailure {
+            _ = close(listingFD)
+            throw ParakeetSourceSnapshotError.sourceNotDirectory
+        }
+        guard let directory = fdopendir(listingFD) else {
+            _ = close(listingFD)
+            throw ParakeetSourceSnapshotError.sourceNotDirectory
+        }
         defer { closedir(directory) }
         while let item = readdir(directory) {
             try cancellation.check()

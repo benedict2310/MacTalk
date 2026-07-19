@@ -83,6 +83,39 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_cancellationReturnsWhileActiveSnapshotReadIsBlocked() async throws {
+        let fixture = try SourceFixture()
+        let started = DispatchSemaphore(value: 0)
+        let releaseRead = DispatchSemaphore(value: 0)
+        let cancelReturned = DispatchSemaphore(value: 0)
+        let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store, beforeArtifactRead: {
+            started.signal()
+            releaseRead.wait()
+        })
+        let task = Task { try await provider.makeVerifiedSnapshot() }
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            task.cancel()
+            cancelReturned.signal()
+        }
+        XCTAssertEqual(cancelReturned.wait(timeout: .now() + 0.25), .success, "Task.cancel must not wait for an active snapshot read")
+        releaseRead.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancelled snapshot unexpectedly succeeded")
+        } catch let error as ParakeetSourceSnapshotError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("unexpected cancellation error: \\(error)")
+        }
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor)
+        successor?.release()
+    }
+
     func test_cancellationReleasesSharedLeaseWithoutPartialSnapshot() async throws {
         let fixture = try SourceFixture()
         let started = DispatchSemaphore(value: 0)
@@ -100,10 +133,29 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         do {
             _ = try await task.value
             XCTFail("cancelled snapshot unexpectedly succeeded")
-        } catch { }
+        } catch let error as ParakeetSourceSnapshotError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("unexpected cancellation error: \\(error)")
+        }
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
         let successor = try await lock.acquire(.exclusive)
         successor.release()
+    }
+
+    func test_fdopendirFailureReleasesDuplicatedDescriptorAndLease() async throws {
+        let fixture = try SourceFixture()
+        let provider = VerifiedParakeetSourceSnapshotProvider(store: fixture.store, forceFdopendirFailure: true)
+        do {
+            _ = try await provider.makeVerifiedSnapshot()
+            XCTFail("forced fdopendir failure unexpectedly succeeded")
+        } catch let error as ParakeetSourceSnapshotError {
+            XCTAssertEqual(error, .sourceNotDirectory)
+        }
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor, "fdopendir failure must release the lease")
+        successor?.release()
     }
 
     func test_blockingSnapshotRunsOnInjectedSerialQueue() async throws {
