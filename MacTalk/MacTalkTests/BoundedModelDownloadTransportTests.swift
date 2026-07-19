@@ -460,6 +460,22 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
+    func testCancellationAfterCommitClaimPreservesCommittedResult() async throws {
+        let payload = Data("claim-wins".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let operationID = UUID()
+        let cancellation = CancellationProbe(operationID: operationID)
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true, afterGenerationClaim: { _ in
+            cancellation.transport?.cancel(operationID: operationID)
+        })
+        cancellation.transport = transport
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: operationID, workspaceRoot: root)
+        let destination = try await transport.download(request)
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertNil(transport.terminalErrorForTesting(1), "post-commit cancellation must not overwrite the committed terminal state")
+    }
+
     func testAnchoredWorkspacePromotionDoesNotFollowRootReplacement() async throws {
         let payload = Data("anchored-payload".utf8)
         let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
@@ -536,6 +552,15 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         server.stop(); server.stop()
         XCTAssertTrue(server.isStopped)
         XCTAssertEqual(server.activeConnectionCount, 0)
+    }
+
+    private final class CancellationProbe: @unchecked Sendable {
+        let operationID: UUID
+        weak var transport: BoundedModelDownloadTransport?
+
+        init(operationID: UUID) {
+            self.operationID = operationID
+        }
     }
 
     private static func persistMetadata(_ metadata: BoundedModelDownloadTransport.PartialMetadata, at url: URL) throws {

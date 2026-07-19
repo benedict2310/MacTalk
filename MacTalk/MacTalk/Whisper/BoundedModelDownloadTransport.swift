@@ -97,6 +97,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     fileprivate let allowInsecureLoopback: Bool
     fileprivate let allowTestCredentialsOnLoopback: Bool
     private let sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)?
+    private let afterGenerationClaim: (@Sendable (UInt64) -> Void)?
     private struct State {
         var nextGeneration: UInt64 = 0
         var activeGeneration: UInt64?
@@ -115,11 +116,13 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     init(capacity: VolumeCapacityProviding = SystemVolumeCapacityProvider(),
          allowInsecureLoopback: Bool = false,
          allowTestCredentialsOnLoopback: Bool = false,
-         sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)? = nil) {
+         sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)? = nil,
+         afterGenerationClaim: (@Sendable (UInt64) -> Void)? = nil) {
         self.capacity = capacity
         self.allowInsecureLoopback = allowInsecureLoopback
         self.allowTestCredentialsOnLoopback = allowTestCredentialsOnLoopback
         self.sessionFactory = sessionFactory
+        self.afterGenerationClaim = afterGenerationClaim
     }
 
     /// Returns the promoted path for compatibility. Callers must reopen and
@@ -214,6 +217,10 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
 
     fileprivate func cancelGeneration(_ generation: UInt64) {
         let task = state.withLock { state -> URLSessionDataTask? in
+            // Claiming is the commit linearization point. A cancellation that
+            // arrives after it must not turn a committed operation into a
+            // contradictory cancelled terminal state.
+            guard !state.claimedGenerations.contains(generation) else { return nil }
             state.cancelledGenerations.insert(generation)
             return state.activeTasks[generation]
         }
@@ -223,7 +230,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     func cancel(operationID: UUID) {
         let task: URLSessionDataTask? = state.withLock { state in
             state.cancelledCallers.insert(operationID)
-            if let generation = state.generationByCaller[operationID] {
+            if let generation = state.generationByCaller[operationID], !state.claimedGenerations.contains(generation) {
                 state.cancelledGenerations.insert(generation)
                 return state.activeTasks[generation]
             }
@@ -300,6 +307,10 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         state.withLock { $0.activeGeneration == operation && !$0.cancelledGenerations.contains(operation) }
     }
 
+    func terminalErrorForTesting(_ operation: UInt64) -> BoundedModelDownloadError? {
+        state.withLock { $0.terminalErrors[operation] }
+    }
+
     fileprivate func operationError(_ operation: UInt64) -> BoundedModelDownloadError {
         state.withLock { state in
             if let terminal = state.terminalErrors[operation] { return terminal }
@@ -319,7 +330,9 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
             state.nextGeneration &+= 1
             let generation = state.nextGeneration
             let oldTask = state.activeGeneration.flatMap { state.activeTasks[$0] }
-            if let old = state.activeGeneration { state.supersededGenerations.insert(old) }
+            if let old = state.activeGeneration, !state.claimedGenerations.contains(old) {
+                state.supersededGenerations.insert(old)
+            }
             state.activeGeneration = generation
             let wasCancelledBeforeRegistration = state.cancelledCallers.remove(caller) != nil
             state.generationByCaller[caller] = generation
@@ -442,6 +455,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
             state.claimedGenerations.insert(operation); return true
         }
         guard claimed else { throw operationError(operation) }
+        afterGenerationClaim?(operation)
         try anchor.promote()
         try anchor.removeMetadata()
     }
