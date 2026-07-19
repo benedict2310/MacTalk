@@ -12,7 +12,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
     }
 
     func test_loadsFourComponentsInOrderAndRetainsOwnedModels() async throws {
-        let recorder = RecordingComponentLoader(real: true)
+        let recorder = RecordingComponentLoader()
         let loader = VerifiedParakeetModelLoader(
             expectedIdentity: fixture.identity,
             expectedArtifacts: fixture.artifacts,
@@ -53,7 +53,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
     }
 
     func test_policyUsesCpuOnlyForPreprocessorAndSelectedPolicyForOtherComponents() async throws {
-        let recorder = RecordingComponentLoader(real: false)
+        let recorder = RecordingComponentLoader()
         let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
         _ = try await loader.load(snapshot: fixture.snapshot, policy: .cpuAndGPU)
         let recordedPolicies = await recorder.policies()
@@ -63,7 +63,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
     }
 
     func test_identityMismatchFailsBeforeCoreML() async throws {
-        let recorder = RecordingComponentLoader(real: false)
+        let recorder = RecordingComponentLoader()
         let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
         var bad = fixture.snapshot
         bad = VerifiedParakeetSourceSnapshot(identity: ParakeetSourceIdentity(formatVersion: 1, repository: "wrong", revision: fixture.identity.revision, fluidAudioRevision: fixture.identity.fluidAudioRevision, canonicalProvenanceSHA256: fixture.identity.canonicalProvenanceSHA256), assets: bad.assets, vocabulary: bad.vocabulary)
@@ -82,7 +82,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
         ]
 
         for (field, mutate) in mutations {
-            let recorder = RecordingComponentLoader(real: false)
+            let recorder = RecordingComponentLoader()
             let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
             try await assertRejected(loader, snapshot: mutate(fixture.snapshot), error: .artifactMismatch)
             let recordedComponents = await recorder.components()
@@ -100,7 +100,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
         ]
 
         for (field, mutate) in mutations {
-            let recorder = RecordingComponentLoader(real: false)
+            let recorder = RecordingComponentLoader()
             let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
             try await assertRejected(loader, snapshot: mutate(fixture.snapshot), error: .artifactMismatch)
             let recordedComponents = await recorder.components()
@@ -111,7 +111,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
     func test_strictVocabularyRejectsInvalidForms() async throws {
         let invalid = ["", "{}", "{\"1\":\"a\",\"01\":\"b\"}", "{\"-1\":\"a\"}", "{\"x\":\"a\"}", "{\"999999999999999999999999999999\":\"a\"}", "{\"1\":1}", "{\"1\":{}}", "{\"1\":\"a\"} trailing", "{\"1\":\"a\""]
         for text in invalid {
-            let recorder = RecordingComponentLoader(real: false)
+            let recorder = RecordingComponentLoader()
             let snapshot = fixture.snapshotWithVocabulary(Data(text.utf8))
             let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifactsFor(snapshot), componentLoader: recorder)
             try await assertRejected(loader, snapshot: snapshot, error: .vocabularyMalformed)
@@ -122,13 +122,37 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
 
     func test_validVocabularyParsesStringKeysAndValues() async throws {
         let snapshot = fixture.snapshotWithVocabulary(Data(#"{"0":"zero","2":"two"}"#.utf8))
-        let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifactsFor(snapshot), componentLoader: RecordingComponentLoader(real: false))
+        let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifactsFor(snapshot), componentLoader: RecordingComponentLoader())
         let result = try await loader.load(snapshot: snapshot, policy: .cpuOnly)
         XCTAssertEqual(result.models.vocabulary, [0: "zero", 2: "two"])
     }
 
+    func test_sameIdentityDifferentValidVocabularyBytesFailBeforeComponentLoading() async throws {
+        let replacement = Data(#"{"0":"<blank>","1":"capture"}"#.utf8)
+        XCTAssertEqual(Int64(replacement.count), fixture.vocabulary.identity.size)
+        XCTAssertNotEqual(Self.digest(replacement), fixture.vocabulary.identity.sha256)
+        let snapshot = fixture.snapshotWithVocabulary(replacement, identity: fixture.vocabulary.identity)
+        let recorder = RecordingComponentLoader()
+        let loader = VerifiedParakeetModelLoader(
+            expectedIdentity: fixture.identity,
+            expectedArtifacts: fixture.artifacts,
+            componentLoader: recorder
+        )
+
+        do {
+            _ = try await loader.load(snapshot: snapshot, policy: .cpuOnly)
+            XCTFail("different bytes under the expected vocabulary identity must be rejected")
+        } catch let error as VerifiedParakeetModelLoaderError {
+            XCTAssertEqual(error, .artifactByteMismatch)
+            let recordedComponents = await recorder.components()
+            XCTAssertTrue(recordedComponents.isEmpty)
+        } catch {
+            XCTFail("wrong rejection: \(error)")
+        }
+    }
+
     func test_cancellationIsTypedAndProducesNoResult() async throws {
-        let recorder = RecordingComponentLoader(real: false, delay: .milliseconds(200))
+        let recorder = RecordingComponentLoader(delay: .milliseconds(200))
         let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
         let snapshot = fixture.snapshot
         let task = Task { try await loader.load(snapshot: snapshot, policy: .cpuOnly) }
@@ -139,7 +163,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
     }
 
     func test_cancellationDuringComponentLoadIsTyped() async throws {
-        let recorder = RecordingComponentLoader(real: false, delay: .milliseconds(200))
+        let recorder = RecordingComponentLoader(delay: .milliseconds(200))
         let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
         let snapshot = fixture.snapshot
         let task = Task { try await loader.load(snapshot: snapshot, policy: .cpuOnly) }
@@ -152,7 +176,7 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
 
     func test_cancellationBeforePublishIsTyped() async throws {
         let gate = AsyncGate()
-        let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: RecordingComponentLoader(real: false), beforePublish: { await gate.wait() })
+        let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: RecordingComponentLoader(), beforePublish: { await gate.wait() })
         let snapshot = fixture.snapshot
         let task = Task { try await loader.load(snapshot: snapshot, policy: .cpuOnly) }
         await gate.waitUntilEntered()
@@ -249,8 +273,8 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
             for component in ParakeetSourceComponent.allCases { map[component] = VerifiedCoreMLAssetBytes(component: component, specification: VerifiedArtifactBytes(identity: specEntry, data: specData), weights: VerifiedArtifactBytes(identity: weightEntry, data: weightData)) }
             snapshot = VerifiedParakeetSourceSnapshot(identity: identity, assets: map, vocabulary: vocabulary)
         }
-        func snapshotWithVocabulary(_ data: Data) -> VerifiedParakeetSourceSnapshot {
-            let entry = GeneratedParakeetManifestEntry(path: "vocab.json", size: Int64(data.count), sha256: digest(data))
+        func snapshotWithVocabulary(_ data: Data, identity: GeneratedParakeetManifestEntry? = nil) -> VerifiedParakeetSourceSnapshot {
+            let entry = identity ?? GeneratedParakeetManifestEntry(path: "vocab.json", size: Int64(data.count), sha256: digest(data))
             return VerifiedParakeetSourceSnapshot(identity: snapshot.identity, assets: snapshot.assets, vocabulary: VerifiedArtifactBytes(identity: entry, data: data))
         }
         func artifactsFor(_ snapshot: VerifiedParakeetSourceSnapshot) -> [ParakeetExpectedArtifact] {
@@ -268,8 +292,8 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
         var components = [ParakeetSourceComponent](); var policies = [CoreMLComputeUnitPolicy](); var active = 0; var maximum = 0
     }
     private final class RecordingComponentLoader: VerifiedParakeetComponentLoading, @unchecked Sendable {
-        let state = RecordingState(); let real: Bool; let delay: Duration?
-        init(real: Bool, delay: Duration? = nil) { self.real = real; self.delay = delay }
+        let state = RecordingState(); let delay: Duration?
+        init(delay: Duration? = nil) { self.delay = delay }
         func load(_ bytes: VerifiedCoreMLAssetBytes, computeUnits: CoreMLComputeUnitPolicy) async throws -> LoadedCoreMLByteAsset {
             await state.record(bytes.component, computeUnits)
             if let delay { try await Task.sleep(for: delay) }

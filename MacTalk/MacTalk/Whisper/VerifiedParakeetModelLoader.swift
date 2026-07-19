@@ -1,4 +1,5 @@
 import CoreML
+import CryptoKit
 import Foundation
 import FluidAudio
 
@@ -59,6 +60,7 @@ final class VerifiedParakeetLoadedModels: @unchecked Sendable {
 enum VerifiedParakeetModelLoaderError: Error, Equatable, Sendable {
     case identityMismatch
     case artifactMismatch
+    case artifactByteMismatch
     case duplicateArtifact
     case vocabularyMalformed
     case cancelled
@@ -99,6 +101,7 @@ final class VerifiedParakeetModelLoader: VerifiedParakeetModelLoading, @unchecke
         do {
             try checkCancellation()
             try validate(snapshot: snapshot)
+            try validateVocabularyBytes(snapshot.vocabulary)
             let vocabulary = try parseVocabulary(snapshot.vocabulary.data)
             var loaded = [ParakeetSourceComponent: LoadedCoreMLByteAsset]()
             for component in ParakeetSourceComponent.allCases {
@@ -166,9 +169,22 @@ final class VerifiedParakeetModelLoader: VerifiedParakeetModelLoading, @unchecke
         }
     }
 
+    private func validateVocabularyBytes(_ bytes: VerifiedArtifactBytes) throws {
+        guard let expected = expectedArtifacts.first(where: { $0.component == nil && $0.role == "vocabulary" })?.entry,
+              bytes.identity == expected,
+              Int64(bytes.data.count) == expected.size,
+              digest(bytes.data) == expected.sha256 else {
+            throw VerifiedParakeetModelLoaderError.artifactByteMismatch
+        }
+    }
+
     private func parseVocabulary(_ data: Data) throws -> [Int: String] {
         var parser = StrictVocabularyParser(data: data)
         return try parser.parse()
+    }
+
+    private func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static let productionArtifacts: [ParakeetExpectedArtifact] = {
