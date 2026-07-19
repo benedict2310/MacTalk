@@ -72,19 +72,39 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
         XCTAssertTrue(recordedComponents.isEmpty)
     }
 
-    func test_everyArtifactIdentityFieldMismatchFailsBeforeCoreML() async throws {
-        for mutate in [
-            { (s: VerifiedParakeetSourceSnapshot) in self.mutateFirst(s, path: "wrong.mlmodel", size: nil, digest: nil, component: nil, role: nil) },
-            { (s: VerifiedParakeetSourceSnapshot) in self.mutateFirst(s, path: nil, size: 1, digest: nil, component: nil, role: nil) },
-            { (s: VerifiedParakeetSourceSnapshot) in self.mutateFirst(s, path: nil, size: nil, digest: String(repeating: "0", count: 64), component: nil, role: nil) },
-            { (s: VerifiedParakeetSourceSnapshot) in self.mutateFirst(s, path: nil, size: nil, digest: nil, component: .encoder, role: nil) },
-            { (s: VerifiedParakeetSourceSnapshot) in self.mutateFirst(s, path: "weights/weight.bin", size: nil, digest: nil, component: nil, role: "weights") }
-        ] {
+    func test_eachArtifactIdentityFieldMismatchFailsBeforeCoreML() async throws {
+        let mutations: [(String, (VerifiedParakeetSourceSnapshot) -> VerifiedParakeetSourceSnapshot)] = [
+            ("path", { self.mutatePreprocessorSpecification($0, field: .path) }),
+            ("size", { self.mutatePreprocessorSpecification($0, field: .size) }),
+            ("digest", { self.mutatePreprocessorSpecification($0, field: .digest) }),
+            ("component", { self.mutatePreprocessorSpecification($0, field: .component) }),
+            ("role", { self.mutatePreprocessorSpecification($0, field: .role) })
+        ]
+
+        for (field, mutate) in mutations {
             let recorder = RecordingComponentLoader(real: false)
             let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
             try await assertRejected(loader, snapshot: mutate(fixture.snapshot), error: .artifactMismatch)
             let recordedComponents = await recorder.components()
-            XCTAssertTrue(recordedComponents.isEmpty)
+            XCTAssertTrue(recordedComponents.isEmpty, "\(field) mutation must be rejected before CoreML")
+        }
+    }
+
+    func test_eachVocabularyIdentityFieldMismatchFailsBeforeCoreML() async throws {
+        let mutations: [(String, (VerifiedParakeetSourceSnapshot) -> VerifiedParakeetSourceSnapshot)] = [
+            ("path", { self.mutateVocabulary($0, field: .path) }),
+            ("size", { self.mutateVocabulary($0, field: .size) }),
+            ("digest", { self.mutateVocabulary($0, field: .digest) }),
+            ("component", { self.mutateVocabulary($0, field: .component) }),
+            ("role", { self.mutateVocabulary($0, field: .role) })
+        ]
+
+        for (field, mutate) in mutations {
+            let recorder = RecordingComponentLoader(real: false)
+            let loader = VerifiedParakeetModelLoader(expectedIdentity: fixture.identity, expectedArtifacts: fixture.artifacts, componentLoader: recorder)
+            try await assertRejected(loader, snapshot: mutate(fixture.snapshot), error: .artifactMismatch)
+            let recordedComponents = await recorder.components()
+            XCTAssertTrue(recordedComponents.isEmpty, "vocabulary \(field) mutation must be rejected before CoreML")
         }
     }
 
@@ -156,13 +176,45 @@ final class VerifiedParakeetModelLoaderTests: XCTestCase {
         catch let error as VerifiedParakeetModelLoaderError { XCTAssertEqual(error, expected) }
     }
 
-    private func mutateFirst(_ snapshot: VerifiedParakeetSourceSnapshot, path: String? = nil, size: Int64? = nil, digest: String? = nil, component: ParakeetSourceComponent? = nil, role: String? = nil) -> VerifiedParakeetSourceSnapshot {
+    private enum IdentityField: Equatable {
+        case path
+        case size
+        case digest
+        case component
+        case role
+    }
+
+    private func mutatePreprocessorSpecification(_ snapshot: VerifiedParakeetSourceSnapshot, field: IdentityField) -> VerifiedParakeetSourceSnapshot {
         var assets = snapshot.assets
         let original = assets[.preprocessor]!
-        let identity = GeneratedParakeetManifestEntry(path: path ?? original.specification.identity.path, size: size ?? original.specification.identity.size, sha256: digest ?? original.specification.identity.sha256)
-        let spec = VerifiedArtifactBytes(identity: identity, data: original.specification.data)
-        assets[.preprocessor] = VerifiedCoreMLAssetBytes(component: component ?? original.component, specification: spec, weights: original.weights)
+        let originalIdentity = original.specification.identity
+        let identity = GeneratedParakeetManifestEntry(
+            path: field == .path ? "wrong.mlmodel" : originalIdentity.path,
+            size: field == .size ? originalIdentity.size + 1 : originalIdentity.size,
+            sha256: field == .digest ? String(repeating: "0", count: 64) : originalIdentity.sha256,
+            component: field == .component ? "Encoder" : originalIdentity.component,
+            role: field == .role ? "weights" : originalIdentity.role
+        )
+        let specification = VerifiedArtifactBytes(identity: identity, data: original.specification.data)
+        assets[.preprocessor] = VerifiedCoreMLAssetBytes(
+            component: original.component,
+            specification: specification,
+            weights: original.weights
+        )
         return VerifiedParakeetSourceSnapshot(identity: snapshot.identity, assets: assets, vocabulary: snapshot.vocabulary)
+    }
+
+    private func mutateVocabulary(_ snapshot: VerifiedParakeetSourceSnapshot, field: IdentityField) -> VerifiedParakeetSourceSnapshot {
+        let original = snapshot.vocabulary.identity
+        let identity = GeneratedParakeetManifestEntry(
+            path: field == .path ? "other-vocab.json" : original.path,
+            size: field == .size ? original.size + 1 : original.size,
+            sha256: field == .digest ? String(repeating: "0", count: 64) : original.sha256,
+            component: field == .component ? "NotVocabulary" : original.component,
+            role: field == .role ? "weights" : original.role
+        )
+        let vocabulary = VerifiedArtifactBytes(identity: identity, data: snapshot.vocabulary.data)
+        return VerifiedParakeetSourceSnapshot(identity: snapshot.identity, assets: snapshot.assets, vocabulary: vocabulary)
     }
 
     private func predict(_ model: MLModel) throws -> [Int] {
