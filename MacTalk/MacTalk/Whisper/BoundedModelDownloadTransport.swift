@@ -414,18 +414,26 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         try anchor.clear()
     }
 
-    private func verify(fd: Int32, identity: DownloadArtifactIdentity) throws {
+    private func verify(fd: Int32, identity: DownloadArtifactIdentity, operation: UInt64) throws {
         guard fd >= 0 else { throw BoundedModelDownloadError.incomplete }; defer { close(fd) }
         var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, Int64(st.st_size) == identity.sizeBytes else { throw BoundedModelDownloadError.incomplete }
         var hasher = SHA256(); var buffer = [UInt8](repeating: 0, count: 64 * 1024); var total: Int64 = 0
-        while true { let n = read(fd, &buffer, buffer.count); if n < 0 { throw BoundedModelDownloadError.incomplete }; if n == 0 { break }; hasher.update(data: Data(buffer[0..<n])); total += Int64(n) }
+        while true {
+            try requireCurrent(operation)
+            let n = read(fd, &buffer, buffer.count)
+            if n < 0 { throw BoundedModelDownloadError.incomplete }
+            if n == 0 { break }
+            hasher.update(data: Data(buffer[0..<n]))
+            total += Int64(n)
+        }
+        try requireCurrent(operation)
         let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard total == identity.sizeBytes, hash == identity.sha256 else { throw BoundedModelDownloadError.checksumMismatch }
     }
 
     private func verifyAndPromote(anchor: WorkspaceAnchor, identity: DownloadArtifactIdentity, operation: UInt64) throws {
         try requireCurrent(operation)
-        try verify(fd: try anchor.openPart(readOnly: true), identity: identity)
+        try verify(fd: try anchor.openPart(readOnly: true), identity: identity, operation: operation)
         let permit = slotPermit(for: anchor.slotKey)
         permit.lock()
         defer { permit.unlock() }
@@ -513,8 +521,8 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     private let slotFD: Int32
     private let completedFD: Int32
 
-    var existsPart: Bool { accessAt(slotFD, name: "payload.part") }
-    var existsMetadata: Bool { accessAt(slotFD, name: "payload.part.json") }
+    var existsPart: Bool { ioQueue.sync { accessAt(slotFD, name: "payload.part") } }
+    var existsMetadata: Bool { ioQueue.sync { accessAt(slotFD, name: "payload.part.json") } }
 
     init(root: URL, slotName: String, filename: String) throws {
         rootURL = root
@@ -556,28 +564,30 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     }
 
     func openPart(readOnly: Bool) throws -> Int32 {
-        let flags = (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_NOFOLLOW | O_CLOEXEC
-        let fd = openat(slotFD, "payload.part", flags, mode_t(0o600))
-        guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
-        var st = stat()
-        guard fstat(fd, &st) == 0,
-              (st.st_mode & S_IFMT) == S_IFREG,
-              st.st_uid == getuid(),
-              st.st_nlink == 1 else {
-            close(fd)
-            throw BoundedModelDownloadError.invalidResumeState
-        }
-        if !readOnly {
-            guard fchmod(fd, mode_t(0o600)) == 0 else {
+        try ioQueue.sync {
+            let flags = (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_NOFOLLOW | O_CLOEXEC
+            let fd = openat(slotFD, "payload.part", flags, mode_t(0o600))
+            guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
+            var st = stat()
+            guard fstat(fd, &st) == 0,
+                  (st.st_mode & S_IFMT) == S_IFREG,
+                  st.st_uid == getuid(),
+                  st.st_nlink == 1 else {
                 close(fd)
-                throw BoundedModelDownloadError.transport("cannot secure partial")
+                throw BoundedModelDownloadError.invalidResumeState
             }
+            if !readOnly {
+                guard fchmod(fd, mode_t(0o600)) == 0 else {
+                    close(fd)
+                    throw BoundedModelDownloadError.transport("cannot secure partial")
+                }
+            }
+            guard fstat(fd, &st) == 0, (st.st_mode & 0o777) == 0o600 else {
+                close(fd)
+                throw BoundedModelDownloadError.invalidResumeState
+            }
+            return fd
         }
-        guard fstat(fd, &st) == 0, (st.st_mode & 0o777) == 0o600 else {
-            close(fd)
-            throw BoundedModelDownloadError.invalidResumeState
-        }
-        return fd
     }
 
     func clear() throws {
@@ -594,36 +604,40 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     }
 
     func readMetadata(maxBytes: Int) throws -> Data {
-        let fd = openat(slotFD, "payload.part.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
-        defer { close(fd) }
-        var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, st.st_size >= 0, st.st_size <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
-        var data = Data(capacity: Int(st.st_size)); var bytes = [UInt8](repeating: 0, count: min(65536, maxBytes))
-        while true { let n = read(fd, &bytes, bytes.count); if n < 0 { throw BoundedModelDownloadError.invalidResumeState }; if n == 0 { break }; data.append(contentsOf: bytes[0..<n]); if data.count > maxBytes { throw BoundedModelDownloadError.invalidResumeState } }
-        return data
+        try ioQueue.sync {
+            let fd = openat(slotFD, "payload.part.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
+            defer { close(fd) }
+            var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, st.st_size >= 0, st.st_size <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
+            var data = Data(capacity: Int(st.st_size)); var bytes = [UInt8](repeating: 0, count: min(65536, maxBytes))
+            while true { let n = read(fd, &bytes, bytes.count); if n < 0 { throw BoundedModelDownloadError.invalidResumeState }; if n == 0 { break }; data.append(contentsOf: bytes[0..<n]); if data.count > maxBytes { throw BoundedModelDownloadError.invalidResumeState } }
+            return data
+        }
     }
 
     func persistMetadata(_ metadata: BoundedModelDownloadTransport.PartialMetadata) throws {
-        let data = try JSONEncoder().encode(metadata)
-        let temp = ".payload.part.json.tmp-\(UUID().uuidString)"
-        let fd = openat(slotFD, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
-        guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot create metadata") }
-        var keep = true; defer { close(fd); if keep { _ = unlinkat(slotFD, temp, 0) } }
-        try data.withUnsafeBytes { raw in
-            var written = 0
-            while written < data.count { let n = Darwin.write(fd, raw.baseAddress!.advanced(by: written), data.count - written); guard n > 0 else { throw BoundedModelDownloadError.transport("cannot write metadata") }; written += n }
+        try ioQueue.sync {
+            let data = try JSONEncoder().encode(metadata)
+            let temp = ".payload.part.json.tmp-\(UUID().uuidString)"
+            let fd = openat(slotFD, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot create metadata") }
+            var keep = true; defer { close(fd); if keep { _ = unlinkat(slotFD, temp, 0) } }
+            try data.withUnsafeBytes { raw in
+                var written = 0
+                while written < data.count { let n = Darwin.write(fd, raw.baseAddress!.advanced(by: written), data.count - written); guard n > 0 else { throw BoundedModelDownloadError.transport("cannot write metadata") }; written += n }
+            }
+            var st = stat()
+            guard fstat(fd, &st) == 0,
+                  (st.st_mode & S_IFMT) == S_IFREG,
+                  st.st_uid == getuid(),
+                  st.st_nlink == 1,
+                  fchmod(fd, mode_t(0o600)) == 0,
+                  fstat(fd, &st) == 0,
+                  (st.st_mode & 0o777) == 0o600,
+                  fsync(fd) == 0,
+                  renameat(slotFD, temp, slotFD, "payload.part.json") == 0 else { throw BoundedModelDownloadError.transport("cannot install metadata") }
+            keep = false
         }
-        var st = stat()
-        guard fstat(fd, &st) == 0,
-              (st.st_mode & S_IFMT) == S_IFREG,
-              st.st_uid == getuid(),
-              st.st_nlink == 1,
-              fchmod(fd, mode_t(0o600)) == 0,
-              fstat(fd, &st) == 0,
-              (st.st_mode & 0o777) == 0o600,
-              fsync(fd) == 0,
-              renameat(slotFD, temp, slotFD, "payload.part.json") == 0 else { throw BoundedModelDownloadError.transport("cannot install metadata") }
-        keep = false
     }
 
     func promote() throws {
