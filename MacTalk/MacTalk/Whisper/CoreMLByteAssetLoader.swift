@@ -11,7 +11,7 @@ enum CoreMLComputeUnitPolicy: Sendable {
     case cpuAndGPU
     case cpuAndNeuralEngine
 
-    fileprivate var computeUnits: MLComputeUnits {
+    var computeUnits: MLComputeUnits {
         switch self {
         case .cpuOnly: return .cpuOnly
         case .all: return .all

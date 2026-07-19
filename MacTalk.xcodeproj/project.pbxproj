@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		004B4E2123DD946C5E49355A /* StatusMenuPresenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7134DDBBC5F066F464B15543 /* StatusMenuPresenterTests.swift */; };
+		0265E292339CCA3CF5F91DCE /* VerifiedParakeetModelLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C9D7BC2A5FCA402DCE8C60C /* VerifiedParakeetModelLoader.swift */; };
 		031AEB18F54EB76578EE06AA /* PermissionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */; };
 		0462E9547F556371A242B595 /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739AB02C792A3E4F1E1EEB1E /* DebugLogger.swift */; };
 		075F958DE96AC5B0F2CBBE12 /* CoreMLByteAssetLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21353ADD4A2B70AF846BC2BE /* CoreMLByteAssetLoader.swift */; };
@@ -28,6 +29,7 @@
 		31AF70C191CCF991E619649E /* PerformanceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */; };
 		324D5DEB6A98DBF07FCE11C9 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF01E16D9F042ED0D5426CE5 /* Permissions.swift */; };
 		36BE7A849EAF97B712375786 /* StatusMenuPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FF9AD343E04BC2892622DA6 /* StatusMenuPresenter.swift */; };
+		37407C0F05057C1A5732BF2F /* VerifiedParakeetModelLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EC92E3B0E1A975F4EABECA /* VerifiedParakeetModelLoaderTests.swift */; };
 		40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */; };
 		40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */; };
 		412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */; };
@@ -159,6 +161,7 @@
 		1FEAC7BDB4D687841E541D1F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		21353ADD4A2B70AF846BC2BE /* CoreMLByteAssetLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLByteAssetLoader.swift; sourceTree = "<group>"; };
 		2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowGate.swift; sourceTree = "<group>"; };
+		25EC92E3B0E1A975F4EABECA /* VerifiedParakeetModelLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedParakeetModelLoaderTests.swift; sourceTree = "<group>"; };
 		296D377B491B533E892B72E7 /* ParakeetStoreLockProbe */ = {isa = PBXFileReference; includeInIndex = 0; path = ParakeetStoreLockProbe; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AFD8BE26638F615B5F70CE6 /* ModelIntegrityVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelIntegrityVerifier.swift; sourceTree = "<group>"; };
 		31C64476BEB27CFE9AB9D1E2 /* TimestampedAudioComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimestampedAudioComposer.swift; sourceTree = "<group>"; };
@@ -200,6 +203,7 @@
 		858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetModelDownloader.swift; sourceTree = "<group>"; };
 		87FBF01E284CBD93030272C6 /* AudioHardwareValidationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHardwareValidationRecorder.swift; sourceTree = "<group>"; };
 		8987E0AA59C05C5485F9BDF7 /* StatusBarAppKitAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarAppKitAdapters.swift; sourceTree = "<group>"; };
+		8C9D7BC2A5FCA402DCE8C60C /* VerifiedParakeetModelLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedParakeetModelLoader.swift; sourceTree = "<group>"; };
 		936816A109576B7AC6EB9727 /* AsyncTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTimeout.swift; sourceTree = "<group>"; };
 		94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TSanSmokeTests.swift; sourceTree = "<group>"; };
 		96000BE65E6ABE18BF19F1EC /* PermissionFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowCoordinator.swift; sourceTree = "<group>"; };
@@ -390,6 +394,7 @@
 				94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */,
 				5846E59128FA7128BDD539C5 /* VerifiedArtifactReaderTests.swift */,
 				1E4B4CAD0586F4946841B9F9 /* VerifiedCoreMLByteAssetTests.swift */,
+				25EC92E3B0E1A975F4EABECA /* VerifiedParakeetModelLoaderTests.swift */,
 				7E941B64ED397BCBE7EDB9DD /* Support */,
 			);
 			name = MacTalkTests;
@@ -493,6 +498,7 @@
 				8188FF85EF6FEFD78B6C4572 /* ParakeetStoreFileLock.swift */,
 				6D6A281ADAFA30F63A003298 /* SHA256Streamer.swift */,
 				FE87EA8F709AAD776A33FB83 /* VerifiedArtifactReader.swift */,
+				8C9D7BC2A5FCA402DCE8C60C /* VerifiedParakeetModelLoader.swift */,
 				F7D1282BF5D1667A5FA43179 /* WhisperBridge.h */,
 				F8BDC86480E09233F303814D /* WhisperBridge.mm */,
 			);
@@ -758,6 +764,7 @@
 				A0D5BB67AAE9CC74CDE0199C /* TimestampedAudioComposer.swift in Sources */,
 				7F31F43A02D5BC19204F3ED7 /* TranscriptionController.swift in Sources */,
 				66298E9129F745F0A5A8BA57 /* VerifiedArtifactReader.swift in Sources */,
+				0265E292339CCA3CF5F91DCE /* VerifiedParakeetModelLoader.swift in Sources */,
 				26390D8329B52560B63D77BD /* WhisperBridge.mm in Sources */,
 				74885DC000A12417A4D290BF /* main.swift in Sources */,
 			);
@@ -811,6 +818,7 @@
 				412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */,
 				23FB52B28101D8AC8ECA9A38 /* VerifiedArtifactReaderTests.swift in Sources */,
 				B1686C5A121C33BA3613F8BD /* VerifiedCoreMLByteAssetTests.swift in Sources */,
+				37407C0F05057C1A5732BF2F /* VerifiedParakeetModelLoaderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
