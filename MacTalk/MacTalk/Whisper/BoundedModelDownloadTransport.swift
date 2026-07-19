@@ -98,6 +98,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     fileprivate let allowTestCredentialsOnLoopback: Bool
     private let sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)?
     private let afterGenerationClaim: (@Sendable (UInt64) -> Void)?
+    private let beforeEntry: (@Sendable () async -> Void)?
     private struct State {
         var nextGeneration: UInt64 = 0
         var activeGeneration: UInt64?
@@ -116,23 +117,31 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
          allowInsecureLoopback: Bool = false,
          allowTestCredentialsOnLoopback: Bool = false,
          sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)? = nil,
-         afterGenerationClaim: (@Sendable (UInt64) -> Void)? = nil) {
+         afterGenerationClaim: (@Sendable (UInt64) -> Void)? = nil,
+         beforeEntry: (@Sendable () async -> Void)? = nil) {
         self.capacity = capacity
         self.allowInsecureLoopback = allowInsecureLoopback
         self.allowTestCredentialsOnLoopback = allowTestCredentialsOnLoopback
         self.sessionFactory = sessionFactory
         self.afterGenerationClaim = afterGenerationClaim
+        self.beforeEntry = beforeEntry
     }
 
     /// Returns the promoted path for compatibility. Callers must reopen and
     /// revalidate the destination by descriptor before handing it to a native
     /// model loader; this URL is not an immutable file capability.
     func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
-        try await withTaskCancellationHandler(operation: {
-            try await downloadImpl(request)
-        }, onCancel: { [weak self] in
-            self?.cancel(operationID: request.operationID)
-        })
+        do {
+            return try await withTaskCancellationHandler(operation: {
+                await beforeEntry?()
+                try Task.checkCancellation()
+                return try await downloadImpl(request)
+            }, onCancel: { [weak self] in
+                self?.cancel(operationID: request.operationID)
+            })
+        } catch is CancellationError {
+            throw BoundedModelDownloadError.cancelled
+        }
     }
 
     private func downloadImpl(_ request: BoundedModelDownloadRequest) async throws -> URL {
@@ -511,7 +520,9 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         let bytes = Array(value.utf8)
         if bytes.first == 0x22, bytes.last == 0x22, bytes.count >= 2 {
             let opaque = bytes.dropFirst().dropLast()
-            guard opaque.allSatisfy({ $0 != 0x22 && $0 >= 0x20 && $0 != 0x7f }) else {
+            guard opaque.allSatisfy({ byte in
+                byte == 0x21 || (byte >= 0x23 && byte <= 0x7e) || byte >= 0x80
+            }) else {
                 return nil
             }
             return value

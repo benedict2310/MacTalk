@@ -16,6 +16,27 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         var transport: BoundedModelDownloadTransport?
     }
 
+    private actor EntryGate {
+        private var entered = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            entered = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func waitUntilEntered() async {
+            while !entered {
+                await Task.yield()
+            }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     private func identity(for data: Data, size: Int64? = nil, artifactPath: String = "fixture.bin", filename: String = "fixture.bin") -> DownloadArtifactIdentity {
         DownloadArtifactIdentity(schemaVersion: 1, provider: "fixture", modelID: "test", sourceRepository: "local",
                                  revision: "0123456789abcdef0123456789abcdef01234567", artifactPath: artifactPath,
@@ -53,6 +74,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"line\u{000d}\u{000a}break\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"control\u{0001}\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"trailing\" "))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"opaque tag\""))
         XCTAssertEqual(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:37 GMT"), "Sun, 06 Nov 1994 08:49:37 GMT")
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 6 Nov 1994 08:49:37 GMT"))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:37 GMT "))
@@ -563,6 +585,36 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let second = try await transport.download(BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], operationID: id, workspaceRoot: root))
         XCTAssertEqual(try Data(contentsOf: second), payload)
         XCTAssertEqual(server.requestLog.count, 2)
+    }
+
+    func testCancellationBeforeBeginOperationHasNoWorkspaceOrRequest() async throws {
+        let payload = Data("pre-entry-cancel".utf8)
+        let server = try LoopbackHTTPServer { _ in
+            XCTFail("pre-entry cancellation must not request the mirror")
+            return .init(body: .fixed(payload))
+        }
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("mactalk-transport-pre-entry-\(UUID().uuidString)")
+        let gate = EntryGate()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true, beforeEntry: {
+            await gate.wait()
+        })
+        let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], workspaceRoot: workspace)
+        let task = Task { try await transport.download(request) }
+        await gate.waitUntilEntered()
+        task.cancel()
+        await gate.release()
+        do {
+            _ = try await task.value
+            XCTFail("pre-entry cancellation must fail")
+        } catch BoundedModelDownloadError.cancelled {
+            // Expected typed cancellation.
+        } catch {
+            XCTFail("unexpected cancellation error: \(error)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.path))
+        XCTAssertTrue(server.requestLog.isEmpty)
+        XCTAssertEqual(transport.cancellationStateCountForTesting(), 0)
     }
 
     func testCancellationAfterBeginBeforeTaskRegistrationCancelsGeneration() async throws {
