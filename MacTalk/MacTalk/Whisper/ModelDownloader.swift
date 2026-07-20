@@ -31,6 +31,7 @@ final class ModelDownloader: @unchecked Sendable {
 
     enum ErrorType: Swift.Error, LocalizedError, Sendable {
         case noURLs
+        case invalidFilename
         case noSpace
         case cancelled
         case network(Swift.Error)
@@ -41,6 +42,7 @@ final class ModelDownloader: @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case .noURLs: return "No download URLs are available."
+            case .invalidFilename: return "The model filename is invalid."
             case .noSpace: return "Not enough free disk space."
             case .cancelled: return "Download was cancelled."
             case .network(let error): return "Network error: \(error.localizedDescription)"
@@ -61,6 +63,7 @@ final class ModelDownloader: @unchecked Sendable {
     private var generation = 0
     private var operationID: UUID?
     private let stateLock = NSLock()
+    private let commitLock = NSLock()
 
     init(modelRoot: URL? = nil, downloadsRoot: URL? = nil,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport()) {
@@ -72,12 +75,15 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     func start(spec: ModelSpec, operationID: UUID = UUID()) {
-        operation?.cancel()
-        if let previousID = self.operationID { transport.cancel(operationID: previousID) }
-        let currentGeneration = nextGeneration()
-        stateLock.lock()
-        self.operationID = operationID
-        stateLock.unlock()
+        let (currentGeneration, previousTask, previousID) = claimReplacingCurrent(with: operationID)
+        if !isDirectChildFilename(spec.filename) {
+            previousTask?.cancel()
+            if let previousID { transport.cancel(operationID: previousID) }
+            notifyState(.failed(ErrorType.invalidFilename), generation: currentGeneration, operationID: operationID)
+            finishSynchronously(generation: currentGeneration, operationID: operationID)
+            return
+        }
+
         removeLegacyResumeState(for: spec)
 
         guard ModelIntegrityVerifier.isValidDigest(spec.sha256), spec.sizeBytes > 0,
@@ -96,26 +102,49 @@ final class ModelDownloader: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: destination.path) {
             do {
                 try ModelIntegrityVerifier.validate(source: destination, spec: spec)
+                commitLock.lock()
+                let ownsCache = isCurrent(generation: currentGeneration, operationID: operationID)
+                commitLock.unlock()
+                guard ownsCache else { return }
                 notifyState(.done(destination), generation: currentGeneration, operationID: operationID)
                 finishSynchronously(generation: currentGeneration, operationID: operationID)
                 return
             } catch {
-                try? FileManager.default.removeItem(at: destination)
+                commitLock.lock()
+                stateLock.lock()
+                let ownsCache = self.generation == currentGeneration && self.operationID == operationID
+                if ownsCache { try? FileManager.default.removeItem(at: destination) }
+                stateLock.unlock()
+                commitLock.unlock()
+                guard ownsCache else { return }
             }
         }
 
         notifyState(.running(progress: 0), generation: currentGeneration, operationID: operationID)
-        operation = Task { [weak self] in
-            await self?.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
         }
+        stateLock.lock()
+        let ownsTask = self.generation == currentGeneration && self.operationID == operationID
+        if ownsTask { operation = task }
+        stateLock.unlock()
+        if !ownsTask { task.cancel() }
     }
 
     func cancel() {
-        guard let currentID = operationID else { return }
-        let cancelledGeneration = nextGeneration()
-        operation?.cancel()
+        stateLock.lock()
+        guard let currentID = operationID else {
+            stateLock.unlock()
+            return
+        }
+        let currentTask = operation
+        generation += 1
+        let cancelledGeneration = generation
         operation = nil
         operationID = nil
+        stateLock.unlock()
+        currentTask?.cancel()
         transport.cancel(operationID: currentID)
         notifyState(.failed(ErrorType.cancelled), generation: cancelledGeneration, operationID: currentID)
     }
@@ -147,10 +176,12 @@ final class ModelDownloader: @unchecked Sendable {
                 }
             )
             let temporaryURL = try await transport.download(request)
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
             try requireCurrent(generation)
             notifyState(.verifying, generation: generation, operationID: operationID)
-            try ModelIntegrityVerifier.verifyAndMove(source: temporaryURL, destination: destination, spec: spec)
-            try requireCurrent(generation)
+            try ModelIntegrityVerifier.validate(source: temporaryURL, spec: spec)
+            try commitVerified(source: temporaryURL, destination: destination, spec: spec,
+                               generation: generation, operationID: operationID)
             notifyState(.done(destination), generation: generation, operationID: operationID)
             finish(generation: generation, operationID: operationID)
         } catch is CancellationError {
@@ -190,10 +221,18 @@ final class ModelDownloader: @unchecked Sendable {
         return self.generation == generation
     }
 
-    private func nextGeneration() -> Int {
+    private func isCurrent(generation: Int, operationID: UUID) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return self.generation == generation && self.operationID == operationID
+    }
+
+    private func claimReplacingCurrent(with operationID: UUID) -> (Int, Task<Void, Never>?, UUID?) {
         stateLock.lock(); defer { stateLock.unlock() }
         generation += 1
-        return generation
+        let previous = (generation, operation, self.operationID)
+        operation = nil
+        self.operationID = operationID
+        return previous
     }
 
     private func finish(generation: Int, operationID: UUID) {
@@ -222,12 +261,34 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
+    private func commitVerified(source: URL, destination: URL, spec: ModelSpec,
+                                generation: Int, operationID: UUID) throws {
+        ModelIntegrityVerifier.runTestBeforeCommitHook(for: spec)
+        commitLock.lock()
+        stateLock.lock()
+        defer {
+            stateLock.unlock()
+            commitLock.unlock()
+        }
+        let accepted = self.generation == generation && self.operationID == operationID && !Task.isCancelled
+        ModelIntegrityVerifier.runTestCommitDecisionHook(for: spec, accepted: accepted)
+        guard accepted else { throw ErrorType.cancelled }
+        try ModelIntegrityVerifier.commitVerified(source: source, destination: destination, spec: spec)
+    }
+
     private func removeLegacyResumeState(for spec: ModelSpec) {
         guard isSafeFilename(spec.id) else { return }
         for suffix in [".resume", ".resume.json"] {
             let url = downloadsRoot.appendingPathComponent(spec.id + suffix)
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    private func isDirectChildFilename(_ value: String) -> Bool {
+        guard !value.isEmpty, value != ".", value != "..", !value.contains("/"), !value.utf8.contains(0) else { return false }
+        let destination = modelRoot.appendingPathComponent(value)
+        return destination.lastPathComponent == value
+            && destination.deletingLastPathComponent().standardizedFileURL == modelRoot.standardizedFileURL
     }
 
     private func isSafeFilename(_ value: String) -> Bool {

@@ -39,6 +39,52 @@ private final class StateRecorder: @unchecked Sendable {
     }
 }
 
+private final class SequencedBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [URL]
+    init(results: [URL]) { self.results = results }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        try lock.withLock {
+            guard !results.isEmpty else { throw BoundedModelDownloadError.transport("missing fixture") }
+            return results.removeFirst()
+        }
+    }
+
+    func cancel(operationID: UUID) {}
+}
+
+private final class GateBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [URL]
+    private var firstGate: AsyncStream<Void>.Continuation
+    private let firstRelease: AsyncStream<Void>
+    let firstStarted = DispatchSemaphore(value: 0)
+    private(set) var cancelled: [UUID] = []
+
+    init(results: [URL]) {
+        self.results = results
+        let stream = AsyncStream<Void>.makeStream()
+        firstRelease = stream.stream
+        firstGate = stream.continuation
+    }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        let (result, shouldGate) = lock.withLock { () -> (URL, Bool) in
+            guard !results.isEmpty else { fatalError("missing fixture") }
+            return (results.removeFirst(), true)
+        }
+        if shouldGate {
+            firstStarted.signal()
+            _ = await firstRelease.first { _ in true }
+        }
+        return result
+    }
+
+    func cancel(operationID: UUID) { lock.withLock { cancelled.append(operationID) } }
+    func releaseFirst() { firstGate.yield(()) }
+}
+
 private final class RecordingBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var requests: [BoundedModelDownloadRequest] = []
@@ -340,6 +386,100 @@ final class ModelSecurityTests: XCTestCase {
         await fulfillment(of: [doneB], timeout: 10)
         XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent(specA.filename).path))
         XCTAssertEqual(try Data(contentsOf: modelRoot.appendingPathComponent(specB.filename)), payloadB)
+    }
+
+    func test_sameDestinationVerificationRaceCannotReplaceNewerGeneration() async throws {
+        let payloadA = Data("stale A".utf8)
+        let payloadB = Data("fresh B".utf8)
+        let sourceA = root.appendingPathComponent("a.part")
+        let sourceB = root.appendingPathComponent("b.part")
+        try payloadA.write(to: sourceA)
+        try payloadB.write(to: sourceB)
+        let transport = SequencedBoundedTransport(results: [sourceA, sourceB])
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let specA = makeSpec(payload: payloadA, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "shared.bin")
+        let specB = makeSpec(payload: payloadB, urls: [URL(string: "https://example.invalid/b")!], id: "b", filename: "shared.bin")
+        let aVerified = DispatchSemaphore(value: 0)
+        let releaseA = DispatchSemaphore(value: 0)
+        let aRejected = DispatchSemaphore(value: 0)
+        ModelIntegrityVerifier.setTestBeforeCommitHook { spec in
+            if spec.sha256 == specA.sha256 {
+                aVerified.signal()
+                releaseA.wait()
+            }
+        }
+        ModelIntegrityVerifier.setTestCommitDecisionHook { spec, accepted in
+            if spec.sha256 == specA.sha256 && !accepted { aRejected.signal() }
+        }
+        defer {
+            ModelIntegrityVerifier.setTestBeforeCommitHook(nil)
+            ModelIntegrityVerifier.setTestCommitDecisionHook(nil)
+        }
+        let bDone = expectation(description: "B done")
+        let recorder = StateRecorder()
+        let operationIDB = UUID()
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            if id == operationIDB, case .done = state { bDone.fulfill() }
+        }
+        downloader.start(spec: specA)
+        XCTAssertEqual(aVerified.wait(timeout: .now() + 2), .success)
+        downloader.start(spec: specB, operationID: operationIDB)
+        await fulfillment(of: [bDone], timeout: 2)
+        releaseA.signal()
+        XCTAssertEqual(aRejected.wait(timeout: .now() + 2), .success)
+
+        XCTAssertEqual(try Data(contentsOf: modelRoot.appendingPathComponent("shared.bin")), payloadB)
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in
+            id != operationIDB && state.isTerminal
+        })
+    }
+
+    func test_supersedingInvalidStartCancelsOnlyOwnedPreviousOperation() async throws {
+        let payload = Data("blocked A".utf8)
+        let source = root.appendingPathComponent("blocked.part")
+        try payload.write(to: source)
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let transport = GateBoundedTransport(results: [source])
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let invalidDone = expectation(description: "invalid replacement rejected")
+        downloader.onOperationState = { id, state in
+            if id == operationIDB, case .failed(ModelDownloader.ErrorType.invalidFilename) = state {
+                invalidDone.fulfill()
+            }
+        }
+        let specA = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "shared.bin")
+        downloader.start(spec: specA, operationID: operationIDA)
+        XCTAssertEqual(transport.firstStarted.wait(timeout: .now() + 2), .success)
+        downloader.start(spec: makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/b")!], id: "b", filename: "../outside"), operationID: operationIDB)
+        await fulfillment(of: [invalidDone], timeout: 2)
+        transport.releaseFirst()
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(transport.cancelled, [operationIDA])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent("shared.bin").path))
+    }
+
+    func test_invalidFilenamesNeverInspectTransportOrEscapeModelRoot() async throws {
+        let outside = root.appendingPathComponent("outside")
+        let sentinel = Data("do not touch".utf8)
+        try sentinel.write(to: outside)
+        let invalidFilenames = ["", ".", "..", "../outside", "nested/model.bin", "model" + "\0" + "bin"]
+
+        for filename in invalidFilenames {
+            let transport = RecordingBoundedTransport()
+            let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+            let failed = expectation(description: "invalid filename rejected: \(filename.debugDescription)")
+            downloader.onState = { state in
+                if case .failed = state { failed.fulfill() }
+            }
+            downloader.start(spec: makeSpec(payload: Data("payload".utf8), urls: [URL(string: "https://example.invalid/model")!], filename: filename))
+            await fulfillment(of: [failed], timeout: 2)
+            XCTAssertTrue(transport.requestSnapshot().isEmpty, filename.debugDescription)
+            XCTAssertEqual(try Data(contentsOf: outside), sentinel, filename.debugDescription)
+        }
     }
 
     func test_tokenHelperOnlyAuthorizesExactOfficialOrigin() {

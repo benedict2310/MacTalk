@@ -6,6 +6,38 @@ import Darwin
 /// The checksum is mandatory: an absent or malformed digest is never treated as
 /// an opt-out, because the result is loaded by native inference code.
 enum ModelIntegrityVerifier {
+    private static let testHookLock = NSLock()
+    nonisolated(unsafe) private static var testBeforeCommitHook: (@Sendable (ModelSpec) -> Void)?
+    nonisolated(unsafe) private static var testCommitDecisionHook: (@Sendable (ModelSpec, Bool) -> Void)?
+
+    /// Installs a deterministic test barrier immediately before destination mutation.
+    /// Production callers never install this hook.
+    static func setTestBeforeCommitHook(_ hook: (@Sendable (ModelSpec) -> Void)?) {
+        testHookLock.lock()
+        testBeforeCommitHook = hook
+        testHookLock.unlock()
+    }
+
+    static func runTestBeforeCommitHook(for spec: ModelSpec) {
+        testHookLock.lock()
+        let hook = testBeforeCommitHook
+        testHookLock.unlock()
+        hook?(spec)
+    }
+
+    static func setTestCommitDecisionHook(_ hook: (@Sendable (ModelSpec, Bool) -> Void)?) {
+        testHookLock.lock()
+        testCommitDecisionHook = hook
+        testHookLock.unlock()
+    }
+
+    static func runTestCommitDecisionHook(for spec: ModelSpec, accepted: Bool) {
+        testHookLock.lock()
+        let hook = testCommitDecisionHook
+        testHookLock.unlock()
+        hook?(spec, accepted)
+    }
+
     /// Opens the artifact without following a symlink and validates that exact
     /// open object. The descriptor remains usable by the native loader, which
     /// prevents a path replacement between validation and initialization.
@@ -86,6 +118,15 @@ enum ModelIntegrityVerifier {
         }
 
         try validate(source: source, spec: spec)
+        runTestBeforeCommitHook(for: spec)
+        try commitVerified(source: source, destination: destination, spec: spec)
+        installed = true
+    }
+
+    /// Installs bytes that the caller has already verified. This method is
+    /// intentionally limited to the short destination mutation; hashing and
+    /// generation checks belong outside this operation's commit lock.
+    static func commitVerified(source: URL, destination: URL, spec: ModelSpec) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
@@ -97,7 +138,6 @@ enum ModelIntegrityVerifier {
         } else {
             try fileManager.moveItem(at: source, to: destination)
         }
-        installed = true
     }
 
     static func isValidDigest(_ digest: String) -> Bool {
