@@ -335,6 +335,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
 
         _ = try await operation.value
         await cancellation.value
+        try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(terminals.current(), 1)
         XCTAssertTrue(downloader.modelsAvailable())
         let rootItems = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
@@ -401,7 +402,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
             (.interrupted, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
             (.transport("socket"), { if case let .downloadFailed(value) = $0 { return value == path }; return false })
         ]
-        for (index, item) in cases.enumerated() {
+        for (_, item) in cases.enumerated() {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-errors-\\(index)-\\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: root) }
             let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: FailingParakeetTransport(failure: item.0))
