@@ -237,6 +237,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private func performDownload(generation: Int, operationID: UUID) async throws -> URL {
         let lease = try await storeLock.acquire(.exclusive)
         defer { lease.release() }
+        var currentArtifactPath: String?
         do {
             try check(generation, operationID)
             cleanupStaleArtifacts()
@@ -254,6 +255,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             var completed: Int64 = 0
 
             for (index, entry) in entries.enumerated() {
+                currentArtifactPath = entry.path
                 try check(generation, operationID)
                 let target = try safeURL(entry.path, under: staging)
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -299,7 +301,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         } catch is CancellationError {
             throw ErrorType.cancelled
         } catch {
-            let mapped = map(error)
+            let mapped = map(error, artifactPath: currentArtifactPath)
             if claimFailure(mapped, generation: generation, operationID: operationID) {
                 throw mapped
             }
@@ -383,7 +385,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
 
-    private func map(_ error: Error) -> Error {
+    private func map(_ error: Error, artifactPath: String? = nil) -> Error {
         guard let bounded = error as? BoundedModelDownloadError else { return error }
         switch bounded {
         case .cancelled, .superseded: return ErrorType.cancelled
@@ -395,8 +397,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             if status == 429 || status == 503 { return ErrorType.rateLimited(status) }
             return ErrorType.httpStatus(status)
         case .invalidIdentity, .duplicateOperationID, .checksumMismatch, .incomplete, .invalidResumeState, .metadataTooLarge:
-            return ErrorType.corruptFile("")
-        default: return ErrorType.downloadFailed("")
+            return ErrorType.corruptFile(artifactPath ?? "")
+        default: return ErrorType.downloadFailed(artifactPath ?? "")
         }
     }
 

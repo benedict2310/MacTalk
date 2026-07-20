@@ -9,6 +9,22 @@ private final class TestMutex: @unchecked Sendable {
     func unlock() { mutex.unlock() }
 }
 
+private final class AtomicString: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var storage = ""
+    func set(_ value: String) {
+        mutex.lock()
+        storage = value
+        mutex.unlock()
+    }
+    var value: String {
+        mutex.lock()
+        let result = storage
+        mutex.unlock()
+        return result
+    }
+}
+
 private final class AtomicCounter: @unchecked Sendable {
     private let mutex = NSLock()
     private var value = 0
@@ -47,6 +63,16 @@ private final class AsyncLatch: @unchecked Sendable {
         mutex.unlock()
         continuation?.resume()
     }
+}
+
+private struct FailingParakeetTransport: BoundedModelDownloading {
+    let failure: BoundedModelDownloadError
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        throw failure
+    }
+
+    func cancel(operationID: UUID) {}
 }
 
 private final class RecordingParakeetTransport: BoundedModelDownloading, @unchecked Sendable {
@@ -211,6 +237,30 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertEqual(active.lastPathComponent, ParakeetModelDownloader.folderName)
         XCTAssertEqual(transport.requests.map(\.aggregateDiskBytesStillRequired), [5, 2])
         XCTAssertTrue(downloader.modelsAvailable())
+    }
+
+    func test_integrityFailureNamesTheCurrentArtifact() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-error-path-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entry = ParakeetManifestEntry(path: "nested/a.bin", size: 3, sha256: String(repeating: "a", count: 64))
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
+                                                 transport: FailingParakeetTransport(failure: .checksumMismatch))
+        let failed = expectation(description: "integrity failure published")
+        let observedPath = AtomicString()
+        downloader.onState = { @MainActor state in
+            guard case let .failed(error) = state,
+                  let typed = error as? ParakeetModelDownloader.ErrorType else { return }
+            if case let .corruptFile(path) = typed {
+                observedPath.set(path)
+                failed.fulfill()
+            }
+        }
+        do {
+            _ = try await downloader.downloadIfNeeded()
+            XCTFail("checksum failure unexpectedly succeeded")
+        } catch { }
+        await fulfillment(of: [failed], timeout: 2)
+        XCTAssertEqual(observedPath.value, entry.path)
     }
 
     func test_remainingBytesUsesCheckedAggregateAccounting() throws {
