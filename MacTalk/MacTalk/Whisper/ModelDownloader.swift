@@ -70,9 +70,20 @@ final class ModelDownloader: @unchecked Sendable {
     private let afterTaskRegistration: (@Sendable (UUID) -> Void)?
     private let beforeCommitHook: (@Sendable (ModelSpec) -> Void)?
     private let commitDecisionHook: (@Sendable (ModelSpec, Bool) -> Void)?
+    private struct TemporarySourceIdentity: Hashable {
+        let modelID: String
+        let source: String
+        let revision: String
+        let filename: String
+        let sha256: String
+        let sizeBytes: Int64
+    }
+
     private var operation: Task<Void, Never>?
     private var generation = 0
     private var operationID: UUID?
+    private var operationIdentity: TemporarySourceIdentity?
+    private var sourceOwners: [URL: Set<UUID>] = [:]
     private let stateLock = NSLock()
     private let commitLock = NSLock()
 
@@ -96,7 +107,8 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     func start(spec: ModelSpec, operationID: UUID = UUID()) {
-        let (currentGeneration, previousTask, previousID) = claimReplacingCurrent(with: operationID)
+        let identity = sourceIdentity(for: spec)
+        let (currentGeneration, previousTask, previousID) = claimReplacingCurrent(with: operationID, identity: identity)
         previousTask?.cancel()
         if let previousID { transport.cancel(operationID: previousID) }
 
@@ -154,9 +166,11 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     func cancel() {
+        commitLock.lock()
         stateLock.lock()
         guard let currentID = operationID else {
             stateLock.unlock()
+            commitLock.unlock()
             return
         }
         let currentTask = operation
@@ -164,7 +178,11 @@ final class ModelDownloader: @unchecked Sendable {
         let cancelledGeneration = generation
         operation = nil
         operationID = nil
+        operationIdentity = nil
+        let sourcesToRemove = releaseSourcesLocked(for: currentID)
         stateLock.unlock()
+        removeTemporarySources(sourcesToRemove)
+        commitLock.unlock()
         currentTask?.cancel()
         transport.cancel(operationID: currentID)
         notifyState(.failed(ErrorType.cancelled), generation: cancelledGeneration, operationID: currentID)
@@ -173,7 +191,8 @@ final class ModelDownloader: @unchecked Sendable {
     private func run(spec: ModelSpec, destination: URL, generation: Int, operationID: UUID) async {
         do {
             try requireCurrent(generation)
-            let identity = DownloadArtifactIdentity(
+            let sourceIdentity = sourceIdentity(for: spec)
+            let downloadIdentity = DownloadArtifactIdentity(
                 schemaVersion: 1,
                 provider: "whisper",
                 modelID: spec.id,
@@ -185,7 +204,7 @@ final class ModelDownloader: @unchecked Sendable {
                 sizeBytes: spec.sizeBytes
             )
             let request = BoundedModelDownloadRequest(
-                identity: identity,
+                identity: downloadIdentity,
                 mirrors: spec.urls,
                 operationID: operationID,
                 workspaceRoot: downloadsRoot,
@@ -197,7 +216,8 @@ final class ModelDownloader: @unchecked Sendable {
                 }
             )
             let temporaryURL = try await transport.download(request)
-            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            registerTemporarySource(temporaryURL, operationID: operationID)
+            defer { releaseTemporarySource(temporaryURL, operationID: operationID, identity: sourceIdentity) }
             try requireCurrent(generation)
             notifyState(.verifying, generation: generation, operationID: operationID)
             try ModelIntegrityVerifier.validate(source: temporaryURL, spec: spec)
@@ -249,28 +269,97 @@ final class ModelDownloader: @unchecked Sendable {
         return self.generation == generation && self.operationID == operationID
     }
 
-    private func claimReplacingCurrent(with operationID: UUID) -> (Int, Task<Void, Never>?, UUID?) {
+    private func claimReplacingCurrent(with operationID: UUID, identity: TemporarySourceIdentity) -> (Int, Task<Void, Never>?, UUID?) {
+        commitLock.lock(); defer { commitLock.unlock() }
         stateLock.lock(); defer { stateLock.unlock() }
         generation += 1
         let previous = (generation, operation, self.operationID)
         operation = nil
         self.operationID = operationID
+        operationIdentity = identity
         return previous
     }
 
     /// Claims terminal ownership before scheduling its notification. Once this
     /// succeeds, cancellation cannot publish a competing terminal state.
     private func claimTerminal(generation: Int, operationID: UUID) -> Bool {
-        stateLock.lock(); defer { stateLock.unlock() }
-        guard self.generation == generation, self.operationID == operationID else { return false }
+        commitLock.lock()
+        stateLock.lock()
+        guard self.generation == generation, self.operationID == operationID else {
+            stateLock.unlock()
+            commitLock.unlock()
+            return false
+        }
         operation = nil
         self.operationID = nil
+        operationIdentity = nil
+        let sourcesToRemove = releaseSourcesLocked(for: operationID)
+        stateLock.unlock()
+        removeTemporarySources(sourcesToRemove)
+        commitLock.unlock()
         return true
     }
 
     private func publishTerminal(_ state: State, generation: Int, operationID: UUID) {
         guard claimTerminal(generation: generation, operationID: operationID) else { return }
         notifyState(state, generation: generation, operationID: operationID)
+    }
+
+    private func registerTemporarySource(_ source: URL, operationID: UUID) {
+        let normalizedSource = source.standardizedFileURL
+        commitLock.lock()
+        stateLock.lock()
+        sourceOwners[normalizedSource, default: []].insert(operationID)
+        stateLock.unlock()
+        commitLock.unlock()
+    }
+
+    private func releaseTemporarySource(_ source: URL, operationID: UUID, identity: TemporarySourceIdentity) {
+        let normalizedSource = source.standardizedFileURL
+        commitLock.lock()
+        stateLock.lock()
+        var removeSource = false
+        if var owners = sourceOwners[normalizedSource] {
+            owners.remove(operationID)
+            if owners.isEmpty {
+                if let currentID = self.operationID, currentID != operationID,
+                   operationIdentity == identity {
+                    sourceOwners[normalizedSource] = [currentID]
+                } else {
+                    sourceOwners.removeValue(forKey: normalizedSource)
+                    removeSource = true
+                }
+            } else {
+                sourceOwners[normalizedSource] = owners
+            }
+        }
+        stateLock.unlock()
+        if removeSource { try? FileManager.default.removeItem(at: normalizedSource) }
+        commitLock.unlock()
+    }
+
+    private func releaseSourcesLocked(for operationID: UUID) -> [URL] {
+        var sourcesToRemove: [URL] = []
+        for source in Array(sourceOwners.keys) {
+            guard var owners = sourceOwners[source] else { continue }
+            owners.remove(operationID)
+            if owners.isEmpty {
+                sourceOwners.removeValue(forKey: source)
+                sourcesToRemove.append(source)
+            } else {
+                sourceOwners[source] = owners
+            }
+        }
+        return sourcesToRemove
+    }
+
+    private func removeTemporarySources(_ sources: [URL]) {
+        for source in sources { try? FileManager.default.removeItem(at: source) }
+    }
+
+    private func sourceIdentity(for spec: ModelSpec) -> TemporarySourceIdentity {
+        TemporarySourceIdentity(modelID: spec.id, source: spec.source, revision: spec.revision,
+                                filename: spec.filename, sha256: spec.sha256, sizeBytes: spec.sizeBytes)
     }
 
     private func notifyState(_ state: State, generation: Int, operationID: UUID) {
@@ -302,6 +391,7 @@ final class ModelDownloader: @unchecked Sendable {
                 // linearization point. Cancellation after this point is a no-op.
                 operation = nil
                 self.operationID = nil
+                operationIdentity = nil
                 result = .committed
             } catch {
                 // A failed destination mutation is also terminal. Claim its
@@ -309,6 +399,7 @@ final class ModelDownloader: @unchecked Sendable {
                 // replace the real I/O failure with .cancelled.
                 operation = nil
                 self.operationID = nil
+                operationIdentity = nil
                 result = .failed(error)
             }
         } else {

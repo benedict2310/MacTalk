@@ -54,6 +54,37 @@ private final class SequencedBoundedTransport: BoundedModelDownloading, @uncheck
     func cancel(operationID: UUID) {}
 }
 
+private final class SharedSourceBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let source: URL
+    private var downloadCount = 0
+    private let secondRelease: AsyncStream<Void>
+    private let secondContinuation: AsyncStream<Void>.Continuation
+    let secondObtained = DispatchSemaphore(value: 0)
+
+    init(source: URL) {
+        self.source = source
+        let stream = AsyncStream<Void>.makeStream()
+        secondRelease = stream.stream
+        secondContinuation = stream.continuation
+    }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        let isSecond = lock.withLock {
+            downloadCount += 1
+            return downloadCount == 2
+        }
+        if isSecond {
+            secondObtained.signal()
+            for await _ in secondRelease { break }
+        }
+        return source
+    }
+
+    func cancel(operationID: UUID) {}
+    func releaseSecond() { secondContinuation.yield(()) }
+}
+
 private final class GateBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private var results: [URL]
@@ -528,6 +559,50 @@ final class ModelSecurityTests: XCTestCase {
         XCTAssertFalse(recorder.taggedStates.contains { id, state in
             id != operationIDB && state.isTerminal
         })
+    }
+
+    func test_sharedCompletedSourceSurvivesStaleReplacementCleanup() async throws {
+        let payload = Data("shared bounded source".utf8)
+        let source = root.appendingPathComponent("shared-source.part")
+        try payload.write(to: source)
+        let spec = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/shared")!])
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let transport = SharedSourceBoundedTransport(source: source)
+        let aVerified = DispatchSemaphore(value: 0)
+        let releaseA = DispatchSemaphore(value: 0)
+        let aRejected = DispatchSemaphore(value: 0)
+        let firstHook = LockedBox(true)
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                          transport: transport,
+                                          beforeCommitHook: { _ in
+            let shouldBlock = firstHook.value
+            firstHook.withLock { $0 = false }
+            guard shouldBlock else { return }
+            aVerified.signal()
+            releaseA.wait()
+        },
+                                          commitDecisionHook: { _, accepted in
+            if !accepted { aRejected.signal() }
+        })
+        let bDone = expectation(description: "same-identity replacement completes")
+        downloader.onOperationState = { id, state in
+            if id == operationIDB, case .done = state { bDone.fulfill() }
+        }
+
+        downloader.start(spec: spec, operationID: operationIDA)
+        XCTAssertEqual(aVerified.wait(timeout: .now() + 2), .success)
+        downloader.start(spec: spec, operationID: operationIDB)
+        XCTAssertEqual(transport.secondObtained.wait(timeout: .now() + 2), .success,
+                       "B must obtain the shared completed source before stale A is released")
+        releaseA.signal()
+        XCTAssertEqual(aRejected.wait(timeout: .now() + 2), .success)
+        transport.releaseSecond()
+
+        await fulfillment(of: [bDone], timeout: 2)
+        XCTAssertEqual(try Data(contentsOf: modelRoot.appendingPathComponent(spec.filename)), payload)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path),
+                       "the shared source is eventually cleaned after B consumes it")
     }
 
     func test_supersedingInvalidStartCancelsOnlyOwnedPreviousOperation() async throws {
