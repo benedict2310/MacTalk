@@ -136,6 +136,71 @@ private struct ZeroCapacity: VolumeCapacityProviding, Sendable {
     func availableCapacity(for url: URL) throws -> Int64 { 0 }
 }
 
+/// Test-only adapter: production creates the immutable official request, then
+/// this adapter rewrites only the URL before the real bounded transport sees it.
+private final class LoopbackParakeetTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let serverURL: URL
+    private let transport: BoundedModelDownloadTransport
+    private let expectedAggregates: [String: Int64]
+    private let lock = TestMutex()
+    private(set) var requests: [BoundedModelDownloadRequest] = []
+    private(set) var violations: [String] = []
+
+    init(serverURL: URL, entries: [ParakeetManifestEntry],
+         transport: BoundedModelDownloadTransport = BoundedModelDownloadTransport(allowInsecureLoopback: true)) {
+        self.serverURL = serverURL
+        self.transport = transport
+        var aggregates: [String: Int64] = [:]
+        for (index, entry) in entries.enumerated() {
+            aggregates[entry.path] = try? ParakeetModelDownloader.remainingBytes(from: index, entries: entries)
+        }
+        self.expectedAggregates = aggregates.compactMapValues { $0 }
+    }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        let expectedMirror = try ParakeetModelDownloader.mirrorURL(
+            for: ParakeetManifestEntry(path: request.identity.artifactPath,
+                                       size: request.identity.sizeBytes,
+                                       sha256: request.identity.sha256))
+        let expectedIdentity = try ParakeetModelDownloader.downloadIdentity(
+            for: ParakeetManifestEntry(path: request.identity.artifactPath,
+                                       size: request.identity.sizeBytes,
+                                       sha256: request.identity.sha256))
+        let expectedCredential = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? ProcessInfo.processInfo.environment["HUGGING_FACE_HUB_TOKEN"]
+            ?? ProcessInfo.processInfo.environment["HUGGINGFACEHUB_API_TOKEN"]
+        lock.lock()
+        requests.append(request)
+        let exactMirror = request.mirrors == [expectedMirror]
+        let exactIdentity = request.identity == expectedIdentity
+        let exactAggregate = expectedAggregates[request.identity.artifactPath] == request.aggregateDiskBytesStillRequired
+        let exactCredential = request.credentialToken == expectedCredential
+        if !exactMirror { violations.append("mirror") }
+        if !exactIdentity { violations.append("identity") }
+        if !exactAggregate { violations.append("aggregate") }
+        if !exactCredential { violations.append("credential") }
+        lock.unlock()
+        XCTAssertTrue(exactMirror, "production request must use the official immutable mirror")
+        XCTAssertTrue(exactIdentity, "production request must preserve official artifact identity")
+        XCTAssertTrue(exactAggregate, "production request must preserve exact aggregate requirement")
+        XCTAssertTrue(exactCredential, "production request must preserve official credential policy")
+
+        let rewritten = BoundedModelDownloadRequest(
+            identity: request.identity,
+            mirrors: [serverURL.appendingPathComponent(request.identity.artifactPath)],
+            operationID: request.operationID,
+            workspaceRoot: request.workspaceRoot,
+            aggregateDiskBytesStillRequired: request.aggregateDiskBytesStillRequired,
+            credentialToken: request.credentialToken,
+            progress: request.progress)
+        return try await transport.download(rewritten)
+    }
+
+    func cancel(operationID: UUID) {
+        transport.cancel(operationID: operationID)
+    }
+}
+
 final class ParakeetDownloadTransportTests: XCTestCase {
     func test_activationHasACommitOwnershipBoundaryBeforeRenames() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
@@ -402,8 +467,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
             ParakeetManifestEntry(path: path, size: Int64(data.count), sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
         }.sorted { $0.path < $1.path }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries,
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { entry in server.url.appendingPathComponent(entry.path) })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: entries))
         let active = try await downloader.downloadIfNeeded()
         XCTAssertEqual(server.requestLog.map { $0.path }, ["/artifact/a.bin", "/artifact/b.bin"])
         XCTAssertEqual(try Data(contentsOf: active.appendingPathComponent("a.bin")), payloads["a.bin"])
@@ -423,12 +487,11 @@ final class ParakeetDownloadTransportTests: XCTestCase {
             return .init(headers: ["Content-Length": "99"], body: .fixed(declaredMismatch))
         }
         defer { server.stop() }
-        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true)
-        let seed = ParakeetModelDownloader(modelsRoot: root, manifest: [oldEntry], transport: transport,
-            mirrorResolver: { _ in server.url.appendingPathComponent("old.bin") })
+        let seedTransport = LoopbackParakeetTransport(serverURL: server.url, entries: [oldEntry])
+        let seed = ParakeetModelDownloader(modelsRoot: root, manifest: [oldEntry], transport: seedTransport)
         _ = try await seed.downloadIfNeeded()
-        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [badEntry], transport: transport,
-            mirrorResolver: { _ in server.url.appendingPathComponent("bad.bin") })
+        let downloaderTransport = LoopbackParakeetTransport(serverURL: server.url, entries: [badEntry])
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [badEntry], transport: downloaderTransport)
         do {
             _ = try await downloader.downloadIfNeeded()
             XCTFail("wrong Content-Length must fail")
@@ -454,8 +517,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let server = try LoopbackHTTPServer { _ in .init(body: .drop(payload, admittedBytes: 2)) }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { _ in server.url })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry]))
         do {
             _ = try await downloader.downloadIfNeeded()
             XCTFail("truncated response must fail")
@@ -477,8 +539,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let server = try LoopbackHTTPServer { _ in .init(body: .chunked(Data("abcd".utf8), chunkSize: 1)) }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { _ in server.url })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry]))
         do { _ = try await downloader.downloadIfNeeded(); XCTFail("chunked expected+1 must fail") } catch let error as ParakeetModelDownloader.ErrorType {
             if case .downloadTooLarge = error {} else { XCTFail("unexpected oversize error: \(error)") }
         } catch { }
@@ -496,8 +557,8 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let server = try LoopbackHTTPServer { _ in XCTFail("zero capacity must not request"); return .init(body: .fixed(data)) }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
-            transport: BoundedModelDownloadTransport(capacity: ZeroCapacity(), allowInsecureLoopback: true),
-            mirrorResolver: { _ in server.url })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry],
+                transport: BoundedModelDownloadTransport(capacity: ZeroCapacity(), allowInsecureLoopback: true)))
         do { _ = try await downloader.downloadIfNeeded(); XCTFail("insufficient space must fail") } catch let error as ParakeetModelDownloader.ErrorType {
             if case .insufficientSpace = error {} else { XCTFail("unexpected error: \(error)") }
         }
@@ -523,8 +584,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry, nextEntry],
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { item in server.url.appendingPathComponent(item.path) })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry, nextEntry]))
         do { _ = try await downloader.downloadIfNeeded(); XCTFail("interrupted transfer must fail first invocation") } catch { }
         XCTAssertFalse(downloader.modelsAvailable())
         _ = try await downloader.downloadIfNeeded()
@@ -547,8 +607,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries,
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { item in server.url.appendingPathComponent(item.path) })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: entries))
         let task = Task { try await downloader.downloadIfNeeded() }
         for _ in 0..<100 where !server.requestLog.contains(where: { $0.path.hasSuffix("b.bin") }) { try await Task.sleep(for: .milliseconds(10)) }
         downloader.cancel()
@@ -581,8 +640,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let states = StateRecorder()
         let done = expectation(description: "only B publishes done")
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { _ in server.url })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry]))
         downloader.onState = { @MainActor state in
             states.append(state)
             if case .done = state { done.fulfill() }
@@ -612,6 +670,91 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") || $0.lastPathComponent.hasPrefix(".backup-") })
     }
 
+    func test_cancelWhileWaitingForStoreLeasePublishesTypedTerminalAndCanRecover() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-lock-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let transport = RecordingParakeetTransport()
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport)
+        let lock = ParakeetStoreFileLock(storeParent: root)
+        let lease = try await lock.acquire(.exclusive)
+        defer { lease.release() }
+        let cancelled = expectation(description: "typed cancellation published")
+        let terminalCount = AtomicCounter()
+        downloader.onState = { @MainActor state in
+            guard case let .failed(error) = state,
+                  let typed = error as? ParakeetModelDownloader.ErrorType,
+                  case .cancelled = typed else { return }
+            _ = terminalCount.increment()
+            cancelled.fulfill()
+        }
+
+        let operation = Task { try await downloader.downloadIfNeeded() }
+        // Give the child task scheduling opportunities to enter the lock wait,
+        // without depending on elapsed time, before repeatedly requesting
+        // cancellation until its terminal callback proves ownership.
+        for _ in 0..<100 { await Task.yield() }
+        var cancelledPublished = false
+        while !cancelledPublished {
+            downloader.cancel()
+            await Task.yield()
+            cancelledPublished = terminalCount.current() == 1
+        }
+        await fulfillment(of: [cancelled], timeout: 2)
+        do {
+            _ = try await operation.value
+            XCTFail("lock-wait cancellation unexpectedly succeeded")
+        } catch let error as ParakeetModelDownloader.ErrorType {
+            guard case .cancelled = error else { XCTFail("unexpected typed error: \(error)"); return }
+        } catch {
+            XCTFail("lock-wait cancellation escaped as untyped error: \(error)")
+        }
+        XCTAssertEqual(terminalCount.current(), 1)
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertFalse(downloader.modelsAvailable())
+        let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })
+
+        lease.release()
+        let active = try await downloader.downloadIfNeeded()
+        XCTAssertEqual(active.lastPathComponent, ParakeetModelDownloader.folderName)
+        XCTAssertEqual(terminalCount.current(), 1)
+        XCTAssertTrue(downloader.modelsAvailable())
+    }
+
+    func test_lockAcquisitionFailurePublishesOnceAndDoesNotPoisonValidDownloader() async throws {
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let invalid = ParakeetModelDownloader(modelsRoot: URL(string: "https://example.invalid")!,
+                                               manifest: [entry], transport: RecordingParakeetTransport())
+        let failed = expectation(description: "lock acquisition failure published")
+        let terminals = AtomicCounter()
+        invalid.onState = { @MainActor state in
+            guard case .failed = state else { return }
+            _ = terminals.increment()
+            failed.fulfill()
+        }
+        do {
+            _ = try await invalid.downloadIfNeeded()
+            XCTFail("invalid store root unexpectedly succeeded")
+        } catch let error as ParakeetStoreFileLock.LockError {
+            XCTAssertEqual(error, .invalidStoreParent)
+        } catch {
+            XCTFail("invalid store root returned unexpected error: \(error)")
+        }
+        await fulfillment(of: [failed], timeout: 2)
+        XCTAssertEqual(terminals.current(), 1)
+
+        let validRoot = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-lock-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: validRoot) }
+        let valid = ParakeetModelDownloader(modelsRoot: validRoot, manifest: [entry], transport: RecordingParakeetTransport())
+        _ = try await valid.downloadIfNeeded()
+        XCTAssertTrue(valid.modelsAvailable())
+    }
+
     func test_storeExclusiveLeaseSpansLiveBoundedTransportAndBothTryModesBlock() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-store-lease-live-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -620,8 +763,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let server = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 512, delay: 0.002)) }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
-            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
-            mirrorResolver: { _ in server.url })
+            transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry]))
         let operation = Task { try await downloader.downloadIfNeeded() }
         for _ in 0..<100 where server.requestLog.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         let independent = ParakeetStoreFileLock(storeParent: root)

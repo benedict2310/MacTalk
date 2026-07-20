@@ -103,9 +103,6 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private let transport: any BoundedModelDownloading
     private let storeLock: ParakeetStoreFileLock
     private let activationHook: (@Sendable () async -> Void)?
-    // Internal-only resolver seam for hermetic loopback tests. Production leaves
-    // it nil, preserving the immutable official HTTPS mirror.
-    private let mirrorResolver: (@Sendable (ParakeetManifestEntry) throws -> URL)?
     private let stateLock = ParakeetStateLock()
     private let commitLock = ParakeetStateLock()
     private var operation: Task<URL, Error>?
@@ -118,8 +115,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     init(modelsRoot: URL? = nil, repoDirectory: URL? = nil,
          manifest: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
-         activationHook: (@Sendable () async -> Void)? = nil,
-         mirrorResolver: (@Sendable (ParakeetManifestEntry) throws -> URL)? = nil) {
+         activationHook: (@Sendable () async -> Void)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
@@ -127,7 +123,6 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.transport = transport
         self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
         self.activationHook = activationHook
-        self.mirrorResolver = mirrorResolver
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         // Construction-time recovery is exclusive. If another process owns the
@@ -248,10 +243,10 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     private func performDownload(generation: Int, operationID: UUID) async throws -> URL {
-        let lease = try await storeLock.acquire(.exclusive)
-        defer { lease.release() }
         var currentArtifactPath: String?
         do {
+            let lease = try await storeLock.acquire(.exclusive)
+            defer { lease.release() }
             try check(generation, operationID)
             cleanupStaleArtifacts()
             recoverInterruptedActivation()
@@ -277,7 +272,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 let completedBefore = completed
                 let request = BoundedModelDownloadRequest(
                     identity: identity,
-                    mirrors: [try mirrorURL(for: entry)],
+                    mirrors: [try Self.mirrorURL(for: entry)],
                     operationID: operationID,
                     workspaceRoot: downloadsRoot,
                     aggregateDiskBytesStillRequired: remaining,
@@ -310,6 +305,11 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             activated = true
             return repoDirectory
         } catch is CancellationError {
+            let mapped = ErrorType.cancelled
+            if claimFailure(mapped, generation: generation, operationID: operationID) {
+                publish(.failed(mapped), generation: generation)
+                throw mapped
+            }
             throw ErrorType.cancelled
         } catch let error as ActivationCommitError {
             switch error {
@@ -513,15 +513,6 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         if components.contains("..") { throw ErrorType.pathTraversal(path) }
         if components.contains(".") { throw ErrorType.dotPath(path) }
         if components.contains(where: { $0.isEmpty || $0.utf8.contains(0) }) { throw ErrorType.pathTraversal(path) }
-    }
-
-    private func mirrorURL(for entry: ParakeetManifestEntry) throws -> URL {
-        if let mirrorResolver {
-            let mirror = try mirrorResolver(entry)
-            guard mirror.scheme != nil, mirror.host != nil else { throw ErrorType.invalidManifest }
-            return mirror
-        }
-        return try Self.mirrorURL(for: entry)
     }
 
     private func safeURL(_ path: String, under root: URL) throws -> URL {

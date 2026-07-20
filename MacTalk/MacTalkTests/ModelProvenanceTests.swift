@@ -45,6 +45,16 @@ final class ModelProvenanceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
     }
 
+    func test_productionParakeetDownloaderHasNoMirrorOverridePolicySeam() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("MacTalk/Whisper/ParakeetModelDownloader.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertFalse(source.contains("mirrorResolver"),
+                       "production Parakeet downloads must not expose a mirror override seam")
+    }
+
     func test_parakeetPathValidationRejectsUnsafeComponents() {
         for path in ["../escape", "/absolute", "model/./file", "model//file"] {
             XCTAssertThrowsError(try ParakeetModelDownloader.validatePath(path), path)
