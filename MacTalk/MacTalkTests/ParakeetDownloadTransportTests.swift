@@ -9,6 +9,27 @@ private final class TestMutex: @unchecked Sendable {
     func unlock() { mutex.unlock() }
 }
 
+private final class AsyncLatch: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            mutex.lock()
+            waiter = continuation
+            mutex.unlock()
+        }
+    }
+
+    func signal() {
+        mutex.lock()
+        let continuation = waiter
+        waiter = nil
+        mutex.unlock()
+        continuation?.resume()
+    }
+}
+
 private final class RecordingParakeetTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = TestMutex()
     private(set) var requests: [BoundedModelDownloadRequest] = []
@@ -27,6 +48,18 @@ private final class RecordingParakeetTransport: BoundedModelDownloading, @unchec
 }
 
 final class ParakeetDownloadTransportTests: XCTestCase {
+    func test_bootstrapRoutesCompiledLoadThroughValidatedSharedLeaseBoundary() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("withValidatedSharedLease"),
+                      "compiled path loading must execute inside the downloader's validated shared lease")
+        XCTAssertTrue(source.contains("let models = try await downloader.withValidatedSharedLease"),
+                      "Bootstrap must compose the native path load through the boundary")
+    }
+
     func test_compiledManifestMapsAllTwentyOneArtifactsInOrder() throws {
         XCTAssertEqual(ParakeetModelDownloader.manifest.count, 21)
         for (index, entry) in ParakeetModelDownloader.manifest.enumerated() {
@@ -43,6 +76,37 @@ final class ParakeetDownloadTransportTests: XCTestCase {
                            "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/aed02740059203c4a87495924f685de3722ae9ce/\(entry.path)")
             XCTAssertEqual(identity.artifactPath, GeneratedModelProvenance.parakeetCompiled[index].path)
         }
+    }
+
+    func test_validatedSharedLeaseSpansCompiledLoadBodyAndBlocksExclusiveActivation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-load-lease-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entries = [
+            ParakeetManifestEntry(path: "a.bin", size: 3, sha256: SHA256.hash(data: Data("abc".utf8)).map { String(format: "%02x", $0) }.joined()),
+            ParakeetManifestEntry(path: "b.bin", size: 2, sha256: SHA256.hash(data: Data("de".utf8)).map { String(format: "%02x", $0) }.joined())
+        ]
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries, transport: RecordingParakeetTransport())
+        _ = try await downloader.downloadIfNeeded()
+
+        let entered = expectation(description: "compiled load body entered")
+        let releaseBody = AsyncLatch()
+        let body = Task {
+            try await downloader.withValidatedSharedLease { _ in
+                entered.fulfill()
+                await releaseBody.wait()
+                return true
+            }
+        }
+        await fulfillment(of: [entered], timeout: 2)
+
+        let independentLock = ParakeetStoreFileLock(storeParent: root)
+        XCTAssertNil(try independentLock.tryAcquire(.exclusive),
+                     "activation must be blocked while compiled path loading owns its shared lease")
+        releaseBody.signal()
+        let loaded = try await body.value
+        XCTAssertTrue(loaded)
+        let successor = try XCTUnwrap(try independentLock.tryAcquire(.exclusive))
+        successor.release()
     }
 
     func test_downloaderPassesRemainingAggregateToBoundedTransportAndActivatesAtomically() async throws {

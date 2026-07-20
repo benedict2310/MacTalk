@@ -165,6 +165,15 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         }
     }
 
+    /// Executes a path-based compiled load while the complete active tree is
+    /// protected by one validated shared store lease. The closure is the only
+    /// narrow seam needed by Bootstrap and hermetic ownership tests.
+    func withValidatedSharedLease<T>(_ body: (URL) async throws -> T) async throws -> T {
+        let lease = try await acquireValidatedSharedLease()
+        defer { lease.release() }
+        return try await body(repoDirectory)
+    }
+
     @discardableResult
     func downloadIfNeeded() async throws -> URL {
         try Self.validateManifest(entries)

@@ -133,11 +133,12 @@ final class ParakeetBootstrap: @unchecked Sendable {
         config.computeUnits = .cpuAndNeuralEngine
 
         ModelHub.offlineMode = true
-        // AsrModels receives the parent cache root and derives
-        // Repo.parakeetV3.folderName, which is exactly the downloader's active
-        // directory (parakeet-tdt-0.6b-v3).
-        let modelsPath = downloader.repoDirectory
-        let models = try await AsrModels.load(from: modelsPath, configuration: config, version: .v3)
+        // The compiled path loader must remain inside the downloader's
+        // validated shared lease. Exclusive activation cannot rename any
+        // active/backup/staging tree while FluidAudio is reading it.
+        let models = try await downloader.withValidatedSharedLease { modelsPath in
+            try await AsrModels.load(from: modelsPath, configuration: config, version: .v3)
+        }
 
         let manager = AsrManager()
         try await manager.loadModels(models)
