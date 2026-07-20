@@ -103,10 +103,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private let transport: any BoundedModelDownloading
     private let storeLock: ParakeetStoreFileLock
     private let activationHook: (@Sendable () async -> Void)?
-    // This is a controlled test seam for blocking immediately after terminal
-    // activation ownership is claimed. Unlike observational callbacks, it is
-    // deliberately part of the commit boundary and never escapes production.
-    private let activationBodyHook: (@Sendable () async -> Void)?
+    // Internal-only resolver seam for hermetic loopback tests. Production leaves
+    // it nil, preserving the immutable official HTTPS mirror.
+    private let mirrorResolver: (@Sendable (ParakeetManifestEntry) throws -> URL)?
     private let stateLock = ParakeetStateLock()
     private let commitLock = ParakeetStateLock()
     private var operation: Task<URL, Error>?
@@ -120,7 +119,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
          manifest: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
          activationHook: (@Sendable () async -> Void)? = nil,
-         activationBodyHook: (@Sendable () async -> Void)? = nil) {
+         mirrorResolver: (@Sendable (ParakeetManifestEntry) throws -> URL)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
@@ -128,7 +127,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.transport = transport
         self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
         self.activationHook = activationHook
-        self.activationBodyHook = activationBodyHook
+        self.mirrorResolver = mirrorResolver
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         // Construction-time recovery is exclusive. If another process owns the
@@ -278,7 +277,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 let completedBefore = completed
                 let request = BoundedModelDownloadRequest(
                     identity: identity,
-                    mirrors: [try Self.mirrorURL(for: entry)],
+                    mirrors: [try mirrorURL(for: entry)],
                     operationID: operationID,
                     workspaceRoot: downloadsRoot,
                     aggregateDiskBytesStillRequired: remaining,
@@ -307,18 +306,16 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             // rename and its rollback against supersession/cancellation.
             if let activationHook { await activationHook() }
             try check(generation, operationID)
-            do {
-                try await commitActivation(staging: staging, generation: generation, operationID: operationID, artifactPath: currentArtifactPath)
-                activated = true
-                return repoDirectory
-            } catch let error as ActivationCommitError {
-                switch error {
-                case .failed(let underlying): throw underlying
-                case .cancelled: throw ErrorType.cancelled
-                }
-            }
+            try commitActivation(staging: staging, generation: generation, operationID: operationID, artifactPath: currentArtifactPath)
+            activated = true
+            return repoDirectory
         } catch is CancellationError {
             throw ErrorType.cancelled
+        } catch let error as ActivationCommitError {
+            switch error {
+            case .failed(let underlying): throw underlying
+            case .cancelled: throw ErrorType.cancelled
+            }
         } catch {
             let mapped = map(error, artifactPath: currentArtifactPath)
             if claimFailure(mapped, generation: generation, operationID: operationID) {
@@ -339,14 +336,14 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         case cancelled
     }
 
-    private func commitActivation(staging: URL, generation: Int, operationID: UUID, artifactPath: String?) async throws {
+    /// Synchronous activation commit. The commit lock covers only the state
+    /// claim and filesystem renames; no await, callback, or observer executes
+    /// while either lock is held. Terminal ownership is provisional until the
+    /// exact success/failure claim below.
+    private func commitActivation(staging: URL, generation: Int, operationID: UUID, artifactPath: String?) throws {
         commitLock.lock()
         do {
             try claimActivationLocked(generation: generation, operationID: operationID)
-            // This is a narrow deterministic seam, not an observational
-            // callback. It may block the commit boundary so tests can prove
-            // cancellation cannot supersede activation body mutations.
-            if let activationBodyHook { await activationBodyHook() }
             try activate(staging: staging)
             guard claimDoneLocked(generation: generation, operationID: operationID) else {
                 throw ErrorType.cancelled
@@ -357,11 +354,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             let mapped = map(error, artifactPath: artifactPath)
             let claimed = claimFailureLocked(mapped, generation: generation, operationID: operationID)
             commitLock.unlock()
-            if claimed {
-                publish(.failed(mapped), generation: generation)
-                throw ActivationCommitError.failed(mapped)
-            }
-            throw ActivationCommitError.cancelled
+            guard claimed else { throw ActivationCommitError.cancelled }
+            publish(.failed(mapped), generation: generation)
+            throw ActivationCommitError.failed(mapped)
         }
     }
 
@@ -406,11 +401,13 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         return claimed
     }
 
-    // Caller holds commitLock. Failure owns its exact terminal before release.
+    // Caller holds commitLock. A provisional activation owner may convert its
+    // terminal claim into the one exact failure terminal.
     private func claimFailureLocked(_ error: Error, generation: Int, operationID: UUID) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard self.generation == generation, self.operationID == operationID, !terminalClaimed else {
+        guard self.generation == generation, self.operationID == operationID,
+              (!terminalClaimed || activationClaimed) else {
             return false
         }
         terminalClaimed = true
@@ -516,6 +513,15 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         if components.contains("..") { throw ErrorType.pathTraversal(path) }
         if components.contains(".") { throw ErrorType.dotPath(path) }
         if components.contains(where: { $0.isEmpty || $0.utf8.contains(0) }) { throw ErrorType.pathTraversal(path) }
+    }
+
+    private func mirrorURL(for entry: ParakeetManifestEntry) throws -> URL {
+        if let mirrorResolver {
+            let mirror = try mirrorResolver(entry)
+            guard mirror.scheme != nil, mirror.host != nil else { throw ErrorType.invalidManifest }
+            return mirror
+        }
+        return try Self.mirrorURL(for: entry)
     }
 
     private func safeURL(_ path: String, under root: URL) throws -> URL {
