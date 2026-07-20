@@ -196,6 +196,9 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let first = Task { try await downloader.downloadIfNeeded() }
         await firstHookEntered.wait()
         let second = Task { try await downloader.downloadIfNeeded() }
+        // Let B claim ownership before A releases its exclusive store lease;
+        // B cannot reach the hook until that lease is available.
+        try await Task.sleep(for: .milliseconds(50))
         releaseFirstHook.signal()
 
         do {
