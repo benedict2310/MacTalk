@@ -150,6 +150,59 @@ private final class RecordingBoundedTransport: BoundedModelDownloading, @uncheck
     func requestSnapshot() -> [BoundedModelDownloadRequest] { lock.withLock { requests } }
 }
 
+private final class CancellationTrackingBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let resultURL: URL
+    private var continuations: [UUID: CheckedContinuation<URL, Error>] = [:]
+    private var cancelledBeforeRegistration = Set<UUID>()
+    private(set) var requests: [UUID] = []
+    private(set) var transportCancellations: [UUID] = []
+    private(set) var taskCancellations: [UUID] = []
+    let requestStarted = DispatchSemaphore(value: 0)
+
+    init(resultURL: URL) { self.resultURL = resultURL }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        lock.withLock { requests.append(request.operationID) }
+        requestStarted.signal()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                let cancelImmediately = lock.withLock { () -> Bool in
+                    if cancelledBeforeRegistration.remove(request.operationID) != nil { return true }
+                    continuations[request.operationID] = continuation
+                    return false
+                }
+                if cancelImmediately { continuation.resume(throwing: CancellationError()) }
+            }
+        }, onCancel: {
+            self.recordTaskCancellation(for: request.operationID)
+        })
+    }
+
+    func cancel(operationID: UUID) {
+        lock.withLock { transportCancellations.append(operationID) }
+    }
+
+    func release(operationID: UUID) {
+        let continuation = lock.withLock { continuations.removeValue(forKey: operationID) }
+        continuation?.resume(returning: resultURL)
+    }
+
+    func recordTaskCancellation(for operationID: UUID) {
+        let continuation = lock.withLock { () -> CheckedContinuation<URL, Error>? in
+            taskCancellations.append(operationID)
+            if let continuation = continuations.removeValue(forKey: operationID) { return continuation }
+            cancelledBeforeRegistration.insert(operationID)
+            return nil
+        }
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func requestIDs() -> [UUID] { lock.withLock { requests } }
+    func transportCancellationIDs() -> [UUID] { lock.withLock { transportCancellations } }
+    func taskCancellationIDs() -> [UUID] { lock.withLock { taskCancellations } }
+}
+
 final class ModelSecurityTests: XCTestCase {
     private var root: URL!
     private var modelRoot: URL!
@@ -639,6 +692,71 @@ final class ModelSecurityTests: XCTestCase {
 
         XCTAssertEqual(transport.cancelledIDs(), [operationID])
         XCTAssertTrue(Set(transport.requestIDs()).isSubset(of: Set([operationID])))
+    }
+
+    func test_preRegistrationReplacementDoesNotOverwriteBOwnership() async throws {
+        let payload = Data("pre-registration fixture".utf8)
+        let source = root.appendingPathComponent("fixture.part")
+        try payload.write(to: source)
+        let transport = CancellationTrackingBoundedTransport(resultURL: source)
+        let aPreflightEntered = DispatchSemaphore(value: 0)
+        let releaseA = DispatchSemaphore(value: 0)
+        let bRegistered = DispatchSemaphore(value: 0)
+        let releaseBRegistration = DispatchSemaphore(value: 0)
+        let aStartReturned = DispatchSemaphore(value: 0)
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let recorder = StateRecorder()
+        let cacheOperations = ModelDownloader.CacheOperations(
+            inspect: { _ in false },
+            remove: { _ in },
+            replace: { source, destination, _ in
+                try FileManager.default.copyItem(at: source, to: destination)
+            }
+        )
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                          transport: transport, cacheOperations: cacheOperations,
+                                          beforeTaskRegistration: { id in
+            if id == operationIDA {
+                aPreflightEntered.signal()
+                releaseA.wait()
+            }
+        },
+                                          afterTaskRegistration: { id in
+            if id == operationIDB {
+                bRegistered.signal()
+                releaseBRegistration.wait()
+            }
+        })
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+        }
+        let specA = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "a.bin")
+        let specB = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/b")!], id: "b", filename: "b.bin")
+
+        DispatchQueue.global().async {
+            downloader.start(spec: specA, operationID: operationIDA)
+            aStartReturned.signal()
+        }
+        XCTAssertEqual(aPreflightEntered.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async { downloader.start(spec: specB, operationID: operationIDB) }
+        XCTAssertEqual(bRegistered.wait(timeout: .now() + 2), .success)
+        releaseBRegistration.signal()
+        XCTAssertEqual(transport.requestStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(transport.requestIDs(), [operationIDB])
+
+        releaseA.signal()
+        XCTAssertEqual(aStartReturned.wait(timeout: .now() + 2), .success)
+        downloader.cancel()
+
+        XCTAssertEqual(transport.transportCancellationIDs(), [operationIDA, operationIDB])
+        XCTAssertEqual(transport.taskCancellationIDs(), [operationIDB])
+        XCTAssertEqual(transport.requestIDs(), [operationIDB])
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in id == operationIDA && state.isTerminal })
+
+        transport.release(operationID: operationIDA)
+        transport.release(operationID: operationIDB)
     }
 
     func test_invalidFilenamesRejectBeforeAnyCacheOperationOrTransport() async throws {

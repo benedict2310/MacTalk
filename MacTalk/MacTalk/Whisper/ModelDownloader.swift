@@ -82,6 +82,7 @@ final class ModelDownloader: @unchecked Sendable {
     private let downloadsRoot: URL
     private let transport: any BoundedModelDownloading
     private let cacheOperations: CacheOperations
+    private let beforeTaskRegistration: (@Sendable (UUID) -> Void)?
     private let afterTaskRegistration: (@Sendable (UUID) -> Void)?
     private var operation: Task<Void, Never>?
     private var generation = 0
@@ -92,11 +93,13 @@ final class ModelDownloader: @unchecked Sendable {
     init(modelRoot: URL? = nil, downloadsRoot: URL? = nil,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
          cacheOperations: CacheOperations = .live,
+         beforeTaskRegistration: (@Sendable (UUID) -> Void)? = nil,
          afterTaskRegistration: (@Sendable (UUID) -> Void)? = nil) {
         self.modelRoot = modelRoot ?? ModelStore.modelsDir
         self.downloadsRoot = downloadsRoot ?? self.modelRoot.appendingPathComponent(".downloads", isDirectory: true)
         self.transport = transport
         self.cacheOperations = cacheOperations
+        self.beforeTaskRegistration = beforeTaskRegistration
         self.afterTaskRegistration = afterTaskRegistration
         try? FileManager.default.createDirectory(at: self.modelRoot, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
@@ -150,7 +153,12 @@ final class ModelDownloader: @unchecked Sendable {
         }
 
         notifyState(.running(progress: 0), generation: currentGeneration, operationID: operationID)
+        beforeTaskRegistration?(operationID)
         stateLock.lock()
+        guard self.generation == currentGeneration, self.operationID == operationID else {
+            stateLock.unlock()
+            return
+        }
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
