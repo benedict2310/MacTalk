@@ -9,6 +9,25 @@ private final class TestMutex: @unchecked Sendable {
     func unlock() { mutex.unlock() }
 }
 
+private final class AtomicCounter: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var value = 0
+    func increment() -> Int {
+        mutex.lock()
+        value += 1
+        let result = value
+        mutex.unlock()
+        return result
+    }
+
+    func current() -> Int {
+        mutex.lock()
+        let result = value
+        mutex.unlock()
+        return result
+    }
+}
+
 private final class AsyncLatch: @unchecked Sendable {
     private let mutex = NSLock()
     private var waiter: CheckedContinuation<Void, Never>?
@@ -48,6 +67,18 @@ private final class RecordingParakeetTransport: BoundedModelDownloading, @unchec
 }
 
 final class ParakeetDownloadTransportTests: XCTestCase {
+    func test_activationHasACommitOwnershipBoundaryBeforeRenames() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("MacTalk/Whisper/ParakeetModelDownloader.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("claimActivation"),
+                      "activation must claim generation ownership immediately before renames")
+        XCTAssertTrue(source.contains("activationHook"),
+                      "activation ownership must be testable after an arbitrary pre-activation hook")
+    }
+
     func test_bootstrapRoutesCompiledLoadThroughValidatedSharedLeaseBoundary() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -107,6 +138,58 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertTrue(loaded)
         let successor = try XCTUnwrap(try independentLock.tryAcquire(.exclusive))
         successor.release()
+    }
+
+    func test_supersededOperationCannotActivateAfterPreActivationBarrier() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-supersession-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let firstHookEntered = AsyncLatch()
+        let releaseFirstHook = AsyncLatch()
+        let counter = AtomicCounter()
+        let done = expectation(description: "only the current operation publishes done")
+        let terminalCount = AtomicCounter()
+        let transport = RecordingParakeetTransport()
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport,
+            activationHook: {
+                let number = counter.increment()
+                if number == 1 {
+                    firstHookEntered.signal()
+                    await releaseFirstHook.wait()
+                }
+            })
+        downloader.onState = { @MainActor state in
+            if case .done = state {
+                _ = terminalCount.increment()
+                done.fulfill()
+            }
+        }
+
+        let first = Task { try await downloader.downloadIfNeeded() }
+        await firstHookEntered.wait()
+        let second = Task { try await downloader.downloadIfNeeded() }
+        releaseFirstHook.signal()
+
+        do {
+            _ = try await first.value
+            XCTFail("superseded operation unexpectedly completed")
+        } catch {
+            guard let typed = error as? ParakeetModelDownloader.ErrorType else {
+                XCTFail("unexpected supersession error: \(error)")
+                return
+            }
+            if case .cancelled = typed {
+                // expected
+            } else {
+                XCTFail("superseded operation reported \(typed)")
+            }
+        }
+        _ = try await second.value
+        await fulfillment(of: [done], timeout: 2)
+        XCTAssertEqual(terminalCount.current(), 1)
+        XCTAssertTrue(downloader.modelsAvailable())
     }
 
     func test_downloaderPassesRemainingAggregateToBoundedTransportAndActivatesAtomically() async throws {

@@ -102,22 +102,26 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private let entries: [ParakeetManifestEntry]
     private let transport: any BoundedModelDownloading
     private let storeLock: ParakeetStoreFileLock
+    private let activationHook: (@Sendable () async -> Void)?
     private let stateLock = ParakeetStateLock()
     private var operation: Task<URL, Error>?
     private var operationID: UUID?
     private var generation = 0
     private var terminalClaimed = false
+    private var activationClaimed = false
     private var lastProgress = 0.0
 
     init(modelsRoot: URL? = nil, repoDirectory: URL? = nil,
          manifest: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
-         transport: any BoundedModelDownloading = BoundedModelDownloadTransport()) {
+         transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
+         activationHook: (@Sendable () async -> Void)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
         self.entries = manifest
         self.transport = transport
         self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
+        self.activationHook = activationHook
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         // Construction-time recovery is exclusive. If another process owns the
@@ -224,6 +228,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         operation = nil
         operationID = id
         terminalClaimed = false
+        activationClaimed = false
         lastProgress = 0
         stateLock.unlock()
         return (current, previous, previousID)
@@ -281,7 +286,12 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             publish(.verifying, generation: generation)
             try writeManifest(nextTo: staging)
             try validateSet(at: staging)
+            // Arbitrary hooks stay outside the state lock. The short claim
+            // below is the linearization point that owns every activation
+            // rename and its rollback against supersession/cancellation.
+            if let activationHook { await activationHook() }
             try check(generation, operationID)
+            try claimActivation(generation: generation, operationID: operationID)
             try activate(staging: staging)
             activated = true
             guard claimDone(generation: generation, operationID: operationID) else { throw ErrorType.cancelled }
@@ -303,14 +313,28 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         guard generation == expectedGeneration, operationID == expectedID, !terminalClaimed else { throw ErrorType.cancelled }
     }
 
-    private func claimDone(generation: Int, operationID: UUID) -> Bool {
+    private func claimActivation(generation: Int, operationID: UUID) throws {
         stateLock.lock()
         guard self.generation == generation, self.operationID == operationID, !terminalClaimed else {
             stateLock.unlock()
+            throw ErrorType.cancelled
+        }
+        // Claim terminal ownership before any destination rename. A later
+        // cancel cannot steal or contradict activation success/failure.
+        activationClaimed = true
+        terminalClaimed = true
+        stateLock.unlock()
+    }
+
+    private func claimDone(generation: Int, operationID: UUID) -> Bool {
+        stateLock.lock()
+        guard self.generation == generation, self.operationID == operationID,
+              (!terminalClaimed || activationClaimed) else {
+            stateLock.unlock()
             return false
         }
-        terminalClaimed = true
         operation = nil
+        self.operationID = nil
         stateLock.unlock()
         publish(.done(repoDirectory), generation: generation)
         return true
@@ -318,12 +342,14 @@ final class ParakeetModelDownloader: @unchecked Sendable {
 
     private func claimFailure(_ error: Error, generation: Int, operationID: UUID) -> Bool {
         stateLock.lock()
-        guard self.generation == generation, self.operationID == operationID, !terminalClaimed else {
+        guard self.generation == generation, self.operationID == operationID,
+              (!terminalClaimed || activationClaimed) else {
             stateLock.unlock()
             return false
         }
         terminalClaimed = true
         operation = nil
+        self.operationID = nil
         stateLock.unlock()
         publish(.failed(error), generation: generation)
         return true
