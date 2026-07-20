@@ -120,6 +120,7 @@
 		E313A0CC4CE5AE03FBF88A5C /* PermissionFlowGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2237E28C7EA4DC66F845758D /* PermissionFlowGate.swift */; };
 		E6945B4B17E2433394010F56 /* TSanSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CD2D4C2B900F87BD8F0231 /* TSanSmokeTests.swift */; };
 		EC767D79E4769059A34200A9 /* SettingsIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB701E7E807D5A2A5CECA98 /* SettingsIntegrationTests.swift */; };
+		F310B9846809335670C69C38 /* ParakeetDownloadTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDE99A89C4C1D64F0EB83F0C /* ParakeetDownloadTransportTests.swift */; };
 		F5C5F8B645D6D6457900111C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CC13B415ED06C97834D8484E /* Foundation.framework */; };
 		F6722E9D10CAB9ECA3FD3B16 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74DAEDA2792B773A15191DA0 /* NotificationManager.swift */; };
 		F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */; };
@@ -269,6 +270,7 @@
 		FAD794CD9B38C6DF8CEE5F41 /* ConcurrencyStressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConcurrencyStressTests.swift; sourceTree = "<group>"; };
 		FC6A14DF13BE05A8263A8449 /* ModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManager.swift; sourceTree = "<group>"; };
 		FD599796D84855D50B261BE6 /* ASREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ASREngine.swift; sourceTree = "<group>"; };
+		FDE99A89C4C1D64F0EB83F0C /* ParakeetDownloadTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetDownloadTransportTests.swift; sourceTree = "<group>"; };
 		FE87EA8F709AAD776A33FB83 /* VerifiedArtifactReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifiedArtifactReader.swift; sourceTree = "<group>"; };
 		FF9641A5E0843D73310B25FF /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -380,6 +382,7 @@
 				EA82C17EF6BC9027FA3048E8 /* NativeWhisperEngineTests.swift */,
 				D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */,
 				677415A9FCDE4847F18D4C94 /* OutputCoordinatorTests.swift */,
+				FDE99A89C4C1D64F0EB83F0C /* ParakeetDownloadTransportTests.swift */,
 				7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */,
 				5DB70657909AA233570D5503 /* ParakeetSourceSnapshotTests.swift */,
 				9C6E2D3BCC69BCB9F8085CE8 /* ParakeetStoreFileLockTests.swift */,
@@ -809,6 +812,7 @@
 				520D5CB08C0BEE4FBB233F47 /* NativeWhisperEngineTests.swift in Sources */,
 				40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */,
 				4D52B02AC9D2B5F3F0054644 /* OutputCoordinatorTests.swift in Sources */,
+				F310B9846809335670C69C38 /* ParakeetDownloadTransportTests.swift in Sources */,
 				B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */,
 				5BF457320E7641C8C63E80D0 /* ParakeetSourceSnapshotTests.swift in Sources */,
 				D5143ACACF28E23AD438D1C6 /* ParakeetStoreFileLockTests.swift in Sources */,
