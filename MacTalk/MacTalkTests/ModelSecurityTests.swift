@@ -85,20 +85,14 @@ private final class GateBoundedTransport: BoundedModelDownloading, @unchecked Se
     func releaseFirst() { firstGate.yield(()) }
 }
 
-private final class CacheOperationRecorder: @unchecked Sendable {
+private final class FileOperationRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private(set) var events: [(String, URL)] = []
+    private(set) var events: [ModelDownloader.FileOperation] = []
 
-    var operations: ModelDownloader.CacheOperations {
-        ModelDownloader.CacheOperations(
-            inspect: { [self] url in record("inspect", url); return false },
-            remove: { [self] url in record("remove", url) },
-            replace: { [self] source, destination, _ in record("replace", source); record("replace-destination", destination) }
-        )
-    }
-
-    private func record(_ operation: String, _ url: URL) {
-        lock.withLock { events.append((operation, url)) }
+    var observer: @Sendable (ModelDownloader.FileOperation) -> Void {
+        { [self] operation in
+            lock.withLock { events.append(operation) }
+        }
     }
 }
 
@@ -223,7 +217,9 @@ final class ModelSecurityTests: XCTestCase {
         let source = root.appendingPathComponent("fixture.part")
         try payload.write(to: source)
         let transport = RecordingBoundedTransport(); transport.resultURL = source
-        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let fileOperations = FileOperationRecorder()
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport,
+                                          fileOperationObserver: fileOperations.observer)
         let mirrorA = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/rev/model.bin")!
         let mirrorB = URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/rev/model.bin")!
         let spec = makeSpec(payload: payload, urls: [mirrorA, mirrorB])
@@ -249,6 +245,10 @@ final class ModelSecurityTests: XCTestCase {
         XCTAssertEqual(request.aggregateDiskBytesStillRequired, spec.sizeBytes)
         XCTAssertFalse(FileManager.default.fileExists(atPath: downloadsRoot.appendingPathComponent("fixture.resume").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: downloadsRoot.appendingPathComponent("fixture.resume.json").path))
+        XCTAssertTrue(fileOperations.events.contains(.inspect(modelRoot.appendingPathComponent(spec.filename))))
+        XCTAssertTrue(fileOperations.events.contains(.remove(downloadsRoot.appendingPathComponent("fixture.resume"))))
+        XCTAssertTrue(fileOperations.events.contains(.remove(downloadsRoot.appendingPathComponent("fixture.resume.json"))))
+        XCTAssertTrue(fileOperations.events.contains(.replace(source: source, destination: modelRoot.appendingPathComponent(spec.filename))))
     }
 
     func test_invalidDigestTerminalStateIsNotCancelledAgain() async {
@@ -694,7 +694,7 @@ final class ModelSecurityTests: XCTestCase {
         XCTAssertTrue(Set(transport.requestIDs()).isSubset(of: Set([operationID])))
     }
 
-    func test_commitDecisionHookCanBlockWithoutHoldingDownloaderLocks() async throws {
+    func test_commitDecisionHookCanBlockAfterCommitWithoutStealingTerminalOwnership() async throws {
         let payload = Data("decision hook fixture".utf8)
         let source = root.appendingPathComponent("decision.part")
         try payload.write(to: source)
@@ -703,29 +703,103 @@ final class ModelSecurityTests: XCTestCase {
         let decisionEntered = DispatchSemaphore(value: 0)
         let releaseDecision = DispatchSemaphore(value: 0)
         let cancelFinished = DispatchSemaphore(value: 0)
-        let cancelled = expectation(description: "decision-hook operation cancelled")
+        let operationID = UUID()
+        let recorder = StateRecorder()
+        let done = expectation(description: "decision-hook operation done")
+        let cancelled = expectation(description: "cancel must not publish after commit")
+        cancelled.isInverted = true
         let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport,
                                           commitDecisionHook: { _, accepted in
             XCTAssertTrue(accepted)
             decisionEntered.signal()
             releaseDecision.wait()
         })
-        downloader.onState = { state in
-            if case .failed(ModelDownloader.ErrorType.cancelled) = state { cancelled.fulfill() }
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            switch state {
+            case .done: done.fulfill()
+            case .failed(ModelDownloader.ErrorType.cancelled): cancelled.fulfill()
+            default: break
+            }
         }
 
-        downloader.start(spec: makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/decision")!]))
+        downloader.start(spec: makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/decision")!]), operationID: operationID)
         XCTAssertEqual(decisionEntered.wait(timeout: .now() + 2), .success)
         DispatchQueue.global().async {
             downloader.cancel()
             cancelFinished.signal()
         }
         XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success,
-                       "decision observation must run after commit locks are released")
+                       "cancel must return while the outside decision hook is blocked")
+        XCTAssertTrue(transport.cancelled.isEmpty)
         releaseDecision.signal()
-        await fulfillment(of: [cancelled], timeout: 2)
-        XCTAssertEqual(transport.cancelled.count, 1)
+        await fulfillment(of: [done], timeout: 2)
+        await fulfillment(of: [cancelled], timeout: 0.2)
+        XCTAssertEqual(recorder.taggedStates.filter { id, state in
+            id == operationID && state == .done(modelRoot.appendingPathComponent("fixture.bin"))
+        }.count, 1)
         XCTAssertEqual(try Data(contentsOf: modelRoot.appendingPathComponent("fixture.bin")), payload)
+    }
+
+    func test_synchronousTerminalClaimsOwnershipBeforeCallback() async throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let cancelFinished = DispatchSemaphore(value: 0)
+        let operationID = UUID()
+        let recorder = StateRecorder()
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                          transport: RecordingBoundedTransport())
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            if id == operationID, case .failed(ModelDownloader.ErrorType.noURLs) = state {
+                entered.signal()
+                release.wait()
+            }
+        }
+        downloader.start(spec: makeSpec(payload: Data("x".utf8), urls: []), operationID: operationID)
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            downloader.cancel()
+            cancelFinished.signal()
+        }
+        XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success)
+        release.signal()
+        await Task.yield()
+        XCTAssertEqual(recorder.taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in
+            id == operationID && state == .failed(ModelDownloader.ErrorType.cancelled)
+        })
+    }
+
+    func test_asyncFailureClaimsOwnershipBeforeCallback() async throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let cancelFinished = DispatchSemaphore(value: 0)
+        let operationID = UUID()
+        let recorder = StateRecorder()
+        let transport = RecordingBoundedTransport()
+        transport.error = URLError(.badURL)
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            if id == operationID, case .failed = state {
+                entered.signal()
+                release.wait()
+            }
+        }
+        downloader.start(spec: makeSpec(payload: Data("x".utf8), urls: [URL(string: "https://example.invalid/failure")!]), operationID: operationID)
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            downloader.cancel()
+            cancelFinished.signal()
+        }
+        XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success)
+        release.signal()
+        await Task.yield()
+        XCTAssertEqual(recorder.taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in
+            id == operationID && state == .failed(ModelDownloader.ErrorType.cancelled)
+        })
     }
 
     func test_preRegistrationReplacementDoesNotOverwriteBOwnership() async throws {
@@ -741,15 +815,8 @@ final class ModelSecurityTests: XCTestCase {
         let operationIDA = UUID()
         let operationIDB = UUID()
         let recorder = StateRecorder()
-        let cacheOperations = ModelDownloader.CacheOperations(
-            inspect: { _ in false },
-            remove: { _ in },
-            replace: { source, destination, _ in
-                try FileManager.default.copyItem(at: source, to: destination)
-            }
-        )
         let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
-                                          transport: transport, cacheOperations: cacheOperations,
+                                          transport: transport,
                                           beforeTaskRegistration: { id in
             if id == operationIDA {
                 aPreflightEntered.signal()
@@ -801,9 +868,9 @@ final class ModelSecurityTests: XCTestCase {
 
         for filename in invalidFilenames {
             let injectedTransport = RecordingBoundedTransport()
-            let recorder = CacheOperationRecorder()
+            let recorder = FileOperationRecorder()
             let injectedDownloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
-                                                      transport: injectedTransport, cacheOperations: recorder.operations)
+                                                      transport: injectedTransport, fileOperationObserver: recorder.observer)
             let injectedFailed = expectation(description: "injected invalid filename rejected: \(filename.debugDescription)")
             injectedDownloader.onState = { state in if case .failed = state { injectedFailed.fulfill() } }
             injectedDownloader.start(spec: makeSpec(payload: Data("payload".utf8), urls: [URL(string: "https://example.invalid/model")!], filename: filename))
@@ -812,12 +879,15 @@ final class ModelSecurityTests: XCTestCase {
             XCTAssertTrue(injectedTransport.requestSnapshot().isEmpty, filename.debugDescription)
 
             let realTransport = RecordingBoundedTransport()
-            let realDownloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: realTransport)
+            let realRecorder = FileOperationRecorder()
+            let realDownloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                                  transport: realTransport, fileOperationObserver: realRecorder.observer)
             let realFailed = expectation(description: "real invalid filename rejected: \(filename.debugDescription)")
             realDownloader.onState = { state in if case .failed = state { realFailed.fulfill() } }
             realDownloader.start(spec: makeSpec(payload: Data("payload".utf8), urls: [URL(string: "https://example.invalid/model")!], filename: filename))
             await fulfillment(of: [realFailed], timeout: 2)
             XCTAssertTrue(realTransport.requestSnapshot().isEmpty, filename.debugDescription)
+            XCTAssertTrue(realRecorder.events.isEmpty, filename.debugDescription)
             XCTAssertEqual(try Data(contentsOf: outside), sentinel, filename.debugDescription)
         }
     }

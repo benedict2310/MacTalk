@@ -29,26 +29,10 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
-    struct CacheOperations: @unchecked Sendable {
-        let inspect: @Sendable (URL) -> Bool
-        let remove: @Sendable (URL) throws -> Void
-        let replace: @Sendable (URL, URL, ModelSpec) throws -> Void
-
-        init(inspect: @escaping @Sendable (URL) -> Bool,
-             remove: @escaping @Sendable (URL) throws -> Void,
-             replace: @escaping @Sendable (URL, URL, ModelSpec) throws -> Void) {
-            self.inspect = inspect
-            self.remove = remove
-            self.replace = replace
-        }
-
-        static let live = CacheOperations(
-            inspect: { FileManager.default.fileExists(atPath: $0.path) },
-            remove: { try FileManager.default.removeItem(at: $0) },
-            replace: { source, destination, spec in
-                try ModelIntegrityVerifier.commitVerified(source: source, destination: destination, spec: spec)
-            }
-        )
+    enum FileOperation: Equatable, Sendable {
+        case inspect(URL)
+        case remove(URL)
+        case replace(source: URL, destination: URL)
     }
 
     enum ErrorType: Swift.Error, LocalizedError, Sendable {
@@ -81,7 +65,7 @@ final class ModelDownloader: @unchecked Sendable {
     private let modelRoot: URL
     private let downloadsRoot: URL
     private let transport: any BoundedModelDownloading
-    private let cacheOperations: CacheOperations
+    private let fileOperationObserver: (@Sendable (FileOperation) -> Void)?
     private let beforeTaskRegistration: (@Sendable (UUID) -> Void)?
     private let afterTaskRegistration: (@Sendable (UUID) -> Void)?
     private let beforeCommitHook: (@Sendable (ModelSpec) -> Void)?
@@ -94,7 +78,7 @@ final class ModelDownloader: @unchecked Sendable {
 
     init(modelRoot: URL? = nil, downloadsRoot: URL? = nil,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
-         cacheOperations: CacheOperations = .live,
+         fileOperationObserver: (@Sendable (FileOperation) -> Void)? = nil,
          beforeTaskRegistration: (@Sendable (UUID) -> Void)? = nil,
          afterTaskRegistration: (@Sendable (UUID) -> Void)? = nil,
          beforeCommitHook: (@Sendable (ModelSpec) -> Void)? = nil,
@@ -102,7 +86,7 @@ final class ModelDownloader: @unchecked Sendable {
         self.modelRoot = modelRoot ?? ModelStore.modelsDir
         self.downloadsRoot = downloadsRoot ?? self.modelRoot.appendingPathComponent(".downloads", isDirectory: true)
         self.transport = transport
-        self.cacheOperations = cacheOperations
+        self.fileOperationObserver = fileOperationObserver
         self.beforeTaskRegistration = beforeTaskRegistration
         self.afterTaskRegistration = afterTaskRegistration
         self.beforeCommitHook = beforeCommitHook
@@ -117,43 +101,38 @@ final class ModelDownloader: @unchecked Sendable {
         if let previousID { transport.cancel(operationID: previousID) }
 
         if !isDirectChildFilename(spec.filename) {
-            notifyState(.failed(ErrorType.invalidFilename), generation: currentGeneration, operationID: operationID)
-            finishSynchronously(generation: currentGeneration, operationID: operationID)
+            publishTerminal(.failed(ErrorType.invalidFilename), generation: currentGeneration, operationID: operationID)
             return
         }
 
-        removeLegacyResumeState(for: spec)
+        removeLegacyResumeState(for: spec, generation: currentGeneration, operationID: operationID)
 
         guard ModelIntegrityVerifier.isValidDigest(spec.sha256), spec.sizeBytes > 0,
               !spec.revision.isEmpty, !spec.source.isEmpty else {
-            notifyState(.failed(ErrorType.badChecksum), generation: currentGeneration, operationID: operationID)
-            finishSynchronously(generation: currentGeneration, operationID: operationID)
+            publishTerminal(.failed(ErrorType.badChecksum), generation: currentGeneration, operationID: operationID)
             return
         }
         guard !spec.urls.isEmpty else {
-            notifyState(.failed(ErrorType.noURLs), generation: currentGeneration, operationID: operationID)
-            finishSynchronously(generation: currentGeneration, operationID: operationID)
+            publishTerminal(.failed(ErrorType.noURLs), generation: currentGeneration, operationID: operationID)
             return
         }
 
         let destination = modelRoot.appendingPathComponent(spec.filename)
-        if cacheOperations.inspect(destination) {
+        let cacheExists = FileManager.default.fileExists(atPath: destination.path)
+        observe(.inspect(destination))
+        if cacheExists {
             do {
                 try ModelIntegrityVerifier.validate(source: destination, spec: spec)
-                commitLock.lock()
-                let ownsCache = isCurrent(generation: currentGeneration, operationID: operationID)
-                commitLock.unlock()
-                guard ownsCache else { return }
-                notifyState(.done(destination), generation: currentGeneration, operationID: operationID)
-                finishSynchronously(generation: currentGeneration, operationID: operationID)
+                publishTerminal(.done(destination), generation: currentGeneration, operationID: operationID)
                 return
             } catch {
                 commitLock.lock()
                 stateLock.lock()
                 let ownsCache = self.generation == currentGeneration && self.operationID == operationID
-                if ownsCache { try? cacheOperations.remove(destination) }
+                if ownsCache { try? FileManager.default.removeItem(at: destination) }
                 stateLock.unlock()
                 commitLock.unlock()
+                if ownsCache { observe(.remove(destination)) }
                 guard ownsCache else { return }
             }
         }
@@ -226,15 +205,10 @@ final class ModelDownloader: @unchecked Sendable {
             try commitVerified(source: temporaryURL, destination: destination, spec: spec,
                                generation: generation, operationID: operationID)
             notifyState(.done(destination), generation: generation, operationID: operationID)
-            finish(generation: generation, operationID: operationID)
         } catch is CancellationError {
-            guard isCurrent(generation) else { return }
-            notifyState(.failed(ErrorType.cancelled), generation: generation, operationID: operationID)
-            finish(generation: generation, operationID: operationID)
+            publishTerminal(.failed(ErrorType.cancelled), generation: generation, operationID: operationID)
         } catch {
-            guard isCurrent(generation) else { return }
-            notifyState(.failed(map(error)), generation: generation, operationID: operationID)
-            finish(generation: generation, operationID: operationID)
+            publishTerminal(.failed(map(error)), generation: generation, operationID: operationID)
         }
     }
 
@@ -278,22 +252,19 @@ final class ModelDownloader: @unchecked Sendable {
         return previous
     }
 
-    private func finish(generation: Int, operationID: UUID) {
+    /// Claims terminal ownership before scheduling its notification. Once this
+    /// succeeds, cancellation cannot publish a competing terminal state.
+    private func claimTerminal(generation: Int, operationID: UUID) -> Bool {
         stateLock.lock(); defer { stateLock.unlock() }
-        guard self.generation == generation, self.operationID == operationID else { return }
+        guard self.generation == generation, self.operationID == operationID else { return false }
         operation = nil
         self.operationID = nil
+        return true
     }
 
-    private func finishSynchronously(generation: Int, operationID: UUID) {
-        // Synchronous validation/cache hits never create a Task, but they still
-        // claim the same operation slot as asynchronous downloads. Clear that
-        // slot before returning so a later cancel cannot emit a second terminal
-        // state for the completed generation.
-        stateLock.lock(); defer { stateLock.unlock() }
-        guard self.generation == generation, self.operationID == operationID else { return }
-        operation = nil
-        self.operationID = nil
+    private func publishTerminal(_ state: State, generation: Int, operationID: UUID) {
+        guard claimTerminal(generation: generation, operationID: operationID) else { return }
+        notifyState(state, generation: generation, operationID: operationID)
     }
 
     private func notifyState(_ state: State, generation: Int, operationID: UUID) {
@@ -310,9 +281,15 @@ final class ModelDownloader: @unchecked Sendable {
         stateLock.lock()
         let accepted = self.generation == generation && self.operationID == operationID && !Task.isCancelled
         var commitError: Error?
+        var replacementAttempted = false
         if accepted {
+            replacementAttempted = true
             do {
-                try cacheOperations.replace(source, destination, spec)
+                try ModelIntegrityVerifier.commitVerified(source: source, destination: destination, spec: spec)
+                // Successful destination mutation and terminal ownership are one
+                // linearization point. Cancellation after this point is a no-op.
+                operation = nil
+                self.operationID = nil
             } catch {
                 commitError = error
             }
@@ -320,20 +297,34 @@ final class ModelDownloader: @unchecked Sendable {
         stateLock.unlock()
         commitLock.unlock()
 
-        // Observational test seams deliberately run after both locks. They must
-        // be able to coordinate cancellation and replacement without becoming
+        // Observational seams deliberately run after both locks. They must be
+        // able to coordinate cancellation and replacement without becoming
         // part of the commit critical section.
+        if replacementAttempted {
+            observe(.replace(source: source, destination: destination))
+        }
         commitDecisionHook?(spec, accepted)
         if let commitError { throw commitError }
         guard accepted else { throw ErrorType.cancelled }
     }
 
-    private func removeLegacyResumeState(for spec: ModelSpec) {
+    private func removeLegacyResumeState(for spec: ModelSpec, generation: Int, operationID: UUID) {
         guard isSafeFilename(spec.id) else { return }
         for suffix in [".resume", ".resume.json"] {
             let url = downloadsRoot.appendingPathComponent(spec.id + suffix)
-            try? cacheOperations.remove(url)
+            commitLock.lock()
+            stateLock.lock()
+            let owns = self.generation == generation && self.operationID == operationID
+            if owns { try? FileManager.default.removeItem(at: url) }
+            stateLock.unlock()
+            commitLock.unlock()
+            if owns { observe(.remove(url)) }
+            if !owns { return }
         }
+    }
+
+    private func observe(_ operation: FileOperation) {
+        fileOperationObserver?(operation)
     }
 
     private func isDirectChildFilename(_ value: String) -> Bool {
