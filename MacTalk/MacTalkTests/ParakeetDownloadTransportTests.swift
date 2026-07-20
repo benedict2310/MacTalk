@@ -420,6 +420,25 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") || $0.lastPathComponent.hasPrefix(".backup-") })
     }
 
+    func test_realBoundedTransportRejectsChunkedExpectedPlusOneWithoutPromotion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-loopback-oversize-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let expected = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3, sha256: SHA256.hash(data: expected).map { String(format: "%02x", $0) }.joined())
+        let server = try LoopbackHTTPServer { _ in .init(body: .chunked(Data("abcd".utf8), chunkSize: 1)) }
+        defer { server.stop() }
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
+            transport: BoundedModelDownloadTransport(allowInsecureLoopback: true),
+            mirrorResolver: { _ in server.url })
+        do { _ = try await downloader.downloadIfNeeded(); XCTFail("chunked expected+1 must fail") } catch let error as ParakeetModelDownloader.ErrorType {
+            if case .downloadTooLarge = error {} else { XCTFail("unexpected oversize error: \(error)") }
+        } catch { }
+        XCTAssertTrue(server.requestLog.count >= 1)
+        let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })
+        XCTAssertFalse(downloader.modelsAvailable())
+    }
+
     func test_realBoundedTransportZeroCapacityMakesNoLoopbackRequest() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-loopback-space-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
