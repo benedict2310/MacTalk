@@ -89,8 +89,9 @@ final class ModelSecurityTests: XCTestCase {
             if seen == 1 { invalidFailure.fulfill() } else { noURLFailure.fulfill() }
         }
         downloader.start(spec: invalid)
+        await fulfillment(of: [invalidFailure], timeout: 2)
         downloader.start(spec: noURLs)
-        await fulfillment(of: [invalidFailure, noURLFailure], timeout: 2)
+        await fulfillment(of: [noURLFailure], timeout: 2)
         XCTAssertTrue(transport.requestSnapshot().isEmpty)
     }
 
