@@ -6,6 +6,39 @@ private extension NSLock {
     func withLock<T>(_ body: () -> T) -> T { lock(); defer { unlock() }; return body() }
 }
 
+private extension ModelDownloader.State {
+    var isTerminal: Bool {
+        switch self {
+        case .done, .failed: return true
+        case .idle, .running, .verifying: return false
+        }
+    }
+}
+
+private final class StateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tagged: [(UUID, ModelDownloader.State)] = []
+    private var legacy: [ModelDownloader.State] = []
+
+    func appendTagged(_ operationID: UUID, _ state: ModelDownloader.State) {
+        lock.lock(); tagged.append((operationID, state)); lock.unlock()
+    }
+
+    func appendLegacy(_ state: ModelDownloader.State) {
+        lock.lock(); legacy.append(state); lock.unlock()
+    }
+
+    var taggedStates: [(UUID, ModelDownloader.State)] {
+        lock.lock(); defer { lock.unlock() }
+        return tagged
+    }
+
+    var legacyStates: [ModelDownloader.State] {
+        lock.lock(); defer { lock.unlock() }
+        return legacy
+    }
+}
+
 private final class RecordingBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var requests: [BoundedModelDownloadRequest] = []
@@ -75,24 +108,100 @@ final class ModelSecurityTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: downloadsRoot.appendingPathComponent("fixture.resume.json").path))
     }
 
-    func test_invalidDigestAndNoURLsFailBeforeTransport() async {
+    func test_invalidDigestTerminalStateIsNotCancelledAgain() async {
         let transport = RecordingBoundedTransport()
         let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
-        let invalid = makeSpec(payload: Data("x".utf8), urls: [URL(string: "https://example.invalid/model")!], digest: "")
-        let noURLs = makeSpec(payload: Data("x".utf8), urls: [])
-        let invalidFailure = expectation(description: "invalid digest")
-        let noURLFailure = expectation(description: "no urls")
-        var seen = 0
-        downloader.onState = { state in
-            guard case .failed = state else { return }
-            seen += 1
-            if seen == 1 { invalidFailure.fulfill() } else { noURLFailure.fulfill() }
+        let operationID = UUID()
+        let terminal = expectation(description: "invalid digest terminal state")
+        let recorder = StateRecorder()
+        downloader.onOperationState = { taggedOperationID, state in
+            recorder.appendTagged(taggedOperationID, state)
         }
-        downloader.start(spec: invalid)
-        await fulfillment(of: [invalidFailure], timeout: 2)
-        downloader.start(spec: noURLs)
-        await fulfillment(of: [noURLFailure], timeout: 2)
+        downloader.onState = { state in
+            recorder.appendLegacy(state)
+            if case .failed(let error) = state, let typed = error as? ModelDownloader.ErrorType, case .badChecksum = typed { terminal.fulfill() }
+        }
+
+        downloader.start(spec: makeSpec(payload: Data("x".utf8), urls: [URL(string: "https://example.invalid/model")!], digest: ""), operationID: operationID)
+        await fulfillment(of: [terminal], timeout: 2)
+        downloader.cancel()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        let taggedStates = recorder.taggedStates
+        let legacyStates = recorder.legacyStates
+        XCTAssertEqual(taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertEqual(legacyStates.filter(\.isTerminal).count, 1)
+        XCTAssertFalse(legacyStates.contains(where: { state in
+            if case .failed(let error) = state, let typed = error as? ModelDownloader.ErrorType, case .cancelled = typed { return true }
+            return false
+        }))
         XCTAssertTrue(transport.requestSnapshot().isEmpty)
+        XCTAssertTrue(transport.cancelled.isEmpty)
+    }
+
+    func test_noURLsTerminalStateIsNotCancelledAgain() async {
+        let transport = RecordingBoundedTransport()
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let operationID = UUID()
+        let terminal = expectation(description: "no URLs terminal state")
+        let recorder = StateRecorder()
+        downloader.onOperationState = { taggedOperationID, state in
+            recorder.appendTagged(taggedOperationID, state)
+        }
+        downloader.onState = { state in
+            recorder.appendLegacy(state)
+            if case .failed(let error) = state, let typed = error as? ModelDownloader.ErrorType, case .noURLs = typed { terminal.fulfill() }
+        }
+
+        downloader.start(spec: makeSpec(payload: Data("x".utf8), urls: []), operationID: operationID)
+        await fulfillment(of: [terminal], timeout: 2)
+        downloader.cancel()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        let taggedStates = recorder.taggedStates
+        let legacyStates = recorder.legacyStates
+        XCTAssertEqual(taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertEqual(legacyStates.filter(\.isTerminal).count, 1)
+        XCTAssertFalse(legacyStates.contains(where: { state in
+            if case .failed(let error) = state, let typed = error as? ModelDownloader.ErrorType, case .cancelled = typed { return true }
+            return false
+        }))
+        XCTAssertTrue(transport.requestSnapshot().isEmpty)
+        XCTAssertTrue(transport.cancelled.isEmpty)
+    }
+
+    func test_validCacheTerminalStateIsNotCancelledAgain() async throws {
+        let payload = Data("cached model".utf8)
+        let spec = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/model")!])
+        try payload.write(to: modelRoot.appendingPathComponent(spec.filename))
+        let transport = RecordingBoundedTransport()
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let operationID = UUID()
+        let terminal = expectation(description: "valid cache terminal state")
+        let recorder = StateRecorder()
+        downloader.onOperationState = { taggedOperationID, state in
+            recorder.appendTagged(taggedOperationID, state)
+        }
+        downloader.onState = { state in
+            recorder.appendLegacy(state)
+            if case .done = state { terminal.fulfill() }
+        }
+
+        downloader.start(spec: spec, operationID: operationID)
+        await fulfillment(of: [terminal], timeout: 2)
+        downloader.cancel()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        let taggedStates = recorder.taggedStates
+        let legacyStates = recorder.legacyStates
+        XCTAssertEqual(taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertEqual(legacyStates.filter(\.isTerminal).count, 1)
+        XCTAssertFalse(legacyStates.contains(where: { state in
+            if case .failed(let error) = state, let typed = error as? ModelDownloader.ErrorType, case .cancelled = typed { return true }
+            return false
+        }))
+        XCTAssertTrue(transport.requestSnapshot().isEmpty)
+        XCTAssertTrue(transport.cancelled.isEmpty)
     }
 
     func test_validCacheAvoidsTransportAndCorruptCacheIsRemoved() async throws {

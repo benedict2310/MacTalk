@@ -75,16 +75,20 @@ final class ModelDownloader: @unchecked Sendable {
         operation?.cancel()
         if let previousID = self.operationID { transport.cancel(operationID: previousID) }
         let currentGeneration = nextGeneration()
+        stateLock.lock()
         self.operationID = operationID
+        stateLock.unlock()
         removeLegacyResumeState(for: spec)
 
         guard ModelIntegrityVerifier.isValidDigest(spec.sha256), spec.sizeBytes > 0,
               !spec.revision.isEmpty, !spec.source.isEmpty else {
             notifyState(.failed(ErrorType.badChecksum), generation: currentGeneration, operationID: operationID)
+            finishSynchronously(generation: currentGeneration, operationID: operationID)
             return
         }
         guard !spec.urls.isEmpty else {
             notifyState(.failed(ErrorType.noURLs), generation: currentGeneration, operationID: operationID)
+            finishSynchronously(generation: currentGeneration, operationID: operationID)
             return
         }
 
@@ -93,6 +97,7 @@ final class ModelDownloader: @unchecked Sendable {
             do {
                 try ModelIntegrityVerifier.validate(source: destination, spec: spec)
                 notifyState(.done(destination), generation: currentGeneration, operationID: operationID)
+                finishSynchronously(generation: currentGeneration, operationID: operationID)
                 return
             } catch {
                 try? FileManager.default.removeItem(at: destination)
@@ -192,6 +197,17 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     private func finish(generation: Int, operationID: UUID) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard self.generation == generation, self.operationID == operationID else { return }
+        operation = nil
+        self.operationID = nil
+    }
+
+    private func finishSynchronously(generation: Int, operationID: UUID) {
+        // Synchronous validation/cache hits never create a Task, but they still
+        // claim the same operation slot as asynchronous downloads. Clear that
+        // slot before returning so a later cancel cannot emit a second terminal
+        // state for the completed generation.
         stateLock.lock(); defer { stateLock.unlock() }
         guard self.generation == generation, self.operationID == operationID else { return }
         operation = nil
