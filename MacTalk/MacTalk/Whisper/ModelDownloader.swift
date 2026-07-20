@@ -270,13 +270,22 @@ final class ModelDownloader: @unchecked Sendable {
     }
 
     private func claimReplacingCurrent(with operationID: UUID, identity: TemporarySourceIdentity) -> (Int, Task<Void, Never>?, UUID?) {
-        commitLock.lock(); defer { commitLock.unlock() }
-        stateLock.lock(); defer { stateLock.unlock() }
+        commitLock.lock()
+        stateLock.lock()
         generation += 1
-        let previous = (generation, operation, self.operationID)
+        let previousID = self.operationID
+        let previousIdentity = operationIdentity
+        let previous = (generation, operation, previousID)
         operation = nil
         self.operationID = operationID
         operationIdentity = identity
+        let sourcesToRemove = previousID.map {
+            replaceSourceOwnershipLocked(from: $0, previousIdentity: previousIdentity,
+                                         to: operationID, identity: identity)
+        } ?? []
+        stateLock.unlock()
+        removeTemporarySources(sourcesToRemove)
+        commitLock.unlock()
         return previous
     }
 
@@ -336,6 +345,25 @@ final class ModelDownloader: @unchecked Sendable {
         stateLock.unlock()
         if removeSource { try? FileManager.default.removeItem(at: normalizedSource) }
         commitLock.unlock()
+    }
+
+    private func replaceSourceOwnershipLocked(from previousID: UUID, previousIdentity: TemporarySourceIdentity?,
+                                              to operationID: UUID, identity: TemporarySourceIdentity) -> [URL] {
+        var sourcesToRemove: [URL] = []
+        for source in Array(sourceOwners.keys) {
+            guard var owners = sourceOwners[source], owners.contains(previousID) else { continue }
+            owners.remove(previousID)
+            if previousIdentity == identity {
+                owners.insert(operationID)
+                sourceOwners[source] = owners
+            } else if owners.isEmpty {
+                sourceOwners.removeValue(forKey: source)
+                sourcesToRemove.append(source)
+            } else {
+                sourceOwners[source] = owners
+            }
+        }
+        return sourcesToRemove
     }
 
     private func releaseSourcesLocked(for operationID: UUID) -> [URL] {

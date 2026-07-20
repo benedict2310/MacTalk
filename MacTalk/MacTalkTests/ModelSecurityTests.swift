@@ -605,6 +605,96 @@ final class ModelSecurityTests: XCTestCase {
                        "the shared source is eventually cleaned after B consumes it")
     }
 
+    func test_realSharedCompletedSourceIsRemovedWhenInheritedOwnerIsSupersededBeforeReturn() async throws {
+        let payload = Data("real shared bounded source".utf8)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        defer { server.stop() }
+        let spec = makeSpec(payload: payload, urls: [server.url])
+        let identity = DownloadArtifactIdentity(
+            schemaVersion: 1,
+            provider: "whisper",
+            modelID: spec.id,
+            sourceRepository: spec.source,
+            revision: spec.revision,
+            artifactPath: spec.filename,
+            filename: spec.filename,
+            sha256: spec.sha256,
+            sizeBytes: spec.sizeBytes
+        )
+        let identityDirectory = try BoundedModelDownloadTransport.identityDirectoryName(for: identity)
+        let completedSource = downloadsRoot.appendingPathComponent("completed", isDirectory: true)
+            .appendingPathComponent(identityDirectory, isDirectory: true)
+            .appendingPathComponent(spec.filename)
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let operationIDC = UUID()
+        let aVerified = DispatchSemaphore(value: 0)
+        let releaseA = DispatchSemaphore(value: 0)
+        let bInTransportBeforeURLReturn = DispatchSemaphore(value: 0)
+        let releaseBTransport = DispatchSemaphore(value: 0)
+        let aRejected = DispatchSemaphore(value: 0)
+        let responseCount = LockedBox(0)
+        let transport = BoundedModelDownloadTransport(
+            allowInsecureLoopback: true,
+            afterResponsePrepared: { _ in
+                var count = 0
+                responseCount.withLock {
+                    $0 += 1
+                    count = $0
+                }
+                guard count == 2 else { return }
+                bInTransportBeforeURLReturn.signal()
+                releaseBTransport.wait()
+            }
+        )
+        let firstCommitHook = LockedBox(true)
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                          transport: transport,
+                                          beforeCommitHook: { _ in
+            let shouldBlock = firstCommitHook.value
+            firstCommitHook.withLock { $0 = false }
+            guard shouldBlock else { return }
+            aVerified.signal()
+            releaseA.wait()
+        },
+                                          commitDecisionHook: { _, accepted in
+            if !accepted { aRejected.signal() }
+        })
+        let cTerminal = expectation(description: "C terminalizes")
+        let recorder = StateRecorder()
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            if id == operationIDC, case .failed(ModelDownloader.ErrorType.noURLs) = state {
+                cTerminal.fulfill()
+            }
+        }
+
+        downloader.start(spec: spec, operationID: operationIDA)
+        XCTAssertEqual(aVerified.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: completedSource.path),
+                      "A must receive and verify the real identity-bound completed source before it is delegated")
+        downloader.start(spec: spec, operationID: operationIDB)
+        XCTAssertEqual(bInTransportBeforeURLReturn.wait(timeout: .now() + 5), .success,
+                       "B must be in the real bounded transport before the completed URL returns")
+        releaseA.signal()
+        XCTAssertEqual(aRejected.wait(timeout: .now() + 5), .success)
+
+        let cSpec = makeSpec(payload: Data("different identity".utf8), urls: [], id: "different", filename: "different.bin")
+        downloader.start(spec: cSpec, operationID: operationIDC)
+        await fulfillment(of: [cTerminal], timeout: 5)
+        releaseBTransport.signal()
+        try await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completedSource.path),
+                       "the inherited real bounded completed source must be removed after B is superseded before installing a defer")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent(spec.filename).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent(cSpec.filename).path))
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in
+            (id == operationIDA || id == operationIDB) && state.isTerminal
+        })
+        XCTAssertEqual(recorder.taggedStates.filter { id, state in id == operationIDC && state.isTerminal }.count, 1)
+    }
+
     func test_supersedingInvalidStartCancelsOnlyOwnedPreviousOperation() async throws {
         let payload = Data("blocked A".utf8)
         let source = root.appendingPathComponent("blocked.part")
