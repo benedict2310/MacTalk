@@ -25,6 +25,24 @@ private final class AtomicString: @unchecked Sendable {
     }
 }
 
+private final class StateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [ParakeetModelDownloader.State] = []
+
+    func append(_ value: ParakeetModelDownloader.State) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    var snapshot: [ParakeetModelDownloader.State] {
+        lock.lock()
+        let result = values
+        lock.unlock()
+        return result
+    }
+}
+
 private final class AtomicCounter: @unchecked Sendable {
     private let mutex = NSLock()
     private var value = 0
@@ -70,6 +88,21 @@ private struct FailingParakeetTransport: BoundedModelDownloading {
 
     func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
         throw failure
+    }
+
+    func cancel(operationID: UUID) {}
+}
+
+private final class ProgressParakeetTransport: BoundedModelDownloading, @unchecked Sendable {
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        request.progress?(2, 3)
+        request.progress?(1, 3)
+        request.progress?(3, 3)
+        request.progress?(3, 3)
+        let bytes = request.identity.artifactPath == "a.bin" ? Data("abc".utf8) : Data("de".utf8)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-progress-\(UUID().uuidString)")
+        try bytes.write(to: url)
+        return url
     }
 
     func cancel(operationID: UUID) {}
@@ -308,6 +341,79 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertFalse(rootItems.contains { $0.lastPathComponent.hasPrefix(".backup-") })
         XCTAssertFalse(rootItems.contains { $0.lastPathComponent.hasPrefix(".staging-") })
         XCTAssertFalse(states.value.contains("cancelled"))
+    }
+
+    func test_aggregateProgressIsMonotonicAndUsesWholeManifestContract() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-progress-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entries = [
+            ParakeetManifestEntry(path: "a.bin", size: 3, sha256: SHA256.hash(data: Data("abc".utf8)).map { String(format: "%02x", $0) }.joined()),
+            ParakeetManifestEntry(path: "b.bin", size: 2, sha256: SHA256.hash(data: Data("de".utf8)).map { String(format: "%02x", $0) }.joined())
+        ]
+        let states = StateRecorder()
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries, transport: ProgressParakeetTransport())
+        downloader.onState = { @MainActor state in
+            states.append(state)
+        }
+        _ = try await downloader.downloadIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let observed = states.snapshot
+        let running = observed.compactMap { state -> (Double, Int, Int, String?)? in
+            guard case let .running(progress, index, count, file) = state else { return nil }
+            return (progress, index, count, file)
+        }
+        XCTAssertFalse(running.isEmpty)
+        XCTAssertTrue(zip(running, running.dropFirst()).allSatisfy { $0.0 <= $1.0 })
+        XCTAssertTrue(running.allSatisfy { $0.2 == entries.count })
+        XCTAssertTrue(running.contains { $0.1 == 0 && $0.3 == "a.bin" })
+        XCTAssertTrue(running.contains { $0.1 == 1 && $0.3 == "b.bin" })
+        XCTAssertTrue(running.contains { $0.0 == 0.4 })
+        XCTAssertTrue(running.contains { $0.0 == 0.6 })
+        XCTAssertTrue(observed.contains { if case .verifying = $0 { return true }; return false })
+        XCTAssertEqual(observed.filter { if case .done = $0 { return true }; return false }.count, 1)
+        XCTAssertEqual(observed.filter { if case .failed = $0 { return true }; return false }.count, 0)
+    }
+
+    func test_boundedErrorMatrixPreservesNamedArtifactPath() async throws {
+        let path = "nested/current.bin"
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: path, size: 3, sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let cases: [(BoundedModelDownloadError, (ParakeetModelDownloader.ErrorType) -> Bool)] = [
+            (.unexpectedStatus(401), { if case .unauthorized = $0 { return true }; return false }),
+            (.unexpectedStatus(403), { if case .unauthorized = $0 { return true }; return false }),
+            (.unexpectedStatus(429), { if case let .rateLimited(status) = $0 { return status == 429 }; return false }),
+            (.unexpectedStatus(503), { if case let .rateLimited(status) = $0 { return status == 503 }; return false }),
+            (.unexpectedStatus(418), { if case let .httpStatus(status) = $0 { return status == 418 }; return false }),
+            (.unexpectedContentLength(9), { if case let .unexpectedContentLength(length) = $0 { return length == 9 }; return false }),
+            (.downloadTooLarge, { if case .downloadTooLarge = $0 { return true }; return false }),
+            (.insufficientSpace(required: 4, available: 3), { if case .insufficientSpace = $0 { return true }; return false }),
+            (.invalidIdentity, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.duplicateOperationID, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.checksumMismatch, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.incomplete, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.invalidResumeState, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.metadataTooLarge, { if case let .corruptFile(value) = $0 { return value == path }; return false }),
+            (.invalidMirror, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.invalidContentEncoding, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.invalidContentRange, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.rangeNotHonored, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.rangeNotSatisfiable, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.interrupted, { if case let .downloadFailed(value) = $0 { return value == path }; return false }),
+            (.transport("socket"), { if case let .downloadFailed(value) = $0 { return value == path }; return false })
+        ]
+        for (index, item) in cases.enumerated() {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-errors-\\(index)-\\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: FailingParakeetTransport(failure: item.0))
+            do {
+                _ = try await downloader.downloadIfNeeded()
+                XCTFail("case \\(index) unexpectedly succeeded")
+            } catch let error as ParakeetModelDownloader.ErrorType {
+                XCTAssertTrue(item.1(error), "case \\(index) mapped to \\(error)")
+            } catch {
+                XCTFail("case \\(index) returned unexpected error \\(error)")
+            }
+        }
     }
 
     func test_remainingBytesUsesCheckedAggregateAccounting() throws {
