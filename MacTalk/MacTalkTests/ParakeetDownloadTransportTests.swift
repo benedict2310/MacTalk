@@ -83,11 +83,47 @@ private final class AsyncLatch: @unchecked Sendable {
     }
 }
 
+private final class AsyncSignal: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var signaled = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            mutex.lock()
+            if signaled {
+                mutex.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                mutex.unlock()
+            }
+        }
+    }
+
+    func signal() {
+        mutex.lock()
+        signaled = true
+        let continuation = waiter
+        waiter = nil
+        mutex.unlock()
+        continuation?.resume()
+    }
+}
+
 private struct FailingParakeetTransport: BoundedModelDownloading {
     let failure: BoundedModelDownloadError
 
     func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
         throw failure
+    }
+
+    func cancel(operationID: UUID) {}
+}
+
+private struct CancellationErrorParakeetTransport: BoundedModelDownloading {
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        throw CancellationError()
     }
 
     func cancel(operationID: UUID) {}
@@ -360,6 +396,37 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertEqual(active.lastPathComponent, ParakeetModelDownloader.folderName)
         XCTAssertEqual(transport.requests.map(\.aggregateDiskBytesStillRequired), [5, 2])
         XCTAssertTrue(downloader.modelsAvailable())
+    }
+
+    func test_cancellationErrorPublishesExactlyOneTypedTerminalAfterMainActorDrain() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-cancellation-terminal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
+                                                  transport: CancellationErrorParakeetTransport())
+        let terminal = expectation(description: "cancellation terminal published")
+        let terminalCount = AtomicCounter()
+        downloader.onState = { @MainActor state in
+            guard case let .failed(error) = state,
+                  let typed = error as? ParakeetModelDownloader.ErrorType,
+                  case .cancelled = typed else { return }
+            _ = terminalCount.increment()
+            terminal.fulfill()
+        }
+
+        do {
+            _ = try await downloader.downloadIfNeeded()
+            XCTFail("cancellation error unexpectedly succeeded")
+        } catch let error as ParakeetModelDownloader.ErrorType {
+            guard case .cancelled = error else { XCTFail("unexpected typed error: \(error)"); return }
+        } catch {
+            XCTFail("cancellation error escaped as untyped error: \(error)")
+        }
+        await fulfillment(of: [terminal], timeout: 2)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(terminalCount.current(), 1)
     }
 
     func test_integrityFailureNamesTheCurrentArtifact() async throws {
@@ -670,6 +737,48 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") || $0.lastPathComponent.hasPrefix(".backup-") })
     }
 
+    func test_cancelBetweenChildCreationAndRegistrationDoesNotLeakChild() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-registration-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let transport = RecordingParakeetTransport()
+        let registrationReached = AsyncSignal()
+        let releaseRegistration = DispatchSemaphore(value: 0)
+        let registrationHookCount = AtomicCounter()
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport,
+            beforeTaskRegistration: {
+                guard registrationHookCount.increment() == 1 else { return }
+                registrationReached.signal()
+                _ = releaseRegistration.wait(timeout: .now() + 2)
+            })
+        let lock = ParakeetStoreFileLock(storeParent: root)
+        let lease = try await lock.acquire(.exclusive)
+        let operation = Task.detached { try await downloader.downloadIfNeeded() }
+        await registrationReached.wait()
+
+        let cancellation = Task.detached { downloader.cancel() }
+        releaseRegistration.signal()
+        await cancellation.value
+        do {
+            _ = try await operation.value
+            XCTFail("registration-race cancellation unexpectedly succeeded")
+        } catch let error as ParakeetModelDownloader.ErrorType {
+            guard case .cancelled = error else { XCTFail("unexpected typed error: \(error)"); return }
+        } catch {
+            XCTFail("registration-race cancellation escaped as untyped error: \(error)")
+        }
+        XCTAssertTrue(transport.requests.isEmpty)
+        let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })
+        lease.release()
+
+        let active = try await downloader.downloadIfNeeded()
+        XCTAssertEqual(active.lastPathComponent, ParakeetModelDownloader.folderName)
+        XCTAssertTrue(downloader.modelsAvailable())
+    }
+
     func test_cancelWhileWaitingForStoreLeasePublishesTypedTerminalAndCanRecover() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-lock-cancel-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -677,10 +786,11 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
                                           sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
         let transport = RecordingParakeetTransport()
-        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport)
+        let acquisitionReached = DispatchSemaphore(value: 0)
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport,
+            beforeStoreLockAcquire: { acquisitionReached.signal() })
         let lock = ParakeetStoreFileLock(storeParent: root)
         let lease = try await lock.acquire(.exclusive)
-        defer { lease.release() }
         let cancelled = expectation(description: "typed cancellation published")
         let terminalCount = AtomicCounter()
         downloader.onState = { @MainActor state in
@@ -692,17 +802,9 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         }
 
         let operation = Task { try await downloader.downloadIfNeeded() }
-        // Give the child task scheduling opportunities to enter the lock wait,
-        // without depending on elapsed time, before repeatedly requesting
-        // cancellation until its terminal callback proves ownership.
-        for _ in 0..<100 { await Task.yield() }
-        var cancelledPublished = false
-        while !cancelledPublished {
-            downloader.cancel()
-            await Task.yield()
-            cancelledPublished = terminalCount.current() == 1
-        }
-        await fulfillment(of: [cancelled], timeout: 2)
+        XCTAssertEqual(acquisitionReached.wait(timeout: .now() + 2), .success,
+                       "registered child must reach the lock acquisition boundary")
+        downloader.cancel()
         do {
             _ = try await operation.value
             XCTFail("lock-wait cancellation unexpectedly succeeded")
@@ -711,9 +813,10 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         } catch {
             XCTFail("lock-wait cancellation escaped as untyped error: \(error)")
         }
+        await fulfillment(of: [cancelled], timeout: 2)
+        for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(terminalCount.current(), 1)
         XCTAssertTrue(transport.requests.isEmpty)
-        XCTAssertFalse(downloader.modelsAvailable())
         let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })
 

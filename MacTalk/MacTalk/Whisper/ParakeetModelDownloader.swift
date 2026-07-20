@@ -21,6 +21,60 @@ private final class ParakeetStateLock: @unchecked Sendable {
     func unlock() { mutex.unlock() }
 }
 
+private final class ParakeetTaskStartGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    private var cancelled = false
+    private var waiter: CheckedContinuation<Void, Error>?
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if cancelled || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else if opened {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        }, onCancel: { [self] in
+            cancel()
+        })
+    }
+
+    func open() {
+        lock.lock()
+        guard !opened, !cancelled else {
+            lock.unlock()
+            return
+        }
+        opened = true
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume()
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !opened, !cancelled else {
+            lock.unlock()
+            return
+        }
+        cancelled = true
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(throwing: CancellationError())
+    }
+}
+
 final class ParakeetModelDownloader: @unchecked Sendable {
     static let repository = GeneratedModelProvenance.parakeetRepository
     static let revision = GeneratedModelProvenance.parakeetRevision
@@ -103,6 +157,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private let transport: any BoundedModelDownloading
     private let storeLock: ParakeetStoreFileLock
     private let activationHook: (@Sendable () async -> Void)?
+    private let beforeTaskRegistration: (@Sendable () -> Void)?
+    private let beforeStoreLockAcquire: (@Sendable () -> Void)?
     private let stateLock = ParakeetStateLock()
     private let commitLock = ParakeetStateLock()
     private var operation: Task<URL, Error>?
@@ -115,7 +171,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     init(modelsRoot: URL? = nil, repoDirectory: URL? = nil,
          manifest: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
-         activationHook: (@Sendable () async -> Void)? = nil) {
+         activationHook: (@Sendable () async -> Void)? = nil,
+         beforeTaskRegistration: (@Sendable () -> Void)? = nil,
+         beforeStoreLockAcquire: (@Sendable () -> Void)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
@@ -123,6 +181,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.transport = transport
         self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
         self.activationHook = activationHook
+        self.beforeTaskRegistration = beforeTaskRegistration
+        self.beforeStoreLockAcquire = beforeStoreLockAcquire
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         // Construction-time recovery is exclusive. If another process owns the
@@ -186,15 +246,36 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         let (currentGeneration, previous, previousID) = claimNewOperation(operationID)
         previous?.cancel()
         if let previousID { transport.cancel(operationID: previousID) }
+        let startGate = ParakeetTaskStartGate()
         let task = Task { [weak self] () throws -> URL in
             guard let self else { throw ErrorType.cancelled }
-            return try await self.performDownload(generation: currentGeneration, operationID: operationID)
+            do {
+                try await startGate.wait()
+                try Task.checkCancellation()
+                try self.check(currentGeneration, operationID)
+                return try await self.performDownload(generation: currentGeneration, operationID: operationID)
+            } catch is CancellationError {
+                throw ErrorType.cancelled
+            }
         }
+        // This seam deliberately runs after child creation but before
+        // registration, outside both ownership and state locks.
+        beforeTaskRegistration?()
+        let registered: Bool
         stateLock.lock()
         if generation == currentGeneration && self.operationID == operationID {
             operation = task
+            registered = true
+        } else {
+            registered = false
         }
         stateLock.unlock()
+        if registered {
+            startGate.open()
+        } else {
+            task.cancel()
+            startGate.open()
+        }
         do {
             return try await task.value
         } catch {
@@ -245,6 +326,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private func performDownload(generation: Int, operationID: UUID) async throws -> URL {
         var currentArtifactPath: String?
         do {
+            beforeStoreLockAcquire?()
             let lease = try await storeLock.acquire(.exclusive)
             defer { lease.release() }
             try check(generation, operationID)
@@ -307,7 +389,6 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         } catch is CancellationError {
             let mapped = ErrorType.cancelled
             if claimFailure(mapped, generation: generation, operationID: operationID) {
-                publish(.failed(mapped), generation: generation)
                 throw mapped
             }
             throw ErrorType.cancelled
