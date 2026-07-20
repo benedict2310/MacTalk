@@ -694,6 +694,64 @@ final class ModelSecurityTests: XCTestCase {
         XCTAssertTrue(Set(transport.requestIDs()).isSubset(of: Set([operationID])))
     }
 
+    func test_commitFailureClaimsOwnershipBeforeObserverAllowsCancellation() async throws {
+        let payload = Data("commit failure fixture".utf8)
+        let source = root.appendingPathComponent("commit-failure.part")
+        try payload.write(to: source)
+        let transport = RecordingBoundedTransport()
+        transport.resultURL = source
+        let operationID = UUID()
+        let beforeCommitEntered = DispatchSemaphore(value: 0)
+        let observerEntered = DispatchSemaphore(value: 0)
+        let releaseObserver = DispatchSemaphore(value: 0)
+        let cancelFinished = DispatchSemaphore(value: 0)
+        let recorder = StateRecorder()
+        let failure = expectation(description: "actual commit failure")
+        let blockedModelRoot = modelRoot!
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                          transport: transport,
+                                          fileOperationObserver: { operation in
+            guard case .replace = operation else { return }
+            observerEntered.signal()
+            releaseObserver.wait()
+        },
+                                          beforeCommitHook: { _ in
+            try? FileManager.default.removeItem(at: blockedModelRoot)
+            beforeCommitEntered.signal()
+            FileManager.default.createFile(atPath: blockedModelRoot.path, contents: Data("not a directory".utf8))
+        })
+        downloader.onOperationState = { id, state in
+            guard id == operationID else { return }
+            recorder.appendTagged(id, state)
+            guard case .failed(let error) = state else { return }
+            if let typed = error as? ModelDownloader.ErrorType, case .cancelled = typed {
+                return
+            }
+            failure.fulfill()
+        }
+
+        downloader.start(spec: makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/commit-failure")!]),
+                         operationID: operationID)
+        XCTAssertEqual(beforeCommitEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(observerEntered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            downloader.cancel()
+            cancelFinished.signal()
+        }
+        XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success,
+                       "cancel must return while the outside observer is blocked")
+        XCTAssertTrue(transport.cancelled.isEmpty)
+        releaseObserver.signal()
+        await fulfillment(of: [failure], timeout: 2)
+
+        XCTAssertEqual(recorder.taggedStates.filter { $0.0 == operationID && $0.1.isTerminal }.count, 1)
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in
+            id == operationID && state == .failed(ModelDownloader.ErrorType.cancelled)
+        })
+        XCTAssertTrue(transport.cancelled.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent("fixture.bin").path))
+    }
+
     func test_commitDecisionHookCanBlockAfterCommitWithoutStealingTerminalOwnership() async throws {
         let payload = Data("decision hook fixture".utf8)
         let source = root.appendingPathComponent("decision.part")

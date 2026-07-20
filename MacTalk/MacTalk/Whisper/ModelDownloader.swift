@@ -202,9 +202,15 @@ final class ModelDownloader: @unchecked Sendable {
             notifyState(.verifying, generation: generation, operationID: operationID)
             try ModelIntegrityVerifier.validate(source: temporaryURL, spec: spec)
             beforeCommitHook?(spec)
-            try commitVerified(source: temporaryURL, destination: destination, spec: spec,
-                               generation: generation, operationID: operationID)
-            notifyState(.done(destination), generation: generation, operationID: operationID)
+            switch commitVerified(source: temporaryURL, destination: destination, spec: spec,
+                                   generation: generation, operationID: operationID) {
+            case .committed:
+                notifyState(.done(destination), generation: generation, operationID: operationID)
+            case .stale:
+                return
+            case .failed(let error):
+                notifyState(.failed(map(error)), generation: generation, operationID: operationID)
+            }
         } catch is CancellationError {
             publishTerminal(.failed(ErrorType.cancelled), generation: generation, operationID: operationID)
         } catch {
@@ -275,13 +281,19 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
+    private enum CommitResult {
+        case committed
+        case stale
+        case failed(Error)
+    }
+
     private func commitVerified(source: URL, destination: URL, spec: ModelSpec,
-                                generation: Int, operationID: UUID) throws {
+                                generation: Int, operationID: UUID) -> CommitResult {
         commitLock.lock()
         stateLock.lock()
         let accepted = self.generation == generation && self.operationID == operationID && !Task.isCancelled
-        var commitError: Error?
         var replacementAttempted = false
+        let result: CommitResult
         if accepted {
             replacementAttempted = true
             do {
@@ -290,9 +302,17 @@ final class ModelDownloader: @unchecked Sendable {
                 // linearization point. Cancellation after this point is a no-op.
                 operation = nil
                 self.operationID = nil
+                result = .committed
             } catch {
-                commitError = error
+                // A failed destination mutation is also terminal. Claim its
+                // ownership before releasing the lock so cancellation cannot
+                // replace the real I/O failure with .cancelled.
+                operation = nil
+                self.operationID = nil
+                result = .failed(error)
             }
+        } else {
+            result = .stale
         }
         stateLock.unlock()
         commitLock.unlock()
@@ -304,8 +324,7 @@ final class ModelDownloader: @unchecked Sendable {
             observe(.replace(source: source, destination: destination))
         }
         commitDecisionHook?(spec, accepted)
-        if let commitError { throw commitError }
-        guard accepted else { throw ErrorType.cancelled }
+        return result
     }
 
     private func removeLegacyResumeState(for spec: ModelSpec, generation: Int, operationID: UUID) {
