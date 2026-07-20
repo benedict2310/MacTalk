@@ -85,6 +85,50 @@ private final class GateBoundedTransport: BoundedModelDownloading, @unchecked Se
     func releaseFirst() { firstGate.yield(()) }
 }
 
+private final class CacheOperationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var events: [(String, URL)] = []
+
+    var operations: ModelDownloader.CacheOperations {
+        ModelDownloader.CacheOperations(
+            inspect: { [self] url in record("inspect", url); return false },
+            remove: { [self] url in record("remove", url) },
+            replace: { [self] source, destination, _ in record("replace", source); record("replace-destination", destination) }
+        )
+    }
+
+    private func record(_ operation: String, _ url: URL) {
+        lock.withLock { events.append((operation, url)) }
+    }
+}
+
+private final class BarrierBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var requests: [UUID] = []
+    private(set) var cancelled: [UUID] = []
+    let requestStarted = DispatchSemaphore(value: 0)
+    private let releaseStream: AsyncStream<Void>
+    private let releaseContinuation: AsyncStream<Void>.Continuation
+
+    init() {
+        let stream = AsyncStream<Void>.makeStream()
+        releaseStream = stream.stream
+        releaseContinuation = stream.continuation
+    }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        lock.withLock { requests.append(request.operationID) }
+        requestStarted.signal()
+        for await _ in releaseStream { break }
+        throw BoundedModelDownloadError.cancelled
+    }
+
+    func cancel(operationID: UUID) { lock.withLock { cancelled.append(operationID) } }
+    func releaseRequest() { releaseContinuation.yield(()) }
+    func requestIDs() -> [UUID] { lock.withLock { requests } }
+    func cancelledIDs() -> [UUID] { lock.withLock { cancelled } }
+}
+
 private final class RecordingBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var requests: [BoundedModelDownloadRequest] = []
@@ -460,6 +504,161 @@ final class ModelSecurityTests: XCTestCase {
 
         XCTAssertEqual(transport.cancelled, [operationIDA])
         XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent("shared.bin").path))
+    }
+
+    func test_validReplacementCancelsOnlyItsPriorOperation() async throws {
+        let payloadA = Data("replacement A".utf8)
+        let payloadB = Data("replacement B".utf8)
+        let sourceA = root.appendingPathComponent("replacement-a.part")
+        let sourceB = root.appendingPathComponent("replacement-b.part")
+        try payloadA.write(to: sourceA)
+        try payloadB.write(to: sourceB)
+        let transport = GateBoundedTransport(results: [sourceA, sourceB])
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport)
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let bDone = expectation(description: "valid replacement done")
+        downloader.onOperationState = { id, state in
+            if id == operationIDB, case .done = state { bDone.fulfill() }
+        }
+
+        downloader.start(spec: makeSpec(payload: payloadA, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "a.bin"), operationID: operationIDA)
+        XCTAssertEqual(transport.firstStarted.wait(timeout: .now() + 2), .success)
+        downloader.start(spec: makeSpec(payload: payloadB, urls: [URL(string: "https://example.invalid/b")!], id: "b", filename: "b.bin"), operationID: operationIDB)
+        transport.releaseFirst()
+        await fulfillment(of: [bDone], timeout: 2)
+
+        XCTAssertEqual(transport.cancelled, [operationIDA])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot.appendingPathComponent("a.bin").path))
+        XCTAssertEqual(try Data(contentsOf: modelRoot.appendingPathComponent("b.bin")), payloadB)
+    }
+
+    func test_badDigestAndNoURLReplacementsCancelPriorOperation() async throws {
+        for urls in [[URL(string: "https://example.invalid/bad-digest")!], []] {
+            let payload = Data("replacement fixture".utf8)
+            let source = root.appendingPathComponent("replacement-\(UUID().uuidString).part")
+            try payload.write(to: source)
+            let transport = GateBoundedTransport(results: [source])
+            let downloader = ModelDownloader(modelRoot: modelRoot.appendingPathComponent(UUID().uuidString), downloadsRoot: downloadsRoot, transport: transport)
+            let operationIDA = UUID()
+            let operationIDB = UUID()
+            let terminal = expectation(description: "replacement rejected")
+            downloader.onOperationState = { id, state in
+                guard id == operationIDB, case .failed = state else { return }
+                terminal.fulfill()
+            }
+
+            downloader.start(spec: makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "a.bin"), operationID: operationIDA)
+            XCTAssertEqual(transport.firstStarted.wait(timeout: .now() + 2), .success)
+            let specB = makeSpec(payload: payload, urls: urls, digest: urls.isEmpty ? nil : "", id: "b", filename: "b.bin")
+            downloader.start(spec: specB, operationID: operationIDB)
+            await fulfillment(of: [terminal], timeout: 2)
+            transport.releaseFirst()
+            XCTAssertEqual(transport.cancelled, [operationIDA])
+        }
+    }
+
+    func test_overlappingStartsAndCancelNeverCancelWrongOperationID() async throws {
+        let payload = Data("concurrent fixture".utf8)
+        let transport = BarrierBoundedTransport()
+        let operationIDA = UUID()
+        let operationIDB = UUID()
+        let bRegistered = DispatchSemaphore(value: 0)
+        let releaseBRegistration = DispatchSemaphore(value: 0)
+        let cancelStarted = DispatchSemaphore(value: 0)
+        let cancelFinished = DispatchSemaphore(value: 0)
+        let cancelledB = expectation(description: "B cancellation published")
+        let recorder = StateRecorder()
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport,
+                                          afterTaskRegistration: { id in
+            guard id == operationIDB else { return }
+            bRegistered.signal()
+            releaseBRegistration.wait()
+        })
+        downloader.onOperationState = { id, state in
+            recorder.appendTagged(id, state)
+            if id == operationIDB, case .failed(ModelDownloader.ErrorType.cancelled) = state { cancelledB.fulfill() }
+        }
+        let specA = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/a")!], id: "a", filename: "a.bin")
+        let specB = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/b")!], id: "b", filename: "b.bin")
+        downloader.start(spec: specA, operationID: operationIDA)
+        XCTAssertEqual(transport.requestStarted.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async { downloader.start(spec: specB, operationID: operationIDB) }
+        XCTAssertEqual(bRegistered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            cancelStarted.signal()
+            downloader.cancel()
+            cancelFinished.signal()
+        }
+        XCTAssertEqual(cancelStarted.wait(timeout: .now() + 2), .success)
+        releaseBRegistration.signal()
+        XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success)
+        await fulfillment(of: [cancelledB], timeout: 2)
+        transport.releaseRequest()
+        transport.releaseRequest()
+
+        let requested = transport.requestIDs()
+        let cancelled = transport.cancelledIDs()
+        XCTAssertTrue(requested.contains(operationIDA))
+        XCTAssertEqual(cancelled.first, operationIDA)
+        XCTAssertTrue(Set(cancelled).isSubset(of: Set([operationIDA, operationIDB])))
+        XCTAssertFalse(recorder.taggedStates.contains { id, state in id == operationIDA && state.isTerminal })
+    }
+
+    func test_cancelRacingRegisteredTaskCancelsThatTaskAndID() async throws {
+        let payload = Data("registration fixture".utf8)
+        let transport = BarrierBoundedTransport()
+        let registrationEntered = DispatchSemaphore(value: 0)
+        let releaseRegistration = DispatchSemaphore(value: 0)
+        let cancelStarted = DispatchSemaphore(value: 0)
+        let cancelFinished = DispatchSemaphore(value: 0)
+        let operationID = UUID()
+        let cancelledState = expectation(description: "registered operation cancelled")
+        let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot, transport: transport,
+                                          afterTaskRegistration: { id in
+            guard id == operationID else { return }
+            registrationEntered.signal()
+            releaseRegistration.wait()
+        })
+        downloader.onOperationState = { id, state in
+            if id == operationID, case .failed(ModelDownloader.ErrorType.cancelled) = state { cancelledState.fulfill() }
+        }
+        let spec = makeSpec(payload: payload, urls: [URL(string: "https://example.invalid/registration")!])
+        DispatchQueue.global().async { downloader.start(spec: spec, operationID: operationID) }
+        XCTAssertEqual(registrationEntered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async {
+            cancelStarted.signal()
+            downloader.cancel()
+            cancelFinished.signal()
+        }
+        XCTAssertEqual(cancelStarted.wait(timeout: .now() + 2), .success)
+        releaseRegistration.signal()
+        XCTAssertEqual(cancelFinished.wait(timeout: .now() + 2), .success)
+        await fulfillment(of: [cancelledState], timeout: 2)
+        transport.releaseRequest()
+
+        XCTAssertEqual(transport.cancelledIDs(), [operationID])
+        XCTAssertTrue(Set(transport.requestIDs()).isSubset(of: Set([operationID])))
+    }
+
+    func test_invalidFilenamesRejectBeforeAnyCacheOperationOrTransport() async throws {
+        let outside = root.appendingPathComponent("outside")
+        let sentinel = Data("do not touch".utf8)
+        try sentinel.write(to: outside)
+        let invalidFilenames = ["", ".", "..", "../outside", "nested/model.bin", "model" + "\0" + "bin"]
+        for filename in invalidFilenames {
+            let transport = RecordingBoundedTransport()
+            let recorder = CacheOperationRecorder()
+            let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
+                                              transport: transport, cacheOperations: recorder.operations)
+            let failed = expectation(description: "invalid filename rejected: \(filename.debugDescription)")
+            downloader.onState = { state in if case .failed = state { failed.fulfill() } }
+            downloader.start(spec: makeSpec(payload: Data("payload".utf8), urls: [URL(string: "https://example.invalid/model")!], filename: filename))
+            await fulfillment(of: [failed], timeout: 2)
+            XCTAssertTrue(recorder.events.isEmpty, filename.debugDescription)
+            XCTAssertTrue(transport.requestSnapshot().isEmpty, filename.debugDescription)
+            XCTAssertEqual(try Data(contentsOf: outside), sentinel, filename.debugDescription)
+        }
     }
 
     func test_invalidFilenamesNeverInspectTransportOrEscapeModelRoot() async throws {

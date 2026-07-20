@@ -29,6 +29,28 @@ final class ModelDownloader: @unchecked Sendable {
         }
     }
 
+    struct CacheOperations: @unchecked Sendable {
+        let inspect: @Sendable (URL) -> Bool
+        let remove: @Sendable (URL) throws -> Void
+        let replace: @Sendable (URL, URL, ModelSpec) throws -> Void
+
+        init(inspect: @escaping @Sendable (URL) -> Bool,
+             remove: @escaping @Sendable (URL) throws -> Void,
+             replace: @escaping @Sendable (URL, URL, ModelSpec) throws -> Void) {
+            self.inspect = inspect
+            self.remove = remove
+            self.replace = replace
+        }
+
+        static let live = CacheOperations(
+            inspect: { FileManager.default.fileExists(atPath: $0.path) },
+            remove: { try FileManager.default.removeItem(at: $0) },
+            replace: { source, destination, spec in
+                try ModelIntegrityVerifier.commitVerified(source: source, destination: destination, spec: spec)
+            }
+        )
+    }
+
     enum ErrorType: Swift.Error, LocalizedError, Sendable {
         case noURLs
         case invalidFilename
@@ -59,6 +81,8 @@ final class ModelDownloader: @unchecked Sendable {
     private let modelRoot: URL
     private let downloadsRoot: URL
     private let transport: any BoundedModelDownloading
+    private let cacheOperations: CacheOperations
+    private let afterTaskRegistration: (@Sendable (UUID) -> Void)?
     private var operation: Task<Void, Never>?
     private var generation = 0
     private var operationID: UUID?
@@ -66,19 +90,24 @@ final class ModelDownloader: @unchecked Sendable {
     private let commitLock = NSLock()
 
     init(modelRoot: URL? = nil, downloadsRoot: URL? = nil,
-         transport: any BoundedModelDownloading = BoundedModelDownloadTransport()) {
+         transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
+         cacheOperations: CacheOperations = .live,
+         afterTaskRegistration: (@Sendable (UUID) -> Void)? = nil) {
         self.modelRoot = modelRoot ?? ModelStore.modelsDir
         self.downloadsRoot = downloadsRoot ?? self.modelRoot.appendingPathComponent(".downloads", isDirectory: true)
         self.transport = transport
+        self.cacheOperations = cacheOperations
+        self.afterTaskRegistration = afterTaskRegistration
         try? FileManager.default.createDirectory(at: self.modelRoot, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
     }
 
     func start(spec: ModelSpec, operationID: UUID = UUID()) {
         let (currentGeneration, previousTask, previousID) = claimReplacingCurrent(with: operationID)
+        previousTask?.cancel()
+        if let previousID { transport.cancel(operationID: previousID) }
+
         if !isDirectChildFilename(spec.filename) {
-            previousTask?.cancel()
-            if let previousID { transport.cancel(operationID: previousID) }
             notifyState(.failed(ErrorType.invalidFilename), generation: currentGeneration, operationID: operationID)
             finishSynchronously(generation: currentGeneration, operationID: operationID)
             return
@@ -99,7 +128,7 @@ final class ModelDownloader: @unchecked Sendable {
         }
 
         let destination = modelRoot.appendingPathComponent(spec.filename)
-        if FileManager.default.fileExists(atPath: destination.path) {
+        if cacheOperations.inspect(destination) {
             do {
                 try ModelIntegrityVerifier.validate(source: destination, spec: spec)
                 commitLock.lock()
@@ -113,7 +142,7 @@ final class ModelDownloader: @unchecked Sendable {
                 commitLock.lock()
                 stateLock.lock()
                 let ownsCache = self.generation == currentGeneration && self.operationID == operationID
-                if ownsCache { try? FileManager.default.removeItem(at: destination) }
+                if ownsCache { try? cacheOperations.remove(destination) }
                 stateLock.unlock()
                 commitLock.unlock()
                 guard ownsCache else { return }
@@ -121,15 +150,14 @@ final class ModelDownloader: @unchecked Sendable {
         }
 
         notifyState(.running(progress: 0), generation: currentGeneration, operationID: operationID)
+        stateLock.lock()
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
         }
-        stateLock.lock()
-        let ownsTask = self.generation == currentGeneration && self.operationID == operationID
-        if ownsTask { operation = task }
+        operation = task
+        afterTaskRegistration?(operationID)
         stateLock.unlock()
-        if !ownsTask { task.cancel() }
     }
 
     func cancel() {
@@ -273,14 +301,14 @@ final class ModelDownloader: @unchecked Sendable {
         let accepted = self.generation == generation && self.operationID == operationID && !Task.isCancelled
         ModelIntegrityVerifier.runTestCommitDecisionHook(for: spec, accepted: accepted)
         guard accepted else { throw ErrorType.cancelled }
-        try ModelIntegrityVerifier.commitVerified(source: source, destination: destination, spec: spec)
+        try cacheOperations.replace(source, destination, spec)
     }
 
     private func removeLegacyResumeState(for spec: ModelSpec) {
         guard isSafeFilename(spec.id) else { return }
         for suffix in [".resume", ".resume.json"] {
             let url = downloadsRoot.appendingPathComponent(spec.id + suffix)
-            try? FileManager.default.removeItem(at: url)
+            try? cacheOperations.remove(url)
         }
     }
 
