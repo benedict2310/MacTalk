@@ -759,8 +759,8 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         await registrationReached.wait()
 
         let cancellation = Task.detached { downloader.cancel() }
-        releaseRegistration.signal()
         await cancellation.value
+        releaseRegistration.signal()
         do {
             _ = try await operation.value
             XCTFail("registration-race cancellation unexpectedly succeeded")
@@ -786,9 +786,13 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
                                           sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
         let transport = RecordingParakeetTransport()
-        let acquisitionReached = DispatchSemaphore(value: 0)
+        let contentionReached = DispatchSemaphore(value: 0)
+        let contentionCount = AtomicCounter()
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport,
-            beforeStoreLockAcquire: { acquisitionReached.signal() })
+            afterStoreLockContention: {
+                _ = contentionCount.increment()
+                contentionReached.signal()
+            })
         let lock = ParakeetStoreFileLock(storeParent: root)
         let lease = try await lock.acquire(.exclusive)
         let cancelled = expectation(description: "typed cancellation published")
@@ -802,8 +806,8 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         }
 
         let operation = Task { try await downloader.downloadIfNeeded() }
-        XCTAssertEqual(acquisitionReached.wait(timeout: .now() + 2), .success,
-                       "registered child must reach the lock acquisition boundary")
+        XCTAssertEqual(contentionReached.wait(timeout: .now() + 2), .success,
+                       "registered child must observe actual lock contention")
         downloader.cancel()
         do {
             _ = try await operation.value
@@ -816,6 +820,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 2)
         for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(terminalCount.current(), 1)
+        XCTAssertEqual(contentionCount.current(), 1)
         XCTAssertTrue(transport.requests.isEmpty)
         let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })

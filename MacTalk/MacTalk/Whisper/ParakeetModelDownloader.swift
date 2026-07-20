@@ -173,13 +173,15 @@ final class ParakeetModelDownloader: @unchecked Sendable {
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
          activationHook: (@Sendable () async -> Void)? = nil,
          beforeTaskRegistration: (@Sendable () -> Void)? = nil,
-         beforeStoreLockAcquire: (@Sendable () -> Void)? = nil) {
+         beforeStoreLockAcquire: (@Sendable () -> Void)? = nil,
+         afterStoreLockContention: (@Sendable () -> Void)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
         self.entries = manifest
         self.transport = transport
-        self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
+        self.storeLock = ParakeetStoreFileLock(storeParent: self.root, afterParentValidation: nil,
+                                               afterContention: afterStoreLockContention)
         self.activationHook = activationHook
         self.beforeTaskRegistration = beforeTaskRegistration
         self.beforeStoreLockAcquire = beforeStoreLockAcquire

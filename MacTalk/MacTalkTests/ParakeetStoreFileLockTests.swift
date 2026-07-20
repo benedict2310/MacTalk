@@ -3,6 +3,24 @@ import Foundation
 import XCTest
 @testable import MacTalk
 
+private final class LockTestCounter: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var value = 0
+
+    func increment() {
+        mutex.lock()
+        value += 1
+        mutex.unlock()
+    }
+
+    var current: Int {
+        mutex.lock()
+        let result = value
+        mutex.unlock()
+        return result
+    }
+}
+
 final class ParakeetStoreFileLockTests: XCTestCase {
     func test_exclusiveProcessesExcludeAndAcquireAfterRelease() async throws {
         let root = try makeTemporaryStore()
@@ -132,6 +150,34 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         held.release()
         let acquired = try await lock.acquire(.exclusive)
         acquired.release()
+    }
+
+    func test_afterContentionFiresOnlyForEagainAndBeforeRetry() async throws {
+        let root = try makeTemporaryStore()
+        let contention = DispatchSemaphore(value: 0)
+        let contentionCount = LockTestCounter()
+        let lock = ParakeetStoreFileLock(storeParent: root, afterParentValidation: nil,
+                                         afterContention: {
+                                             contentionCount.increment()
+                                             contention.signal()
+                                         })
+        let held = try await lock.acquire(.exclusive)
+        let waiting = Task { try await lock.acquire(.exclusive) }
+        XCTAssertEqual(contention.wait(timeout: .now() + 2), .success,
+                       "contention hook must follow a rejected nonblocking flock")
+        waiting.cancel()
+        do {
+            _ = try await waiting.value
+            XCTFail("cancelled lock acquisition unexpectedly succeeded")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertEqual(contentionCount.current, 1)
+        held.release()
+        let successor = try await lock.acquire(.exclusive)
+        successor.release()
+        XCTAssertEqual(contentionCount.current, 1,
+                       "successful acquisition must not invoke the contention hook")
     }
 
     func test_openBindsLockToValidatedParentDescriptorAcrossReplacement() async throws {

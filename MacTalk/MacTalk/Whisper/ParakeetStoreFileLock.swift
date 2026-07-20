@@ -139,17 +139,20 @@ struct ParakeetStoreFileLock: Sendable {
     let storeParent: URL
     private let afterParentValidation: (@Sendable () -> Void)?
     private let afterComponentOpened: (@Sendable (String) -> Void)?
+    private let afterContention: (@Sendable () -> Void)?
 
     init(storeParent: URL) {
         self.storeParent = storeParent
         self.afterParentValidation = nil
         self.afterComponentOpened = nil
+        self.afterContention = nil
     }
 
-    init(storeParent: URL, afterParentValidation: (@Sendable () -> Void)?, afterComponentOpened: (@Sendable (String) -> Void)? = nil) {
+    init(storeParent: URL, afterParentValidation: (@Sendable () -> Void)?, afterComponentOpened: (@Sendable (String) -> Void)? = nil, afterContention: (@Sendable () -> Void)? = nil) {
         self.storeParent = storeParent
         self.afterParentValidation = afterParentValidation
         self.afterComponentOpened = afterComponentOpened
+        self.afterContention = afterContention
     }
 
     /// Attempts one nonblocking acquisition. A nil result proves that the
@@ -205,6 +208,7 @@ struct ParakeetStoreFileLock: Sendable {
                 continue
             }
             if code == EAGAIN || code == EWOULDBLOCK {
+                afterContention?()
                 try await Task.sleep(for: .milliseconds(25))
                 continue
             }
