@@ -593,9 +593,26 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private func recoverInterruptedActivation() {
         guard !FileManager.default.fileExists(atPath: repoDirectory.path),
               let items = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
-        for backup in items.filter({ $0.lastPathComponent.hasPrefix(".backup-") }).sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-            do { try Self.validateActiveSet(at: backup, entries: entries); try FileManager.default.moveItem(at: backup, to: repoDirectory); break }
-            catch { try? FileManager.default.removeItem(at: backup) }
+        let backups = items.filter { $0.lastPathComponent.hasPrefix(".backup-") }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        for backup in backups {
+            do {
+                try Self.validateActiveSet(at: backup, entries: entries)
+            } catch {
+                try? FileManager.default.removeItem(at: backup)
+                continue
+            }
+            do {
+                try FileManager.default.moveItem(at: backup, to: repoDirectory)
+            } catch {
+                // A validated backup remains a recovery option if activation
+                // cannot restore it yet.
+                continue
+            }
+            for remaining in backups where remaining != backup {
+                try? FileManager.default.removeItem(at: remaining)
+            }
+            break
         }
     }
 
