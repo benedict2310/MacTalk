@@ -19,5 +19,6 @@ fi
 
 python3 scripts/generate-model-provenance.py --check
 bash scripts/tests/test_model_provenance_generation.sh
+bash scripts/tests/test_model_downloader_no_legacy.sh
 
 echo 'blocking security checks passed'

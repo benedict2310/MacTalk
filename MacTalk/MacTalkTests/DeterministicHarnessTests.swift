@@ -3,6 +3,24 @@ import CryptoKit
 @preconcurrency import AVFoundation
 @testable import MacTalk
 
+private final class DeterministicFailingTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let onRequest: (URL) -> Void
+    init(onRequest: @escaping (URL) -> Void) { self.onRequest = onRequest }
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        if let url = request.mirrors.first { onRequest(url) }
+        throw BoundedModelDownloadError.transport("Unexpected network request in deterministic lane")
+    }
+    func cancel(operationID: UUID) {}
+}
+
+private final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+    init(_ value: Value) { storage = value }
+    var value: Value { lock.lock(); defer { lock.unlock() }; return storage }
+    func withLock(_ body: (inout Value) -> Void) { lock.lock(); body(&storage); lock.unlock() }
+}
+
 final class DeterministicHarnessTests: XCTestCase {
     func test_scriptedASRProcessCancellationIsRecorded() async throws {
         let engine = DeterministicASREngine(script: DeterministicASRScript(processDelayNanoseconds: 5_000_000_000))
@@ -30,7 +48,7 @@ final class DeterministicHarnessTests: XCTestCase {
         XCTAssertEqual(engine.cancellationCount, 1)
     }
 
-    func test_downloaderFailsUnexpectedRequestsAtInjectedSessionBoundary() async throws {
+    func test_downloaderFailsUnexpectedRequestsAtInjectedTransportBoundary() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let downloads = root.appendingPathComponent("downloads")
         try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
@@ -48,8 +66,9 @@ final class DeterministicHarnessTests: XCTestCase {
             license: nil,
             languages: nil
         )
-        let trap = DeterministicNetworkTrap()
-        let downloader = ModelDownloader(session: trap.session(), modelRoot: root, downloadsRoot: downloads)
+        let requested = LockedValue<[URL]>([])
+        let downloader = ModelDownloader(modelRoot: root, downloadsRoot: downloads,
+                                         transport: DeterministicFailingTransport(onRequest: { url in requested.withLock { $0.append(url) } }))
         let failed = expectation(description: "unexpected request is rejected")
         downloader.onState = { state in
             if case .failed = state { failed.fulfill() }
@@ -57,7 +76,7 @@ final class DeterministicHarnessTests: XCTestCase {
 
         downloader.start(spec: spec)
         await fulfillment(of: [failed], timeout: 2)
-        XCTAssertEqual(trap.requests.map(\.url), spec.urls)
+        XCTAssertEqual(requested.value, spec.urls)
     }
 
     func test_audioFixturesAreStableAndIsolatedFakesFailClosed() throws {

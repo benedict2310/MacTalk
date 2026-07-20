@@ -1,6 +1,16 @@
 import XCTest
 @testable import MacTalk
 
+private final class FailingBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let onRequest: () -> Void
+    init(onRequest: @escaping () -> Void) { self.onRequest = onRequest }
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        onRequest()
+        throw URLError(.badURL)
+    }
+    func cancel(operationID: UUID) {}
+}
+
 final class ModelIntegrityTests: XCTestCase {
     private var directory: URL!
 
@@ -70,9 +80,8 @@ final class ModelIntegrityTests: XCTestCase {
         let requestStarted = expectation(description: "network must not start")
         requestStarted.isInverted = true
         let downloader = ModelDownloader(modelRoot: modelsRoot, downloadsRoot: downloadsRoot,
-                                         taskFactory: { _ in
+                                         transport: FailingBoundedTransport {
             requestStarted.fulfill()
-            throw URLError(.badURL)
         })
         let rejected = expectation(description: "missing digest rejected")
         downloader.onState = { state in
