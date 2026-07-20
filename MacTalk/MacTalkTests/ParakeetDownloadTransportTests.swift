@@ -413,7 +413,15 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         _ = try await seed.downloadIfNeeded()
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [badEntry], transport: transport,
             mirrorResolver: { _ in server.url.appendingPathComponent("bad.bin") })
-        do { _ = try await downloader.downloadIfNeeded(); XCTFail("wrong Content-Length must fail") } catch { }
+        do {
+            _ = try await downloader.downloadIfNeeded()
+            XCTFail("wrong Content-Length must fail")
+        } catch let error as ParakeetModelDownloader.ErrorType {
+            if case let .downloadFailed(path) = error { XCTAssertEqual(path, "bad.bin") }
+            else { XCTFail("wrong length returned unexpected typed error: \(error)") }
+        } catch {
+            XCTFail("wrong length returned untyped error: \(error)")
+        }
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(ParakeetModelDownloader.folderName).appendingPathComponent("old.bin")), old)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".staging-").path))
         let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
