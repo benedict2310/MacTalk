@@ -65,6 +65,12 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         BoundedModelDownloadRequest(identity: identity, mirrors: [server.url], workspaceRoot: root)
     }
 
+    private func destination(root: URL, identity: DownloadArtifactIdentity) throws -> URL {
+        root.appendingPathComponent("completed", isDirectory: true)
+            .appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: identity), isDirectory: true)
+            .appendingPathComponent(identity.filename)
+    }
+
     private func seedPrefix(payload: Data, count: Int, identity: DownloadArtifactIdentity, mirror: URL, root: URL, validator: String? = nil) throws {
         let slot = root
             .appendingPathComponent("partials", isDirectory: true)
@@ -213,12 +219,13 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let payload = Data("payload".utf8)
         let server = try LoopbackHTTPServer { _ in .init(headers: ["Content-Length": "999"], body: .fixed(payload)) }
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = identity(for: payload)
         do {
-            _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: identity(for: payload), server: server, root: root))
+            _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
             XCTFail("wrong length must fail")
         } catch BoundedModelDownloadError.transport { XCTFail("must not fall through to generic success") }
         catch { }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/fixture.bin").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try destination(root: root, identity: id).path))
     }
 
     func testChunkedExactBodyCompletesWithoutContentLength() async throws {
@@ -234,8 +241,9 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         let expected = Data(repeating: 8, count: 20_000)
         let server = try LoopbackHTTPServer { _ in .init(body: .chunked(payload, chunkSize: 101)) }
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
-        do { _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: identity(for: expected), server: server, root: root)); XCTFail("oversized body must fail") } catch { }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/fixture.bin").path))
+        let id = identity(for: expected)
+        do { _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root)); XCTFail("oversized body must fail") } catch { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try destination(root: root, identity: id).path))
         let slot = root.appendingPathComponent("partials", isDirectory: true)
             .appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: identity(for: expected)), isDirectory: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.appendingPathComponent("payload.part").path))
@@ -251,7 +259,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
             _ = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
             XCTFail("checksum failure must fail")
         } catch BoundedModelDownloadError.checksumMismatch { }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/fixture.bin").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try destination(root: root, identity: id).path))
         let slot = root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id), isDirectory: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.appendingPathComponent("payload.part").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.appendingPathComponent("payload.part.json").path))
@@ -448,7 +456,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
             XCTFail("malformed Content-Range must fail")
         } catch BoundedModelDownloadError.unexpectedStatus(206) { }
         XCTAssertEqual(server.requestLog.count, 2)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/fixture.bin").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try destination(root: root, identity: id).path))
     }
 
     func testFilenameAndArtifactPathMustBeStrictRelativeSafeValues() async throws {
@@ -473,14 +481,39 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertTrue(server.requestLog.isEmpty)
     }
 
-    func testDestinationRemainsDirectChildOfCompletedDirectory() async throws {
+    func testDistinctIdentitiesWithSameFilenameKeepSeparateApprovedDestinations() async throws {
+        let payloadA = Data("approved-a".utf8)
+        let payloadB = Data("approved-b".utf8)
+        let serverA = try LoopbackHTTPServer { _ in .init(body: .fixed(payloadA)) }
+        let serverB = try LoopbackHTTPServer { _ in .init(body: .fixed(payloadB)) }
+        defer { serverA.stop(); serverB.stop() }
+        let workspace = try root()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let idA = identity(for: payloadA, artifactPath: "component-a/shared.bin", filename: "shared.bin")
+        let idB = identity(for: payloadB, artifactPath: "component-b/shared.bin", filename: "shared.bin")
+        let requestA = BoundedModelDownloadRequest(identity: idA, mirrors: [serverA.url], workspaceRoot: workspace)
+        let requestB = BoundedModelDownloadRequest(identity: idB, mirrors: [serverB.url], workspaceRoot: workspace)
+        let transportA = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        let transportB = BoundedModelDownloadTransport(allowInsecureLoopback: true)
+        async let pathA = transportA.download(requestA)
+        async let pathB = transportB.download(requestB)
+        let (destinationA, destinationB) = try await (pathA, pathB)
+        XCTAssertNotEqual(destinationA, destinationB)
+        XCTAssertEqual(try Data(contentsOf: destinationA), payloadA)
+        XCTAssertEqual(try Data(contentsOf: destinationB), payloadB)
+        XCTAssertEqual(destinationA.deletingLastPathComponent().lastPathComponent, try BoundedModelDownloadTransport.identityDirectoryName(for: idA))
+        XCTAssertEqual(destinationB.deletingLastPathComponent().lastPathComponent, try BoundedModelDownloadTransport.identityDirectoryName(for: idB))
+    }
+
+    func testDestinationIsIdentityBoundChildOfCompletedDirectory() async throws {
         let payload = Data("payload".utf8)
         let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let id = identity(for: payload, artifactPath: "nested/artifact.bin", filename: "artifact.bin")
         let destination = try await BoundedModelDownloadTransport(allowInsecureLoopback: true).download(request(identity: id, server: server, root: root))
-        XCTAssertEqual(destination.deletingLastPathComponent().lastPathComponent, "completed")
         XCTAssertEqual(destination.lastPathComponent, "artifact.bin")
+        XCTAssertEqual(destination.deletingLastPathComponent().lastPathComponent, try BoundedModelDownloadTransport.identityDirectoryName(for: id))
+        XCTAssertEqual(destination.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, "completed")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested").path))
     }
 
@@ -603,7 +636,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         })
         do { _ = try await transport.download(request); XCTFail("cancellation after body must prevent promotion") }
         catch BoundedModelDownloadError.cancelled { }
-        let destination = root.appendingPathComponent("completed/fixture.bin")
+        let destination = try destination(root: root, identity: identity(for: payload))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
@@ -638,8 +671,9 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
             }
         })
         _ = try await transport.download(request)
-        XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent("completed/\(id.filename)")), payload)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("completed/\(id.filename)").path))
+        let movedDestination = moved.appendingPathComponent("completed").appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: id)).appendingPathComponent(id.filename)
+        XCTAssertEqual(try Data(contentsOf: movedDestination), payload)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try destination(root: root, identity: id).path))
     }
 
     func testAnchoredIntermediateDirectoryReplacementCannotCaptureWrites() async throws {

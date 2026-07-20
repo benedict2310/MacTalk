@@ -625,7 +625,7 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     private let rootFD: Int32
     private let partialsFD: Int32
     private let slotFD: Int32
-    private let completedFD: Int32
+    private let completedIdentityFD: Int32
 
     var existsPart: Bool { ioQueue.sync { accessAt(slotFD, name: "payload.part") } }
     var existsMetadata: Bool { ioQueue.sync { accessAt(slotFD, name: "payload.part.json") } }
@@ -641,10 +641,17 @@ private final class WorkspaceAnchor: @unchecked Sendable {
                 let openedSlotFD = try Self.openOrCreateDirectory(slotName, relativeTo: openedPartialsFD)
                 do {
                     let openedCompletedFD = try Self.openOrCreateDirectory("completed", relativeTo: openedRootFD)
-                    self.rootFD = openedRootFD
-                    self.partialsFD = openedPartialsFD
-                    self.slotFD = openedSlotFD
-                    self.completedFD = openedCompletedFD
+                    do {
+                        let openedCompletedIdentityFD = try Self.openOrCreateDirectory(slotName, relativeTo: openedCompletedFD)
+                        self.rootFD = openedRootFD
+                        self.partialsFD = openedPartialsFD
+                        self.slotFD = openedSlotFD
+                        self.completedIdentityFD = openedCompletedIdentityFD
+                        close(openedCompletedFD)
+                    } catch {
+                        close(openedCompletedFD)
+                        throw error
+                    }
                 } catch {
                     close(openedSlotFD)
                     throw error
@@ -659,12 +666,12 @@ private final class WorkspaceAnchor: @unchecked Sendable {
         }
         partURL = root.appendingPathComponent("partials", isDirectory: true).appendingPathComponent(slotName, isDirectory: true).appendingPathComponent("payload.part")
         metadataURL = partURL.deletingLastPathComponent().appendingPathComponent("payload.part.json")
-        destinationURL = root.appendingPathComponent("completed", isDirectory: true).appendingPathComponent(filename)
+        destinationURL = root.appendingPathComponent("completed", isDirectory: true).appendingPathComponent(slotName, isDirectory: true).appendingPathComponent(filename)
     }
 
     deinit {
         close(slotFD)
-        close(completedFD)
+        close(completedIdentityFD)
         close(partialsFD)
         close(rootFD)
     }
@@ -773,9 +780,9 @@ private final class WorkspaceAnchor: @unchecked Sendable {
     }
 
     private func promoteUnlocked() throws {
-        let existing = openat(completedFD, destinationURL.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let existing = openat(completedIdentityFD, destinationURL.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if existing >= 0 { var st = stat(); guard fstat(existing, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1 else { close(existing); throw BoundedModelDownloadError.transport("existing destination invalid") }; close(existing) }
-        guard renameat(slotFD, "payload.part", completedFD, destinationURL.lastPathComponent) == 0 else { throw BoundedModelDownloadError.transport("cannot promote payload") }
+        guard renameat(slotFD, "payload.part", completedIdentityFD, destinationURL.lastPathComponent) == 0 else { throw BoundedModelDownloadError.transport("cannot promote payload") }
     }
 
     private static func queue(for key: String) -> DispatchQueue {
