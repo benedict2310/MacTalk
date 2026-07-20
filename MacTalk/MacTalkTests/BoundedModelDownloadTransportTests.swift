@@ -101,6 +101,46 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         return url
     }
 
+    private func openFileDescriptorCount() -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? -1
+    }
+
+    func testResponsePreparationCancellationClosesPayloadDescriptor() async throws {
+        let payload = Data(repeating: 29, count: 4_096)
+        let server = try LoopbackHTTPServer { _ in .init(body: .fixed(payload)) }
+        defer { server.stop() }
+        let transportBox = TransportBox()
+        let hookCount = RequestCounter()
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true, afterResponsePrepared: { operation in
+            _ = hookCount.incrementAndRead()
+            transportBox.transport?.cancelGeneration(operation)
+        })
+        transportBox.transport = transport
+        let baseline = openFileDescriptorCount()
+        for _ in 0..<20 {
+            let workspace = try root()
+            let request = BoundedModelDownloadRequest(identity: identity(for: payload), mirrors: [server.url], workspaceRoot: workspace)
+            do {
+                _ = try await transport.download(request)
+                XCTFail("response-boundary cancellation must fail")
+            } catch BoundedModelDownloadError.cancelled {
+                // expected
+            }
+            try? FileManager.default.removeItem(at: workspace)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(hookCount.read(), 20)
+        XCTAssertEqual(openFileDescriptorCount(), baseline, "response-boundary cancellation leaked a payload descriptor")
+        XCTAssertTrue(server.requestLog.count >= 20)
+    }
+
+    func testOfficialCredentialPolicyRejectsNonDefaultHTTPSPort() {
+        XCTAssertTrue(BoundedModelDownloadTransport.isOfficialCredentialURL(URL(string: "https://huggingface.co/model")!))
+        XCTAssertTrue(BoundedModelDownloadTransport.isOfficialCredentialURL(URL(string: "https://huggingface.co:443/model")!))
+        XCTAssertFalse(BoundedModelDownloadTransport.isOfficialCredentialURL(URL(string: "https://huggingface.co:444/model")!))
+        XCTAssertFalse(BoundedModelDownloadTransport.isOfficialCredentialURL(URL(string: "http://huggingface.co/model")!))
+    }
+
     func testSeparateTransportInstancesSerializeSlotThroughPromotion() async throws {
         let workspace = try root()
         defer { try? FileManager.default.removeItem(at: workspace) }

@@ -100,6 +100,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
     private let sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)?
     private let afterGenerationClaim: (@Sendable (UInt64) -> Void)?
     private let beforeEntry: (@Sendable () async -> Void)?
+    fileprivate let afterResponsePrepared: (@Sendable (UInt64) -> Void)?
     private struct State {
         var nextGeneration: UInt64 = 0
         var activeGeneration: UInt64?
@@ -119,13 +120,15 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
          allowTestCredentialsOnLoopback: Bool = false,
          sessionFactory: (@Sendable (URLSessionConfiguration, URLSessionDelegate) -> URLSession)? = nil,
          afterGenerationClaim: (@Sendable (UInt64) -> Void)? = nil,
-         beforeEntry: (@Sendable () async -> Void)? = nil) {
+         beforeEntry: (@Sendable () async -> Void)? = nil,
+         afterResponsePrepared: (@Sendable (UInt64) -> Void)? = nil) {
         self.capacity = capacity
         self.allowInsecureLoopback = allowInsecureLoopback
         self.allowTestCredentialsOnLoopback = allowTestCredentialsOnLoopback
         self.sessionFactory = sessionFactory
         self.afterGenerationClaim = afterGenerationClaim
         self.beforeEntry = beforeEntry
+        self.afterResponsePrepared = afterResponsePrepared
     }
 
     /// Returns the promoted path for compatibility. Callers must reopen and
@@ -238,7 +241,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         throw lastError ?? operationError(operation)
     }
 
-    fileprivate func cancelGeneration(_ generation: UInt64) {
+    func cancelGeneration(_ generation: UInt64) {
         let task = state.withLock { state -> URLSessionDataTask? in
             // Claiming is the commit linearization point. A cancellation that
             // arrives after it must not turn a committed operation into a
@@ -288,7 +291,7 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
             if let validator { urlRequest.setValue(validator, forHTTPHeaderField: "If-Range") }
         }
         if let token = request.credentialToken,
-           isOfficialCredentialURL(mirror) || (allowTestCredentialsOnLoopback && isLoopbackHTTPURL(mirror)) {
+           Self.isOfficialCredentialURL(mirror) || (allowTestCredentialsOnLoopback && isLoopbackHTTPURL(mirror)) {
             urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         let task = session.dataTask(with: urlRequest)
@@ -568,8 +571,11 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         return value
     }
 
-    private func isOfficialCredentialURL(_ url: URL) -> Bool {
-        url.scheme?.lowercased() == "https" && url.host?.lowercased() == "huggingface.co" && url.user == nil
+    static func isOfficialCredentialURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https" &&
+            url.host?.lowercased() == "huggingface.co" &&
+            (url.port == nil || url.port == 443) &&
+            url.user == nil
     }
 
     private func isLoopbackHTTPURL(_ url: URL) -> Bool {
@@ -916,18 +922,31 @@ private final class AttemptDelegate: NSObject, URLSessionDataDelegate, URLSessio
         guard let transport else { completionHandler(.cancel); fail(BoundedModelDownloadError.superseded); return }
         let validator = Self.strongValidator(from: http)
         do {
-            let opened = try transport.withCurrentOperation(operation) {
-                let opened = try anchor.openPart(readOnly: false)
-                guard opened >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
-                do {
-                    try anchor.persistMetadata(.init(identity: request.identity, mirror: mirror.absoluteString, validator: validator))
-                } catch {
-                    _ = close(opened)
-                    throw error
-                }
-                return opened
+            var openedFD: Int32 = -1
+            defer {
+                if openedFD >= 0 { _ = close(openedFD) }
             }
-            lock.lock(); fd = opened; lock.unlock()
+            let opened = try anchor.openPart(readOnly: false)
+            guard opened >= 0 else { throw BoundedModelDownloadError.transport("cannot open partial") }
+            openedFD = opened
+            try anchor.persistMetadata(.init(identity: request.identity, mirror: mirror.absoluteString, validator: validator))
+            // This internal hook deliberately runs while the local RAII owner
+            // still holds the descriptor. Tests use it to supersede/cancel at
+            // the exact response boundary where the old implementation leaked.
+            transport.afterResponsePrepared?(operation)
+            // withCurrentOperation performs the trailing generation check after
+            // the hook. A failed check leaves openedFD local and defer closes it.
+            _ = try transport.withCurrentOperation(operation) { () }
+            // Coordinate adoption with finish(). If cancellation completed the
+            // delegate while the descriptor was local, leave it for defer.
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                throw BoundedModelDownloadError.cancelled
+            }
+            fd = opened
+            openedFD = -1
+            lock.unlock()
         } catch {
             completionHandler(.cancel); fail(error); return
         }
