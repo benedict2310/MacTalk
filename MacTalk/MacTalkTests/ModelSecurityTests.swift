@@ -85,6 +85,35 @@ private final class SharedSourceBoundedTransport: BoundedModelDownloading, @unch
     func releaseSecond() { secondContinuation.yield(()) }
 }
 
+private final class DownloadCompletionSignalingTransport: BoundedModelDownloading, @unchecked Sendable {
+    private let wrapped: BoundedModelDownloading
+    private let signaledOperationID: UUID
+    let downloadReturned = DispatchSemaphore(value: 0)
+
+    init(wrapping wrapped: BoundedModelDownloading, signaledOperationID: UUID) {
+        self.wrapped = wrapped
+        self.signaledOperationID = signaledOperationID
+    }
+
+    func download(_ request: BoundedModelDownloadRequest) async throws -> URL {
+        do {
+            let result = try await wrapped.download(request)
+            signalIfNeeded(for: request.operationID)
+            return result
+        } catch {
+            signalIfNeeded(for: request.operationID)
+            throw error
+        }
+    }
+
+    private func signalIfNeeded(for operationID: UUID) {
+        guard operationID == signaledOperationID else { return }
+        downloadReturned.signal()
+    }
+
+    func cancel(operationID: UUID) { wrapped.cancel(operationID: operationID) }
+}
+
 private final class GateBoundedTransport: BoundedModelDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private var results: [URL]
@@ -634,7 +663,7 @@ final class ModelSecurityTests: XCTestCase {
         let releaseBTransport = DispatchSemaphore(value: 0)
         let aRejected = DispatchSemaphore(value: 0)
         let responseCount = LockedBox(0)
-        let transport = BoundedModelDownloadTransport(
+        let boundedTransport = BoundedModelDownloadTransport(
             allowInsecureLoopback: true,
             afterResponsePrepared: { _ in
                 var count = 0
@@ -646,6 +675,10 @@ final class ModelSecurityTests: XCTestCase {
                 bInTransportBeforeURLReturn.signal()
                 releaseBTransport.wait()
             }
+        )
+        let transport = DownloadCompletionSignalingTransport(
+            wrapping: boundedTransport,
+            signaledOperationID: operationIDB
         )
         let firstCommitHook = LockedBox(true)
         let downloader = ModelDownloader(modelRoot: modelRoot, downloadsRoot: downloadsRoot,
@@ -683,7 +716,8 @@ final class ModelSecurityTests: XCTestCase {
         downloader.start(spec: cSpec, operationID: operationIDC)
         await fulfillment(of: [cTerminal], timeout: 5)
         releaseBTransport.signal()
-        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(transport.downloadReturned.wait(timeout: .now() + 5), .success,
+                       "B's real bounded transport download must return or throw before cleanup is asserted")
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: completedSource.path),
                        "the inherited real bounded completed source must be removed after B is superseded before installing a defer")
