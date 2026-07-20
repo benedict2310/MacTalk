@@ -16,6 +16,16 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         var transport: BoundedModelDownloadTransport?
     }
 
+    private final class StringBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedValue: String?
+
+        var value: String? {
+            get { lock.lock(); defer { lock.unlock() }; return storedValue }
+            set { lock.lock(); storedValue = newValue; lock.unlock() }
+        }
+    }
+
     private final class RequestCounter: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0
@@ -165,7 +175,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertEqual(claimReached.wait(timeout: .now() + 5), .success)
         let secondTask = Task { try await second.download(secondRequest) }
         try await Task.sleep(for: .milliseconds(100))
-        secondTask.cancel()
+        second.cancel(operationID: secondRequest.operationID)
         do {
             _ = try await secondTask.value
             XCTFail("a task canceled while waiting for the slot lock must fail")
@@ -183,6 +193,7 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertEqual(BoundedModelDownloadTransport.validValidator("\"opaque-tag\""), "\"opaque-tag\"")
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("W/\"opaque-tag\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"embedded\"quote\""))
+        XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"\(String(repeating: "x", count: 2_000))\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"line\u{000d}\u{000a}break\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"control\u{0001}\""))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("\"trailing\" "))
@@ -192,6 +203,62 @@ final class BoundedModelDownloadTransportTests: XCTestCase {
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:37 GMT "))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sun, 06 Nov 1994 08:49:60 GMT"))
         XCTAssertNil(BoundedModelDownloadTransport.validValidator("Sunday, 06-Nov-94 08:49:37 GMT"))
+    }
+
+    func testOversizedMetadataIdentityIsRejectedBeforeTempCreation() throws {
+        let payload = Data("metadata-cap".utf8)
+        let base = identity(for: payload)
+        let oversized = DownloadArtifactIdentity(
+            schemaVersion: base.schemaVersion,
+            provider: String(repeating: "p", count: 70_000),
+            modelID: base.modelID,
+            sourceRepository: base.sourceRepository,
+            revision: base.revision,
+            artifactPath: base.artifactPath,
+            filename: base.filename,
+            sha256: base.sha256,
+            sizeBytes: base.sizeBytes
+        )
+        let metadata = BoundedModelDownloadTransport.PartialMetadata(identity: oversized, mirror: "https://huggingface.co/model", validator: nil)
+        XCTAssertThrowsError(try BoundedModelDownloadTransport.encodePartialMetadata(metadata)) { error in
+            XCTAssertEqual(error as? BoundedModelDownloadError, .metadataTooLarge)
+        }
+    }
+
+    func testOversizedETagIsNotPersistedOrUsedForResume() async throws {
+        let payload = Data(repeating: 7, count: 32_000)
+        let oversizedETag = "\"\(String(repeating: "e", count: 2_000))\""
+        let counter = RequestCounter()
+        let metadataBox = StringBox()
+        let claimReached = DispatchSemaphore(value: 0)
+        let releaseClaim = DispatchSemaphore(value: 0)
+        let workspace = try root(); defer { try? FileManager.default.removeItem(at: workspace) }
+        let artifact = identity(for: payload)
+        let slot = workspace.appendingPathComponent("partials", isDirectory: true)
+            .appendingPathComponent(try BoundedModelDownloadTransport.identityDirectoryName(for: artifact), isDirectory: true)
+        let server = try LoopbackHTTPServer { request in
+            _ = counter.incrementAndRead()
+            XCTAssertEqual(request.headers["range"], "bytes=9000-")
+            XCTAssertNil(request.headers["if-range"])
+            return .init(status: 206, headers: ["ETag": oversizedETag, "Content-Length": "23000"], body: .fixed(Data(payload.dropFirst(9_000))), contentRange: "bytes 9000-31999/32000")
+        }
+        try seedPrefix(payload: payload, count: 9_000, identity: artifact, mirror: server.url, root: workspace)
+        let transport = BoundedModelDownloadTransport(allowInsecureLoopback: true, afterGenerationClaim: { _ in
+            let metadataURL = slot.appendingPathComponent("payload.part.json")
+            if let metadata = try? JSONDecoder().decode(BoundedModelDownloadTransport.PartialMetadata.self, from: Data(contentsOf: metadataURL)) {
+                metadataBox.value = metadata.validator
+            }
+            claimReached.signal()
+            _ = releaseClaim.wait(timeout: .now() + 5)
+        })
+        let downloadRequest = request(identity: artifact, server: server, root: workspace)
+        let destinationTask = Task { try await transport.download(downloadRequest) }
+        XCTAssertEqual(claimReached.wait(timeout: .now() + 5), .success)
+        XCTAssertNil(metadataBox.value, "oversized validators must not be persisted")
+        releaseClaim.signal()
+        let destination = try await destinationTask.value
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertEqual(counter.read(), 1)
     }
 
     func testProductionTransportRejectsInsecureMirrors() async throws {

@@ -77,6 +77,7 @@ enum BoundedModelDownloadError: Error, Equatable, Sendable {
     case checksumMismatch
     case incomplete
     case invalidResumeState
+    case metadataTooLarge
     case transport(String)
 }
 
@@ -178,7 +179,9 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         // failure cleanup.
         let slotLease: TransportSlotLease
         do {
-            slotLease = try await TransportSlotLease.acquire(anchor: anchor)
+            slotLease = try await TransportSlotLease.acquire(anchor: anchor) {
+                try self.requireCurrent(operation)
+            }
         } catch is CancellationError {
             throw BoundedModelDownloadError.cancelled
         }
@@ -525,11 +528,22 @@ final class BoundedModelDownloadTransport: NSObject, @unchecked Sendable {
         let validator: String?
     }
 
+    static let maximumMetadataBytes = 64 * 1024
+
+    static func encodePartialMetadata(_ metadata: PartialMetadata) throws -> Data {
+        let data = try JSONEncoder().encode(metadata)
+        guard data.count <= maximumMetadataBytes else {
+            throw BoundedModelDownloadError.metadataTooLarge
+        }
+        return data
+    }
+
     static func validValidator(_ value: String) -> String? {
         // Resume validators must be strong and byte-stable. An ETag is only
         // accepted in its exact quoted form; escaped/interior quotes and all
         // C0/DEL controls are rejected rather than normalized.
         let bytes = Array(value.utf8)
+        guard bytes.count <= 1_024 else { return nil }
         if bytes.first == 0x22, bytes.last == 0x22, bytes.count >= 2 {
             let opaque = bytes.dropFirst().dropLast()
             guard opaque.allSatisfy({ byte in
@@ -571,7 +585,7 @@ private final class TransportSlotLease: @unchecked Sendable {
         self.fileDescriptor = fileDescriptor
     }
 
-    static func acquire(anchor: WorkspaceAnchor) async throws -> TransportSlotLease {
+    static func acquire(anchor: WorkspaceAnchor, shouldContinue: @escaping @Sendable () throws -> Void) async throws -> TransportSlotLease {
         let fd = try anchor.openTransportLock()
         var closeOnExit = true
         defer {
@@ -579,9 +593,11 @@ private final class TransportSlotLease: @unchecked Sendable {
         }
         while true {
             try Task.checkCancellation()
+            try shouldContinue()
             if flock(fd, LOCK_EX | LOCK_NB) == 0 {
                 do {
                     try Task.checkCancellation()
+                    try shouldContinue()
                 } catch {
                     _ = flock(fd, LOCK_UN)
                     throw error
@@ -595,6 +611,7 @@ private final class TransportSlotLease: @unchecked Sendable {
                 throw BoundedModelDownloadError.transport("cannot lock transport slot")
             }
             try await Task.sleep(for: .milliseconds(25))
+            try shouldContinue()
         }
     }
 
@@ -741,7 +758,7 @@ private final class WorkspaceAnchor: @unchecked Sendable {
             let fd = openat(slotFD, "payload.part.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw BoundedModelDownloadError.invalidResumeState }
             defer { close(fd) }
-            var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, st.st_size >= 0, st.st_size <= maxBytes else { throw BoundedModelDownloadError.invalidResumeState }
+            var st = stat(); guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), (st.st_mode & 0o777) == 0o600, st.st_nlink == 1, st.st_size >= 0, st.st_size <= min(maxBytes, BoundedModelDownloadTransport.maximumMetadataBytes) else { throw BoundedModelDownloadError.invalidResumeState }
             var data = Data(capacity: Int(st.st_size)); var bytes = [UInt8](repeating: 0, count: min(65536, maxBytes))
             while true { let n = read(fd, &bytes, bytes.count); if n < 0 { throw BoundedModelDownloadError.invalidResumeState }; if n == 0 { break }; data.append(contentsOf: bytes[0..<n]); if data.count > maxBytes { throw BoundedModelDownloadError.invalidResumeState } }
             return data
@@ -750,7 +767,7 @@ private final class WorkspaceAnchor: @unchecked Sendable {
 
     func persistMetadata(_ metadata: BoundedModelDownloadTransport.PartialMetadata) throws {
         try ioQueue.sync {
-            let data = try JSONEncoder().encode(metadata)
+            let data = try BoundedModelDownloadTransport.encodePartialMetadata(metadata)
             let temp = ".payload.part.json.tmp-\(UUID().uuidString)"
             let fd = openat(slotFD, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
             guard fd >= 0 else { throw BoundedModelDownloadError.transport("cannot create metadata") }
