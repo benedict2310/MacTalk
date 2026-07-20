@@ -263,6 +263,50 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertEqual(observedPath.value, entry.path)
     }
 
+    func test_cancelBlockedAtActivationBodyCannotStealCommittedTerminal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-activation-cancel-race-\\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let bodyEntered = AsyncLatch()
+        let releaseBody = AsyncLatch()
+        let terminals = AtomicCounter()
+        let states = AtomicString()
+        let downloader = ParakeetModelDownloader(
+            modelsRoot: root,
+            manifest: [entry],
+            transport: RecordingParakeetTransport(),
+            activationBodyHook: {
+                bodyEntered.signal()
+                await releaseBody.wait()
+            })
+        downloader.onState = { @MainActor state in
+            switch state {
+            case .done, .failed:
+                _ = terminals.increment()
+            default:
+                states.set(String(describing: state))
+            }
+        }
+
+        let operation = Task { try await downloader.downloadIfNeeded() }
+        await bodyEntered.wait()
+        let cancellation = Task { downloader.cancel() }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(cancellation.isCancelled, "cancel must wait for the activation ownership boundary")
+        releaseBody.signal()
+
+        _ = try await operation.value
+        await cancellation.value
+        XCTAssertEqual(terminals.current(), 1)
+        XCTAssertTrue(downloader.modelsAvailable())
+        let rootItems = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertFalse(rootItems.contains { $0.lastPathComponent.hasPrefix(".backup-") })
+        XCTAssertFalse(rootItems.contains { $0.lastPathComponent.hasPrefix(".staging-") })
+        XCTAssertFalse(states.value.contains("cancelled"))
+    }
+
     func test_remainingBytesUsesCheckedAggregateAccounting() throws {
         let entries = [
             ParakeetManifestEntry(path: "a", size: 2, sha256: String(repeating: "a", count: 64)),

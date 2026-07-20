@@ -103,7 +103,12 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     private let transport: any BoundedModelDownloading
     private let storeLock: ParakeetStoreFileLock
     private let activationHook: (@Sendable () async -> Void)?
+    // This is a controlled test seam for blocking immediately after terminal
+    // activation ownership is claimed. Unlike observational callbacks, it is
+    // deliberately part of the commit boundary and never escapes production.
+    private let activationBodyHook: (@Sendable () async -> Void)?
     private let stateLock = ParakeetStateLock()
+    private let commitLock = ParakeetStateLock()
     private var operation: Task<URL, Error>?
     private var operationID: UUID?
     private var generation = 0
@@ -114,7 +119,8 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     init(modelsRoot: URL? = nil, repoDirectory: URL? = nil,
          manifest: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
-         activationHook: (@Sendable () async -> Void)? = nil) {
+         activationHook: (@Sendable () async -> Void)? = nil,
+         activationBodyHook: (@Sendable () async -> Void)? = nil) {
         self.root = modelsRoot ?? Self.modelsDirectory
         self.repoDirectory = repoDirectory ?? self.root.appendingPathComponent(Self.folderName, isDirectory: true)
         self.downloadsRoot = self.root.appendingPathComponent(".downloads", isDirectory: true)
@@ -122,6 +128,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.transport = transport
         self.storeLock = ParakeetStoreFileLock(storeParent: self.root)
         self.activationHook = activationHook
+        self.activationBodyHook = activationBodyHook
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
         // Construction-time recovery is exclusive. If another process owns the
@@ -202,9 +209,11 @@ final class ParakeetModelDownloader: @unchecked Sendable {
     }
 
     func cancel() {
+        commitLock.lock()
         stateLock.lock()
         guard let currentID = operationID, !terminalClaimed else {
             stateLock.unlock()
+            commitLock.unlock()
             return
         }
         let task = operation
@@ -214,12 +223,16 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         operationID = nil
         terminalClaimed = true
         stateLock.unlock()
+        commitLock.unlock()
+        // Cancellation is intentionally outside both ownership and state
+        // locks; transports may perform arbitrary I/O or callbacks.
         task?.cancel()
         transport.cancel(operationID: currentID)
         publish(.failed(ErrorType.cancelled), generation: cancelledGeneration)
     }
 
     private func claimNewOperation(_ id: UUID) -> (Int, Task<URL, Error>?, UUID?) {
+        commitLock.lock()
         stateLock.lock()
         generation += 1
         let current = generation
@@ -231,6 +244,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         activationClaimed = false
         lastProgress = 0
         stateLock.unlock()
+        commitLock.unlock()
         return (current, previous, previousID)
     }
 
@@ -293,11 +307,16 @@ final class ParakeetModelDownloader: @unchecked Sendable {
             // rename and its rollback against supersession/cancellation.
             if let activationHook { await activationHook() }
             try check(generation, operationID)
-            try claimActivation(generation: generation, operationID: operationID)
-            try activate(staging: staging)
-            activated = true
-            guard claimDone(generation: generation, operationID: operationID) else { throw ErrorType.cancelled }
-            return repoDirectory
+            do {
+                try await commitActivation(staging: staging, generation: generation, operationID: operationID, artifactPath: currentArtifactPath)
+                activated = true
+                return repoDirectory
+            } catch let error as ActivationCommitError {
+                switch error {
+                case .failed(let underlying): throw underlying
+                case .cancelled: throw ErrorType.cancelled
+                }
+            }
         } catch is CancellationError {
             throw ErrorType.cancelled
         } catch {
@@ -315,45 +334,88 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         guard generation == expectedGeneration, operationID == expectedID, !terminalClaimed else { throw ErrorType.cancelled }
     }
 
-    private func claimActivation(generation: Int, operationID: UUID) throws {
+    private enum ActivationCommitError: Error {
+        case failed(Error)
+        case cancelled
+    }
+
+    private func commitActivation(staging: URL, generation: Int, operationID: UUID, artifactPath: String?) async throws {
+        commitLock.lock()
+        do {
+            try claimActivationLocked(generation: generation, operationID: operationID)
+            // This is a narrow deterministic seam, not an observational
+            // callback. It may block the commit boundary so tests can prove
+            // cancellation cannot supersede activation body mutations.
+            if let activationBodyHook { await activationBodyHook() }
+            try activate(staging: staging)
+            guard claimDoneLocked(generation: generation, operationID: operationID) else {
+                throw ErrorType.cancelled
+            }
+            commitLock.unlock()
+            publish(.done(repoDirectory), generation: generation)
+        } catch {
+            let mapped = map(error, artifactPath: artifactPath)
+            let claimed = claimFailureLocked(mapped, generation: generation, operationID: operationID)
+            commitLock.unlock()
+            if claimed {
+                publish(.failed(mapped), generation: generation)
+                throw ActivationCommitError.failed(mapped)
+            }
+            throw ActivationCommitError.cancelled
+        }
+    }
+
+    // Caller holds commitLock. This is the terminal activation linearization
+    // point and remains held through every destination rename and rollback.
+    private func claimActivationLocked(generation: Int, operationID: UUID) throws {
         stateLock.lock()
+        defer { stateLock.unlock() }
         guard self.generation == generation, self.operationID == operationID, !terminalClaimed else {
-            stateLock.unlock()
             throw ErrorType.cancelled
         }
-        // Claim terminal ownership before any destination rename. A later
-        // cancel cannot steal or contradict activation success/failure.
         activationClaimed = true
         terminalClaimed = true
-        stateLock.unlock()
     }
 
     private func claimDone(generation: Int, operationID: UUID) -> Bool {
+        commitLock.lock()
+        let claimed = claimDoneLocked(generation: generation, operationID: operationID)
+        commitLock.unlock()
+        if claimed { publish(.done(repoDirectory), generation: generation) }
+        return claimed
+    }
+
+    // Caller holds commitLock. Success owns the terminal before releasing it.
+    private func claimDoneLocked(generation: Int, operationID: UUID) -> Bool {
         stateLock.lock()
+        defer { stateLock.unlock() }
         guard self.generation == generation, self.operationID == operationID,
               (!terminalClaimed || activationClaimed) else {
-            stateLock.unlock()
             return false
         }
         operation = nil
         self.operationID = nil
-        stateLock.unlock()
-        publish(.done(repoDirectory), generation: generation)
         return true
     }
 
     private func claimFailure(_ error: Error, generation: Int, operationID: UUID) -> Bool {
+        commitLock.lock()
+        let claimed = claimFailureLocked(error, generation: generation, operationID: operationID)
+        commitLock.unlock()
+        if claimed { publish(.failed(error), generation: generation) }
+        return claimed
+    }
+
+    // Caller holds commitLock. Failure owns its exact terminal before release.
+    private func claimFailureLocked(_ error: Error, generation: Int, operationID: UUID) -> Bool {
         stateLock.lock()
-        guard self.generation == generation, self.operationID == operationID,
-              (!terminalClaimed || activationClaimed) else {
-            stateLock.unlock()
+        defer { stateLock.unlock() }
+        guard self.generation == generation, self.operationID == operationID, !terminalClaimed else {
             return false
         }
         terminalClaimed = true
         operation = nil
         self.operationID = nil
-        stateLock.unlock()
-        publish(.failed(error), generation: generation)
         return true
     }
 
