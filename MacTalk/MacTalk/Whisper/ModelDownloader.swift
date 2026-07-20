@@ -84,6 +84,8 @@ final class ModelDownloader: @unchecked Sendable {
     private let cacheOperations: CacheOperations
     private let beforeTaskRegistration: (@Sendable (UUID) -> Void)?
     private let afterTaskRegistration: (@Sendable (UUID) -> Void)?
+    private let beforeCommitHook: (@Sendable (ModelSpec) -> Void)?
+    private let commitDecisionHook: (@Sendable (ModelSpec, Bool) -> Void)?
     private var operation: Task<Void, Never>?
     private var generation = 0
     private var operationID: UUID?
@@ -94,13 +96,17 @@ final class ModelDownloader: @unchecked Sendable {
          transport: any BoundedModelDownloading = BoundedModelDownloadTransport(),
          cacheOperations: CacheOperations = .live,
          beforeTaskRegistration: (@Sendable (UUID) -> Void)? = nil,
-         afterTaskRegistration: (@Sendable (UUID) -> Void)? = nil) {
+         afterTaskRegistration: (@Sendable (UUID) -> Void)? = nil,
+         beforeCommitHook: (@Sendable (ModelSpec) -> Void)? = nil,
+         commitDecisionHook: (@Sendable (ModelSpec, Bool) -> Void)? = nil) {
         self.modelRoot = modelRoot ?? ModelStore.modelsDir
         self.downloadsRoot = downloadsRoot ?? self.modelRoot.appendingPathComponent(".downloads", isDirectory: true)
         self.transport = transport
         self.cacheOperations = cacheOperations
         self.beforeTaskRegistration = beforeTaskRegistration
         self.afterTaskRegistration = afterTaskRegistration
+        self.beforeCommitHook = beforeCommitHook
+        self.commitDecisionHook = commitDecisionHook
         try? FileManager.default.createDirectory(at: self.modelRoot, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
     }
@@ -164,8 +170,8 @@ final class ModelDownloader: @unchecked Sendable {
             await self.run(spec: spec, destination: destination, generation: currentGeneration, operationID: operationID)
         }
         operation = task
-        afterTaskRegistration?(operationID)
         stateLock.unlock()
+        afterTaskRegistration?(operationID)
     }
 
     func cancel() {
@@ -216,6 +222,7 @@ final class ModelDownloader: @unchecked Sendable {
             try requireCurrent(generation)
             notifyState(.verifying, generation: generation, operationID: operationID)
             try ModelIntegrityVerifier.validate(source: temporaryURL, spec: spec)
+            beforeCommitHook?(spec)
             try commitVerified(source: temporaryURL, destination: destination, spec: spec,
                                generation: generation, operationID: operationID)
             notifyState(.done(destination), generation: generation, operationID: operationID)
@@ -299,17 +306,26 @@ final class ModelDownloader: @unchecked Sendable {
 
     private func commitVerified(source: URL, destination: URL, spec: ModelSpec,
                                 generation: Int, operationID: UUID) throws {
-        ModelIntegrityVerifier.runTestBeforeCommitHook(for: spec)
         commitLock.lock()
         stateLock.lock()
-        defer {
-            stateLock.unlock()
-            commitLock.unlock()
-        }
         let accepted = self.generation == generation && self.operationID == operationID && !Task.isCancelled
-        ModelIntegrityVerifier.runTestCommitDecisionHook(for: spec, accepted: accepted)
+        var commitError: Error?
+        if accepted {
+            do {
+                try cacheOperations.replace(source, destination, spec)
+            } catch {
+                commitError = error
+            }
+        }
+        stateLock.unlock()
+        commitLock.unlock()
+
+        // Observational test seams deliberately run after both locks. They must
+        // be able to coordinate cancellation and replacement without becoming
+        // part of the commit critical section.
+        commitDecisionHook?(spec, accepted)
+        if let commitError { throw commitError }
         guard accepted else { throw ErrorType.cancelled }
-        try cacheOperations.replace(source, destination, spec)
     }
 
     private func removeLegacyResumeState(for spec: ModelSpec) {
