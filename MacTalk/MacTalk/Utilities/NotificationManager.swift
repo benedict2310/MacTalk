@@ -105,7 +105,7 @@ enum AppNotificationEvent: CaseIterable, Equatable {
         case .transcriptionComplete:
             return "Your transcription is ready in the clipboard."
         case .appAudioLost:
-            return "The selected app's audio stream was interrupted. Retrying."
+            return "App audio was lost. Recording continues with microphone only."
         case .fallbackToMicOnly:
             return "App audio could not be restored. Continuing with microphone only."
         }

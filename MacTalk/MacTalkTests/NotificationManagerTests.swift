@@ -84,7 +84,7 @@ final class NotificationManagerTests: XCTestCase {
     func test_allEventsHaveStableIdentifiersAndNonTranscriptContent() {
         let expected: [(AppNotificationEvent, String, String)] = [
             (.transcriptionComplete, "Transcription Complete", "Your transcription is ready in the clipboard."),
-            (.appAudioLost, "App Audio Lost", "The selected app's audio stream was interrupted. Retrying."),
+            (.appAudioLost, "App Audio Lost", "App audio was lost. Recording continues with microphone only."),
             (.fallbackToMicOnly, "Switched to Mic-Only Mode", "App audio could not be restored. Continuing with microphone only.")
         ]
         let client = FakeUserNotificationClient(status: .authorized)
@@ -95,6 +95,9 @@ final class NotificationManagerTests: XCTestCase {
             XCTAssertEqual(client.requests.last?.identifier, event.identifier)
             XCTAssertEqual(client.requests.last?.content.title, title)
             XCTAssertEqual(client.requests.last?.content.body, body)
+            if event == .appAudioLost {
+                XCTAssertFalse(client.requests.last?.content.body.contains("Retrying") ?? false)
+            }
         }
     }
 }
