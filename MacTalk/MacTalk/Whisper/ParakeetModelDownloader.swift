@@ -243,24 +243,35 @@ final class ParakeetModelDownloader: @unchecked Sendable {
 
     @discardableResult
     func downloadIfNeeded() async throws -> URL {
-        try Self.validateManifest(entries)
         let operationID = UUID()
-        let (currentGeneration, previous, previousID) = claimNewOperation(operationID)
-        previous?.cancel()
-        if let previousID { transport.cancel(operationID: previousID) }
-        let startGate = ParakeetTaskStartGate()
-        let task = Task { [weak self] () throws -> URL in
-            guard let self else { throw ErrorType.cancelled }
-            do {
-                try await startGate.wait()
-                try Task.checkCancellation()
-                try self.check(currentGeneration, operationID)
-                return try await self.performDownload(generation: currentGeneration, operationID: operationID)
-            } catch is CancellationError {
+        // Cancellation can be delivered between an entry check and the
+        // ownership claim. Serialize that check and claim with the exact
+        // operation-ID cancellation handler so neither side can be lost.
+        let claimGate = ParakeetStateLock()
+        return try await withTaskCancellationHandler(operation: {
+            guard !Task.isCancelled else { throw ErrorType.cancelled }
+            try Self.validateManifest(entries)
+            claimGate.lock()
+            guard !Task.isCancelled else {
+                claimGate.unlock()
                 throw ErrorType.cancelled
             }
-        }
-        return try await withTaskCancellationHandler(operation: {
+            let (currentGeneration, previous, previousID) = claimNewOperation(operationID)
+            claimGate.unlock()
+            previous?.cancel()
+            if let previousID { transport.cancel(operationID: previousID) }
+            let startGate = ParakeetTaskStartGate()
+            let task = Task { [weak self] () throws -> URL in
+                guard let self else { throw ErrorType.cancelled }
+                do {
+                    try await startGate.wait()
+                    try Task.checkCancellation()
+                    try self.check(currentGeneration, operationID)
+                    return try await self.performDownload(generation: currentGeneration, operationID: operationID)
+                } catch is CancellationError {
+                    throw ErrorType.cancelled
+                }
+            }
             // This seam deliberately runs after child creation but before
             // registration, outside both ownership and state locks. The
             // cancellation handler is already installed so caller cancellation
@@ -287,7 +298,9 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 throw error
             }
         }, onCancel: { [weak self] in
+            claimGate.lock()
             self?.cancel(operationID: operationID)
+            claimGate.unlock()
         })
     }
 

@@ -313,6 +313,68 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         successor.release()
     }
 
+    func test_preCancelledCallerDoesNotSupersedeActiveOperation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-pre-cancelled-caller-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("abc".utf8)
+        let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
+                                          sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        let activeEntered = AsyncSignal()
+        let releaseActive = AsyncSignal()
+        let hookCount = AtomicCounter()
+        let transport = RecordingParakeetTransport()
+        let states = StateRecorder()
+        let activeDone = expectation(description: "active operation completes")
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: transport,
+            activationHook: {
+                if hookCount.increment() == 1 {
+                    activeEntered.signal()
+                    await releaseActive.wait()
+                }
+            })
+        downloader.onState = { @MainActor state in
+            states.append(state)
+            if case .done = state { activeDone.fulfill() }
+        }
+
+        let active = Task { try await downloader.downloadIfNeeded() }
+        await activeEntered.wait()
+
+        let invoke = AsyncSignal()
+        let preCancelled = Task {
+            await invoke.wait()
+            return try await downloader.downloadIfNeeded()
+        }
+        preCancelled.cancel()
+        invoke.signal()
+
+        do {
+            _ = try await preCancelled.value
+            XCTFail("pre-cancelled caller unexpectedly completed")
+        } catch let error as ParakeetModelDownloader.ErrorType {
+            guard case .cancelled = error else {
+                XCTFail("pre-cancelled caller returned unexpected error: \(error)")
+                return
+            }
+        } catch {
+            XCTFail("pre-cancelled caller returned untyped error: \(error)")
+        }
+        XCTAssertTrue(transport.cancelledOperationIDs.isEmpty,
+                      "pre-cancelled caller must not cancel the active operation")
+        XCTAssertEqual(transport.requests.count, 1,
+                       "pre-cancelled caller must not touch transport")
+
+        releaseActive.signal()
+        _ = try await active.value
+        await fulfillment(of: [activeDone], timeout: 2)
+        XCTAssertFalse(states.snapshot.contains {
+            if case let .failed(error) = $0,
+               let typed = error as? ParakeetModelDownloader.ErrorType,
+               case .cancelled = typed { return true }
+            return false
+        }, "pre-cancelled caller must not publish a cancellation terminal")
+    }
+
     func test_supersededOperationCannotActivateAfterPreActivationBarrier() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-supersession-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
