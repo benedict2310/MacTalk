@@ -260,35 +260,49 @@ final class ParakeetModelDownloader: @unchecked Sendable {
                 throw ErrorType.cancelled
             }
         }
-        // This seam deliberately runs after child creation but before
-        // registration, outside both ownership and state locks.
-        beforeTaskRegistration?()
-        let registered: Bool
-        stateLock.lock()
-        if generation == currentGeneration && self.operationID == operationID {
-            operation = task
-            registered = true
-        } else {
-            registered = false
-        }
-        stateLock.unlock()
-        if registered {
-            startGate.open()
-        } else {
-            task.cancel()
-            startGate.open()
-        }
-        do {
-            return try await task.value
-        } catch {
-            throw error
-        }
+        return try await withTaskCancellationHandler(operation: {
+            // This seam deliberately runs after child creation but before
+            // registration, outside both ownership and state locks. The
+            // cancellation handler is already installed so caller cancellation
+            // also closes this exact operation during the registration gate.
+            beforeTaskRegistration?()
+            let registered: Bool
+            stateLock.lock()
+            if generation == currentGeneration && self.operationID == operationID {
+                operation = task
+                registered = true
+            } else {
+                registered = false
+            }
+            stateLock.unlock()
+            if registered {
+                startGate.open()
+            } else {
+                task.cancel()
+                startGate.open()
+            }
+            do {
+                return try await task.value
+            } catch {
+                throw error
+            }
+        }, onCancel: { [weak self] in
+            self?.cancel(operationID: operationID)
+        })
     }
 
     func cancel() {
+        stateLock.lock()
+        let currentID = operationID
+        stateLock.unlock()
+        guard let currentID else { return }
+        cancel(operationID: currentID)
+    }
+
+    private func cancel(operationID requestedID: UUID) {
         commitLock.lock()
         stateLock.lock()
-        guard let currentID = operationID, !terminalClaimed else {
+        guard operationID == requestedID, !terminalClaimed else {
             stateLock.unlock()
             commitLock.unlock()
             return
@@ -304,7 +318,7 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         // Cancellation is intentionally outside both ownership and state
         // locks; transports may perform arbitrary I/O or callbacks.
         task?.cancel()
-        transport.cancel(operationID: currentID)
+        transport.cancel(operationID: requestedID)
         publish(.failed(ErrorType.cancelled), generation: cancelledGeneration)
     }
 

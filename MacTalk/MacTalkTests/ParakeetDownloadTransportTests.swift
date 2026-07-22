@@ -351,6 +351,9 @@ final class ParakeetDownloadTransportTests: XCTestCase {
                        "B must claim ownership and cancel A before A is released")
         XCTAssertEqual(transport.cancelledOperationIDs.count, 1,
                        "only A's public operation ID may be cancelled")
+        // A's caller is cancelled after B has claimed the downloader. Its
+        // operation-ID handler must not cancel B or publish a second terminal.
+        first.cancel()
         releaseFirstHook.signal()
 
         do {
@@ -758,8 +761,9 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let operation = Task.detached { try await downloader.downloadIfNeeded() }
         await registrationReached.wait()
 
-        let cancellation = Task.detached { downloader.cancel() }
-        await cancellation.value
+        operation.cancel()
+        XCTAssertEqual(transport.cancellation.wait(timeout: .now() + 2), .success,
+                       "caller cancellation must claim the exact operation before registration")
         releaseRegistration.signal()
         do {
             _ = try await operation.value
@@ -808,7 +812,17 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let operation = Task { try await downloader.downloadIfNeeded() }
         XCTAssertEqual(contentionReached.wait(timeout: .now() + 2), .success,
                        "registered child must observe actual lock contention")
-        downloader.cancel()
+        let completion = DispatchSemaphore(value: 0)
+        let waiter = Task {
+            defer { completion.signal() }
+            _ = try? await operation.value
+        }
+        operation.cancel()
+        XCTAssertEqual(transport.cancellation.wait(timeout: .now() + 2), .success,
+                       "caller cancellation must synchronously cancel the exact transport operation")
+        XCTAssertEqual(completion.wait(timeout: .now() + 2), .success,
+                       "caller cancellation must complete the child while the store lease remains held")
+        lease.release()
         do {
             _ = try await operation.value
             XCTFail("lock-wait cancellation unexpectedly succeeded")
@@ -817,6 +831,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         } catch {
             XCTFail("lock-wait cancellation escaped as untyped error: \(error)")
         }
+        await waiter.value
         await fulfillment(of: [cancelled], timeout: 2)
         for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(terminalCount.current(), 1)
@@ -825,7 +840,6 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".staging-") })
 
-        lease.release()
         let active = try await downloader.downloadIfNeeded()
         XCTAssertEqual(active.lastPathComponent, ParakeetModelDownloader.folderName)
         XCTAssertEqual(terminalCount.current(), 1)
