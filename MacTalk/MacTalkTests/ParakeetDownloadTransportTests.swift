@@ -713,14 +713,23 @@ final class ParakeetDownloadTransportTests: XCTestCase {
             ParakeetManifestEntry(path: "a.bin", size: 3, sha256: SHA256.hash(data: first).map { String(format: "%02x", $0) }.joined()),
             ParakeetManifestEntry(path: "b.bin", size: Int64(second.count), sha256: SHA256.hash(data: second).map { String(format: "%02x", $0) }.joined())
         ]
+        let secondRequestBegan = DispatchSemaphore(value: 0)
         let server = try LoopbackHTTPServer { request in
-            request.path.hasSuffix("a.bin") ? .init(body: .fixed(first)) : .init(body: .slow(second, chunkSize: 512, delay: 0.002))
+            if request.path.hasSuffix("a.bin") {
+                return .init(body: .fixed(first))
+            }
+            if request.path.hasSuffix("b.bin") {
+                secondRequestBegan.signal()
+                return .init(body: .slow(second, chunkSize: 512, delay: 0.002))
+            }
+            return .init(status: 404)
         }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries,
             transport: LoopbackParakeetTransport(serverURL: server.url, entries: entries))
         let task = Task { try await downloader.downloadIfNeeded() }
-        for _ in 0..<100 where !server.requestLog.contains(where: { $0.path.hasSuffix("b.bin") }) { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(secondRequestBegan.wait(timeout: .now() + 5), .success,
+                       "the final artifact request must begin before cancellation")
         downloader.cancel()
         do { _ = try await task.value; XCTFail("cancellation must fail") } catch let error as ParakeetModelDownloader.ErrorType {
             if case .cancelled = error {} else { XCTFail("unexpected cancellation: \(error)") }
@@ -923,12 +932,20 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let payload = Data(repeating: 3, count: 80_000)
         let entry = ParakeetManifestEntry(path: "a.bin", size: Int64(payload.count), sha256: SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined())
-        let server = try LoopbackHTTPServer { _ in .init(body: .slow(payload, chunkSize: 512, delay: 0.002)) }
+        let requestBegan = DispatchSemaphore(value: 0)
+        let server = try LoopbackHTTPServer { request in
+            if request.path.hasSuffix("a.bin") {
+                requestBegan.signal()
+                return .init(body: .slow(payload, chunkSize: 512, delay: 0.002))
+            }
+            return .init(status: 404)
+        }
         defer { server.stop() }
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry],
             transport: LoopbackParakeetTransport(serverURL: server.url, entries: [entry]))
         let operation = Task { try await downloader.downloadIfNeeded() }
-        for _ in 0..<100 where server.requestLog.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(requestBegan.wait(timeout: .now() + 5), .success,
+                       "the artifact request must begin before lease assertions")
         let independent = ParakeetStoreFileLock(storeParent: root)
         XCTAssertNil(try independent.tryAcquire(.shared))
         XCTAssertNil(try independent.tryAcquire(.exclusive))
@@ -1008,12 +1025,14 @@ final class ParakeetDownloadTransportTests: XCTestCase {
             ParakeetManifestEntry(path: "b.bin", size: 2, sha256: SHA256.hash(data: Data("de".utf8)).map { String(format: "%02x", $0) }.joined())
         ]
         let states = StateRecorder()
+        let done = expectation(description: "aggregate progress terminal state published")
         let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: entries, transport: ProgressParakeetTransport())
         downloader.onState = { @MainActor state in
             states.append(state)
+            if case .done = state { done.fulfill() }
         }
         _ = try await downloader.downloadIfNeeded()
-        try await Task.sleep(for: .milliseconds(100))
+        await fulfillment(of: [done], timeout: 2)
         let observed = states.snapshot
         let running = observed.compactMap { state -> (Double, Int, Int, String?)? in
             guard case let .running(progress, index, count, file) = state else { return nil }
