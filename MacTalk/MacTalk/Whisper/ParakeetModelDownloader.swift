@@ -185,14 +185,6 @@ final class ParakeetModelDownloader: @unchecked Sendable {
         self.activationHook = activationHook
         self.beforeTaskRegistration = beforeTaskRegistration
         self.beforeStoreLockAcquire = beforeStoreLockAcquire
-        try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: self.downloadsRoot, withIntermediateDirectories: true)
-        // Construction-time recovery is exclusive. If another process owns the
-        // store, that owner must finish before a later availability check retries.
-        if let lease = try? storeLock.tryAcquire(.exclusive) {
-            recoverInterruptedActivation()
-            lease.release()
-        }
     }
 
     static var modelsDirectory: URL {

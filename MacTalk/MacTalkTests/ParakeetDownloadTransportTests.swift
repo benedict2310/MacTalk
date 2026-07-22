@@ -217,6 +217,28 @@ private final class LoopbackParakeetTransport: BoundedModelDownloading, @uncheck
 }
 
 final class ParakeetDownloadTransportTests: XCTestCase {
+    func test_constructorIsFilesystemPassiveForNonexistentRoot() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("parakeet-constructor-passive-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let active = root.appendingPathComponent(ParakeetModelDownloader.folderName, isDirectory: true)
+        let downloads = root.appendingPathComponent(".downloads", isDirectory: true)
+        let lock = root.appendingPathComponent(".mactalk-store.lock")
+        let recovery = root.appendingPathComponent(".backup-constructor-test", isDirectory: true)
+        let staging = root.appendingPathComponent(".staging-constructor-test", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+
+        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [], transport: RecordingParakeetTransport())
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "construction must not create the store root")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path), "construction must not create the store lock")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloads.path), "construction must not create the downloads workspace")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path), "construction must not create recovery artifacts")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path), "construction must not create staging artifacts")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: active.path), "construction must not create the active model path")
+    }
+
     func test_activationHasACommitOwnershipBoundaryBeforeRenames() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -972,14 +994,18 @@ final class ParakeetDownloadTransportTests: XCTestCase {
 
         let lock = ParakeetStoreFileLock(storeParent: root)
         let shared = try await lock.acquire(.shared)
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        let lockAttempted = expectation(description: "recovery waits for exclusive ownership")
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport(),
+                                                   beforeStoreLockAcquire: { lockAttempted.fulfill() })
+        let operation = Task { try await downloader.downloadIfNeeded() }
+        await fulfillment(of: [lockAttempted], timeout: 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: active.path), "shared lease must retain crash recovery options")
         XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: olderValid.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: olderInvalid.path))
         shared.release()
 
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        _ = try await operation.value
         XCTAssertEqual(try Data(contentsOf: active.appendingPathComponent("a.bin")), payload)
         let items = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         XCTAssertFalse(items.contains { $0.lastPathComponent.hasPrefix(".backup-") }, "successful restore must remove every stale backup")
@@ -998,11 +1024,15 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         try FileManager.default.moveItem(at: active, to: backup)
         let lock = ParakeetStoreFileLock(storeParent: root)
         let shared = try await lock.acquire(.shared)
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        let lockAttempted = expectation(description: "recovery waits for exclusive ownership")
+        let downloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport(),
+                                                   beforeStoreLockAcquire: { lockAttempted.fulfill() })
+        let operation = Task { try await downloader.downloadIfNeeded() }
+        await fulfillment(of: [lockAttempted], timeout: 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: active.path), "shared ownership must prevent recovery mutation")
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
         shared.release()
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        _ = try await operation.value
         XCTAssertEqual(try Data(contentsOf: active.appendingPathComponent("a.bin")), payload)
         XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
         let invalid = root.appendingPathComponent(".backup-invalid")
@@ -1010,10 +1040,14 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         try Data("bad".utf8).write(to: invalid.appendingPathComponent("unexpected"))
         try FileManager.default.removeItem(at: active)
         let sharedAgain = try await lock.acquire(.shared)
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        let invalidLockAttempted = expectation(description: "invalid backup cleanup waits for exclusive ownership")
+        let invalidDownloader = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport(),
+                                                          beforeStoreLockAcquire: { invalidLockAttempted.fulfill() })
+        let invalidOperation = Task { try await invalidDownloader.downloadIfNeeded() }
+        await fulfillment(of: [invalidLockAttempted], timeout: 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: invalid.path))
         sharedAgain.release()
-        _ = ParakeetModelDownloader(modelsRoot: root, manifest: [entry], transport: RecordingParakeetTransport())
+        _ = try await invalidOperation.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: invalid.path))
     }
 
