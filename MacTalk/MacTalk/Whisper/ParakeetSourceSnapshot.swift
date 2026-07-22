@@ -45,12 +45,25 @@ struct VerifiedParakeetSourceSnapshot: Sendable {
 
 struct ParakeetSourceStore: Sendable {
     static let identityMarkerName = ".mactalk-source-identity.json"
+    static let canonicalDirectoryName = "parakeet-tdt-0.6b-v3-source"
+    static let stagingPrefix = ".mactalk-source-staging-"
+    static let backupPrefix = ".mactalk-source-backup-"
+
     let parent: URL
     let sourceDirectoryName: String
     let entries: [GeneratedParakeetManifestEntry]
     let identity: ParakeetSourceIdentity
 
-    init(parent: URL, sourceDirectoryName: String = "parakeet-tdt-0.6b-v3-source", entries: [GeneratedParakeetManifestEntry] = GeneratedModelProvenance.parakeetSource, identity: ParakeetSourceIdentity = .production) {
+    /// The only production construction path. Its manifest and identity are
+    /// generated constants; no filesystem work occurs here.
+    static func canonical(parent: URL) -> ParakeetSourceStore {
+        ParakeetSourceStore(parent: parent, sourceDirectoryName: canonicalDirectoryName,
+                            entries: GeneratedModelProvenance.parakeetSource, identity: .production)
+    }
+
+    /// Fully explicit so hermetic tests cannot accidentally inherit production
+    /// paths, manifests, or provenance.
+    init(parent: URL, sourceDirectoryName: String, entries: [GeneratedParakeetManifestEntry], identity: ParakeetSourceIdentity) {
         self.parent = parent
         self.sourceDirectoryName = sourceDirectoryName
         self.entries = entries
@@ -111,6 +124,16 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         } catch is CancellationError {
             throw ParakeetSourceSnapshotError.cancelled
         }
+        return try await makeVerifiedSnapshot(lease: lease, releaseLease: true)
+    }
+
+    /// Validates through a caller-owned exclusive lease. This overload never
+    /// acquires or releases a lease; cancellation only cancels this read.
+    func makeVerifiedSnapshot(holding lease: ParakeetStoreFileLock.Lease) async throws -> VerifiedParakeetSourceSnapshot {
+        try await makeVerifiedSnapshot(lease: lease, releaseLease: false)
+    }
+
+    private func makeVerifiedSnapshot(lease: ParakeetStoreFileLock.Lease, releaseLease: Bool) async throws -> VerifiedParakeetSourceSnapshot {
         let operation = SnapshotOperationState()
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
@@ -129,10 +152,10 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
                         } else {
                             result = .failure(ParakeetSourceSnapshotError.cancelled)
                         }
-                        lease.release()
+                        if releaseLease { lease.release() }
                         continuation.resume(with: result)
                     } catch {
-                        lease.release()
+                        if releaseLease { lease.release() }
                         let mappedError: Error = error is VerifiedArtifactReaderError && operation.isCancelled
                             ? ParakeetSourceSnapshotError.cancelled
                             : error
@@ -148,7 +171,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
             }
         }, onCancel: {
             operation.cancel()
-            lease.release()
+            if releaseLease { lease.release() }
         })
     }
 
