@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 protocol ParakeetSourceArtifactMaterializing: Sendable {
-    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) throws
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws
 }
 
 /// A bounded descriptor opened by the preparer for one exact manifest path.
@@ -107,6 +107,9 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     }
 
     func prepareIfNeeded() async throws -> URL {
+        // This validation is deliberately pure: no lock acquisition (which may
+        // create the parent) or other filesystem mutation precedes it.
+        try validateConfiguration()
         let lock = ParakeetStoreFileLock(storeParent: store.parent)
         let lease: ParakeetStoreFileLock.Lease
         do {
@@ -116,63 +119,67 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         }
         defer { lease.release() }
 
-        try checkCancellation()
-        let provider = VerifiedParakeetSourceSnapshotProvider(store: store)
-        if (try? await provider.makeVerifiedSnapshot(holding: lease)) != nil {
-            return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
-        }
-
-        let parentFD = try borrowParent(lease)
-        let stagingName = try uniqueName(prefix: ParakeetSourceStore.stagingPrefix)
-        try createDirectory(named: stagingName, relativeTo: parentFD)
-        var stagingExists = true
-        defer {
-            if stagingExists, isOwnedArtifactName(stagingName, prefix: ParakeetSourceStore.stagingPrefix) {
-                try? removeTree(named: stagingName, relativeTo: parentFD)
-            }
-        }
-
         do {
-            try validateManifest()
-            let stagingFD = try openDirectory(named: stagingName, relativeTo: parentFD)
-            defer { _ = Darwin.close(stagingFD) }
-            for entry in store.entries {
+            return try await lease.withStoreParentDescriptor { parentFD in
                 try checkCancellation()
-                let sinkFD = try openArtifactSink(entry: entry, rootFD: stagingFD)
-                let sink = ParakeetSourceArtifactSink(descriptor: sinkFD, entry: entry)
+                let provider = VerifiedParakeetSourceSnapshotProvider(store: store)
+                if (try? await provider.makeVerifiedSnapshot(holding: lease)) != nil {
+                    return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
+                }
+
+                let stagingName = try uniqueName(prefix: ParakeetSourceStore.stagingPrefix)
+                try createDirectory(named: stagingName, relativeTo: parentFD)
+                var stagingExists = true
+                defer {
+                    if stagingExists, isOwnedArtifactName(stagingName, prefix: ParakeetSourceStore.stagingPrefix) {
+                        try? removeTree(named: stagingName, relativeTo: parentFD)
+                    }
+                }
+
                 do {
-                    try materializer.materialize(entry: entry, sink: sink)
+                    let stagingFD = try openDirectory(named: stagingName, relativeTo: parentFD)
+                    defer { _ = Darwin.close(stagingFD) }
+                    for entry in store.entries {
+                        try checkCancellation()
+                        let sinkFD = try openArtifactSink(entry: entry, rootFD: stagingFD)
+                        let sink = ParakeetSourceArtifactSink(descriptor: sinkFD, entry: entry)
+                        do {
+                            try await materializer.materialize(entry: entry, sink: sink)
+                            try checkCancellation()
+                            try sink.finish()
+                        } catch {
+                            throw map(error)
+                        }
+                    }
                     try checkCancellation()
-                    try sink.finish()
+                    try writeMarker(rootFD: stagingFD)
+                    try checkCancellation()
+                    beforeValidation?()
+                    try checkCancellation()
+                    do {
+                        let stagingStore = ParakeetSourceStore(parent: store.parent, sourceDirectoryName: stagingName,
+                                                               entries: store.entries, identity: store.identity)
+                        let stagingProvider = VerifiedParakeetSourceSnapshotProvider(store: stagingStore)
+                        _ = try await stagingProvider.makeVerifiedSnapshot(holding: lease)
+                    } catch {
+                        throw ParakeetSourcePreparationError.validationFailed
+                    }
+                    try checkCancellation()
+                    beforeActivation?()
+                    try checkCancellation()
+                    try activate(stagingName: stagingName, sourceName: store.sourceDirectoryName, parentFD: parentFD)
+                    stagingExists = false
+                    return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
+                } catch is CancellationError {
+                    throw ParakeetSourcePreparationError.cancelled
+                } catch let error as ParakeetSourcePreparationError {
+                    throw error
                 } catch {
                     throw map(error)
                 }
             }
-            try checkCancellation()
-            try writeMarker(rootFD: stagingFD)
-            try checkCancellation()
-            beforeValidation?()
-            try checkCancellation()
-            do {
-                let stagingStore = ParakeetSourceStore(parent: store.parent, sourceDirectoryName: stagingName,
-                                                       entries: store.entries, identity: store.identity)
-                let stagingProvider = VerifiedParakeetSourceSnapshotProvider(store: stagingStore)
-                _ = try await stagingProvider.makeVerifiedSnapshot(holding: lease)
-            } catch {
-                throw ParakeetSourcePreparationError.validationFailed
-            }
-            try checkCancellation()
-            beforeActivation?()
-            try checkCancellation()
-            try activate(stagingName: stagingName, sourceName: store.sourceDirectoryName, parentFD: parentFD)
-            stagingExists = false
-            return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
         } catch is CancellationError {
             throw ParakeetSourcePreparationError.cancelled
-        } catch let error as ParakeetSourcePreparationError {
-            throw error
-        } catch {
-            throw map(error)
         }
     }
 
@@ -190,24 +197,41 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         return .activationFailed
     }
 
-    private func borrowParent(_ lease: ParakeetStoreFileLock.Lease) throws -> Int32 {
-        var result: Int32 = -1
-        lease.withStoreParentDescriptor { result = $0 }
-        guard result >= 0 else { throw ParakeetSourcePreparationError.io(EBADF) }
-        return result
-    }
-
-    private func validateManifest() throws {
+    private func validateConfiguration() throws {
+        guard !store.sourceDirectoryName.isEmpty,
+              !store.sourceDirectoryName.contains("/"),
+              store.sourceDirectoryName != ".", store.sourceDirectoryName != "..",
+              !store.sourceDirectoryName.utf8.contains(0),
+              store.sourceDirectoryName != ParakeetModelDownloader.folderName,
+              !store.sourceDirectoryName.hasPrefix(ParakeetSourceStore.stagingPrefix),
+              !store.sourceDirectoryName.hasPrefix(ParakeetSourceStore.backupPrefix) else {
+            throw ParakeetSourcePreparationError.invalidPath(store.sourceDirectoryName)
+        }
         guard store.entries.count == 9, Set(store.entries.map(\.path)).count == store.entries.count else {
             throw ParakeetSourcePreparationError.invalidManifest
         }
+        var aggregate: Int64 = 0
         for entry in store.entries {
             guard entry.size > 0, entry.sha256.count == 64,
                   entry.sha256.allSatisfy({ $0.isNumber || ("a"..."f").contains($0) }) else {
                 throw ParakeetSourcePreparationError.invalidManifest
             }
             _ = try pathComponents(entry.path)
+            let result = aggregate.addingReportingOverflow(entry.size)
+            guard !result.overflow else { throw ParakeetSourcePreparationError.invalidManifest }
+            aggregate = result.partialValue
         }
+        let sourceEntries = store.entries.filter { $0.role == "specification" || $0.role == "weights" }
+        let vocabularyEntries = store.entries.filter { $0.role == "vocabulary" }
+        guard sourceEntries.count == 8, vocabularyEntries.count == 1,
+              vocabularyEntries[0].component == "Vocabulary",
+              vocabularyEntries[0].path == "parakeet_vocab.json",
+              sourceEntries.allSatisfy({ entry in
+                  guard let component = ParakeetSourceComponent(rawValue: entry.component),
+                        entry.role == "specification" || entry.role == "weights" else { return false }
+                  let suffix = entry.role == "specification" ? "model.mlmodel" : "weights/weight.bin"
+                  return entry.path == "mlpackages/\(component.rawValue).mlpackage/Data/com.apple.CoreML/\(suffix)"
+              }) else { throw ParakeetSourcePreparationError.invalidManifest }
     }
 
     private func pathComponents(_ path: String) throws -> [String] {
@@ -232,7 +256,11 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             throw errno == EEXIST ? ParakeetSourcePreparationError.collision(name) : .io(errno)
         }
         let fd = try openDirectory(named: name, relativeTo: parentFD)
-        _ = fchmod(fd, mode_t(0o700))
+        guard fchmod(fd, mode_t(0o700)) == 0 else {
+            let code = errno
+            _ = Darwin.close(fd)
+            throw ParakeetSourcePreparationError.io(code)
+        }
         _ = Darwin.close(fd)
     }
 
@@ -263,6 +291,11 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             } else {
                 throw ParakeetSourcePreparationError.io(errno)
             }
+            guard fchmod(child, mode_t(0o700)) == 0 else {
+                let code = errno
+                _ = Darwin.close(child)
+                throw ParakeetSourcePreparationError.io(code)
+            }
             opened.append(child)
             currentFD = child
         }
@@ -283,6 +316,11 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             openat(rootFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
         }
         guard fd >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
+        guard fchmod(fd, mode_t(0o600)) == 0 else {
+            let code = errno
+            _ = Darwin.close(fd)
+            throw ParakeetSourcePreparationError.io(code)
+        }
         defer { _ = Darwin.close(fd) }
         var offset = 0
         try data.withUnsafeBytes { bytes in
@@ -307,26 +345,35 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
 
     private func activate(stagingName: String, sourceName: String, parentFD: Int32) throws {
         let backupName = try uniqueName(prefix: ParakeetSourceStore.backupPrefix)
-        try ensureAbsent(named: backupName, relativeTo: parentFD)
         let sourceExists = entryExists(named: sourceName, relativeTo: parentFD)
         if sourceExists {
-            guard renameat(parentFD, sourceName, parentFD, backupName) == 0 else { throw ParakeetSourcePreparationError.activationFailed }
+            try renameExclusively(from: sourceName, to: backupName, relativeTo: parentFD)
         }
-        guard renameat(parentFD, stagingName, parentFD, sourceName) == 0 else {
-            if sourceExists { _ = renameat(parentFD, backupName, parentFD, sourceName) }
+        guard !entryExists(named: sourceName, relativeTo: parentFD) else {
+            throw ParakeetSourcePreparationError.collision(sourceName)
+        }
+        do {
+            try renameExclusively(from: stagingName, to: sourceName, relativeTo: parentFD)
+        } catch {
+            if sourceExists { try? renameExclusively(from: backupName, to: sourceName, relativeTo: parentFD) }
             throw ParakeetSourcePreparationError.activationFailed
         }
         if sourceExists {
-            do {
-                try removeTree(named: backupName, relativeTo: parentFD)
-            } catch {
-                // Do not leave a newly activated source while reporting an
-                // activation failure. Restore the prior generation first.
-                _ = renameat(parentFD, sourceName, parentFD, stagingName)
-                _ = renameat(parentFD, backupName, parentFD, sourceName)
-                try? removeTree(named: stagingName, relativeTo: parentFD)
-                throw ParakeetSourcePreparationError.activationFailed
+            // Activation is committed. Cleanup failure is intentionally
+            // non-fatal; stale backup recovery belongs to the next writer.
+            try? removeTree(named: backupName, relativeTo: parentFD)
+        }
+    }
+
+    private func renameExclusively(from: String, to: String, relativeTo parentFD: Int32) throws {
+        let result = from.withCString { source in
+            to.withCString { destination in
+                renameatx_np(parentFD, source, parentFD, destination, UInt32(RENAME_EXCL))
             }
+        }
+        guard result == 0 else {
+            if errno == EEXIST { throw ParakeetSourcePreparationError.collision(to) }
+            throw ParakeetSourcePreparationError.activationFailed
         }
     }
 

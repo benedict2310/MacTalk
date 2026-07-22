@@ -18,9 +18,13 @@ final class ParakeetSourcePreparerTests: XCTestCase {
 
     func test_tinyMaterializerActivatesExactTreeAndMarker() async throws {
         let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
         let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer)
         let activated = try await preparer.prepareIfNeeded()
         XCTAssertEqual(activated.lastPathComponent, fixture.store.sourceDirectoryName)
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
         XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
         let marker = try Data(contentsOf: activated.appendingPathComponent(ParakeetSourceStore.identityMarkerName))
         XCTAssertLessThanOrEqual(marker.count, 16 * 1024)
@@ -31,10 +35,57 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertEqual(markerObject["fluidAudioRevision"] as? String, fixture.store.identity.fluidAudioRevision)
         XCTAssertEqual(markerObject["canonicalProvenanceSHA256"] as? String, fixture.store.identity.canonicalProvenanceSHA256)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: activated.path)[.posixPermissions] as? NSNumber, 0o700)
+        XCTAssertEqual(try mode(of: activated.appendingPathComponent(ParakeetSourceStore.identityMarkerName)), 0o600)
         XCTAssertTrue(fixture.entries.allSatisfy { entry in
             let attrs = try? FileManager.default.attributesOfItem(atPath: activated.appendingPathComponent(entry.path).path)
             return (attrs?[.posixPermissions] as? NSNumber)?.intValue == 0o600
         })
+        for directory in ["mlpackages", "mlpackages/Preprocessor.mlpackage", "mlpackages/Preprocessor.mlpackage/Data", "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML"] {
+            XCTAssertEqual(try mode(of: activated.appendingPathComponent(directory)), 0o700)
+        }
+    }
+
+    func test_asyncYieldingMaterializerIsAwaitedInsideLease() async throws {
+        let fixture = try SourcePreparationFixture()
+        let materializer = YieldingSourceMaterializer(bytes: fixture.bytes)
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: materializer).prepareIfNeeded()
+        XCTAssertEqual(materializer.calls, fixture.entries.count)
+    }
+
+    func test_invalidSourceNamesFailBeforeLockOrFilesystemMutation() async throws {
+        let fixture = try SourcePreparationFixture()
+        for name in ["../victim", "/absolute", ".", "..", ParakeetModelDownloader.folderName,
+                     ParakeetSourceStore.stagingPrefix + "x", ParakeetSourceStore.backupPrefix + "x"] {
+            let parent = fixture.parent.appendingPathComponent(UUID().uuidString)
+            let compiled = parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+            try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+            try Data("compiled".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+            let store = ParakeetSourceStore(parent: parent, sourceDirectoryName: name, entries: fixture.entries, identity: fixture.store.identity)
+            let preparer = ParakeetSourcePreparer(store: store, materializer: fixture.materializer)
+            do { _ = try await preparer.prepareIfNeeded(); XCTFail("accepted unsafe source name \(name)") } catch { }
+            XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(".mactalk-store.lock").path), "validation must precede lock mutation")
+            try? FileManager.default.removeItem(at: parent)
+        }
+    }
+
+    func test_cancellationBeforeActivationPreservesCompiledSentinelAndCleansStaging() async throws {
+        let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeActivation: { Thread.sleep(forTimeInterval: 0.01) })
+        let task = Task { try await preparer.prepareIfNeeded() }
+        task.cancel()
+        _ = try? await task.value
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+        XCTAssertFalse((try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) } ?? false)
+    }
+
+    private func mode(of url: URL) throws -> Int {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { throw POSIXError(.init(rawValue: errno)!) }
+        return Int(info.st_mode & 0o777)
     }
 
     func test_exclusiveLeaseIsHeldThroughMaterialization() async throws {
@@ -57,6 +108,9 @@ final class ParakeetSourcePreparerTests: XCTestCase {
 
     func test_invalidStagingExtraPreservesPriorSource() async throws {
         let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
         try FileManager.default.createDirectory(at: fixture.parent, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: fixture.sourceURL, withIntermediateDirectories: true)
         try Data("prior".utf8).write(to: fixture.sourceURL.appendingPathComponent("prior-sentinel"))
@@ -73,11 +127,15 @@ final class ParakeetSourcePreparerTests: XCTestCase {
             // expected
         }
         XCTAssertEqual(try Data(contentsOf: fixture.sourceURL.appendingPathComponent("prior-sentinel")), Data("prior".utf8))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
         XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
     }
 
     func test_invalidStagingSymlinkFailsBeforeActivation() async throws {
         let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
         let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeValidation: {
             guard let staging = (try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.first(where: { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) }) else { return }
             let target = staging.appendingPathComponent(fixture.entries[0].path)
@@ -91,11 +149,15 @@ final class ParakeetSourcePreparerTests: XCTestCase {
             // expected
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
         XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
     }
 
     func test_cancellationAtMaterializerBarrierCleansOwnedStaging() async throws {
         let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
         let started = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         let materializer = StickySourceMaterializer(bytes: fixture.bytes, started: started, release: release)
@@ -110,6 +172,7 @@ final class ParakeetSourcePreparerTests: XCTestCase {
             XCTAssertEqual(error, .cancelled)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
         XCTAssertFalse((try FileManager.default.fileExists(atPath: fixture.parent.path) ? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil) : []).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
     }
 
@@ -151,7 +214,18 @@ private final class SourcePreparationFixture: @unchecked Sendable {
 
 private struct TinySourceMaterializer: ParakeetSourceArtifactMaterializing {
     let bytes: [String: Data]
-    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) throws {
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
+        try sink.write(bytes[entry.path]!)
+    }
+}
+
+private final class YieldingSourceMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {
+    let bytes: [String: Data]
+    private(set) var calls = 0
+    init(bytes: [String: Data]) { self.bytes = bytes }
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
+        await Task.yield()
+        calls += 1
         try sink.write(bytes[entry.path]!)
     }
 }
@@ -162,11 +236,17 @@ private final class StickySourceMaterializer: ParakeetSourceArtifactMaterializin
     let release: DispatchSemaphore
     private var first = true
     init(bytes: [String: Data], started: DispatchSemaphore, release: DispatchSemaphore) { self.bytes = bytes; self.started = started; self.release = release }
-    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) throws {
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
         if first {
             first = false
             started.signal()
-            release.wait()
+            let release = self.release
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    release.wait()
+                    continuation.resume()
+                }
+            }
         }
         try sink.write(bytes[entry.path]!)
     }
@@ -177,7 +257,7 @@ private final class LeaseObservingSourceMaterializer: ParakeetSourceArtifactMate
     let lock: ParakeetStoreFileLock
     private(set) var blockedAcquisitions = 0
     init(bytes: [String: Data], lock: ParakeetStoreFileLock) { self.bytes = bytes; self.lock = lock }
-    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) throws {
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
         if let lease = try lock.tryAcquire(.shared) { lease.release() } else { blockedAcquisitions += 1 }
         if let lease = try lock.tryAcquire(.exclusive) { lease.release() } else { blockedAcquisitions += 1 }
         try sink.write(bytes[entry.path]!)

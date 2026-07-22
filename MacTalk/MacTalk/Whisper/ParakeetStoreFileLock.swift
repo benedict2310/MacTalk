@@ -69,6 +69,23 @@ struct ParakeetStoreFileLock: Sendable {
             return try body(descriptor)
         }
 
+        /// Keeps the validated parent descriptor borrowed for the complete
+        /// asynchronous body. In particular, an awaited materializer cannot
+        /// outlive the descriptor that it was given.
+        func withStoreParentDescriptor<T>(_ body: (Int32) async throws -> T) async rethrows -> T {
+            guard let descriptor = beginAsyncBorrow() else {
+                preconditionFailure("store lock lease has been released")
+            }
+            defer { endBorrow() }
+            return try await body(descriptor)
+        }
+
+        private func beginAsyncBorrow() -> Int32? {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return beginBorrow()
+        }
+
         /// Borrows the validated parent descriptor when the lease has not yet
         /// been released. Cancellation may request release while the body is
         /// active; the descriptors close only after the last active borrow.

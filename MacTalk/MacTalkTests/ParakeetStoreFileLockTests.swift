@@ -132,6 +132,34 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         successor.release()
     }
 
+    func test_asyncDescriptorBorrowOutlivesReleaseRequest() async throws {
+        let root = try makeTemporaryStore()
+        let lock = ParakeetStoreFileLock(storeParent: root)
+        let lease = try await lock.acquire(.exclusive)
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let body = Task {
+            try await lease.withStoreParentDescriptor { descriptor in
+                entered.signal()
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global().async {
+                        resume.wait()
+                        continuation.resume()
+                    }
+                }
+                var info = stat()
+                guard fstat(descriptor, &info) == 0 else { throw POSIXError(.init(rawValue: errno)!) }
+            }
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        lease.release()
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "active async borrow must retain the lease")
+        resume.signal()
+        try await body.value
+        let successor = try await lock.acquire(.exclusive)
+        successor.release()
+    }
+
     func test_cancellationWhileWaitingDoesNotLeakOrAcquireLater() async throws {
         let root = try makeTemporaryStore()
         let lock = ParakeetStoreFileLock(storeParent: root)
