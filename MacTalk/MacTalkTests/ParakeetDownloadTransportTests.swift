@@ -62,27 +62,6 @@ private final class AtomicCounter: @unchecked Sendable {
     }
 }
 
-private final class AsyncLatch: @unchecked Sendable {
-    private let mutex = NSLock()
-    private var waiter: CheckedContinuation<Void, Never>?
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            mutex.lock()
-            waiter = continuation
-            mutex.unlock()
-        }
-    }
-
-    func signal() {
-        mutex.lock()
-        let continuation = waiter
-        waiter = nil
-        mutex.unlock()
-        continuation?.resume()
-    }
-}
-
 private final class AsyncSignal: @unchecked Sendable {
     private let mutex = NSLock()
     private var signaled = false
@@ -293,7 +272,7 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         _ = try await downloader.downloadIfNeeded()
 
         let entered = expectation(description: "compiled load body entered")
-        let releaseBody = AsyncLatch()
+        let releaseBody = AsyncSignal()
         let body = Task {
             try await downloader.withValidatedSharedLease { _ in
                 entered.fulfill()
@@ -381,8 +360,8 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         let bytes = Data("abc".utf8)
         let entry = ParakeetManifestEntry(path: "a.bin", size: 3,
                                           sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
-        let firstHookEntered = AsyncLatch()
-        let releaseFirstHook = AsyncLatch()
+        let firstHookEntered = AsyncSignal()
+        let releaseFirstHook = AsyncSignal()
         let counter = AtomicCounter()
         let done = expectation(description: "only the current operation publishes done")
         let terminalCount = AtomicCounter()
