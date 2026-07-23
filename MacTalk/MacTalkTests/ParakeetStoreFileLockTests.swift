@@ -122,6 +122,20 @@ final class ParakeetStoreFileLockTests: XCTestCase {
         XCTAssertEqual(successor.terminate(), 0)
     }
 
+    func test_leaseAuthorizationNormalizesPrivateTemporaryAlias() async throws {
+        let root = URL(fileURLWithPath: "/tmp/mactalk-lock-")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lease = try await ParakeetStoreFileLock(storeParent: root).acquire(.exclusive)
+        defer { lease.release() }
+        let privateAlias = URL(fileURLWithPath: "/private" + root.path, isDirectory: true)
+        XCTAssertTrue(lease.authorizesStoreParent(root))
+        XCTAssertTrue(lease.authorizesStoreParent(privateAlias))
+    }
+
     func test_tryAcquireReportsContentionAndClosesDescriptor() async throws {
         let root = try makeTemporaryStore()
         let lock = ParakeetStoreFileLock(storeParent: root)

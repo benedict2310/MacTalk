@@ -58,6 +58,49 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(".mactalk-store.lock").path))
     }
 
+    func test_rejectsExclusiveLeaseForDifferentStoreParentBeforeDestinationMutation() async throws {
+        let expectedFixture = try ReuseFixture()
+        let otherFixture = try ReuseFixture()
+        let otherLock = ParakeetStoreFileLock(storeParent: otherFixture.parent)
+        let lease = try await otherLock.acquire(.exclusive)
+        let staging = try openStaging(expectedFixture.staging)
+        defer {
+            close(staging)
+            lease.release()
+            try? FileManager.default.removeItem(at: expectedFixture.parent)
+            try? FileManager.default.removeItem(at: otherFixture.parent)
+        }
+
+        XCTAssertThrowsError(try expectedFixture.reuser().reuse(
+            sourceEntry: expectedFixture.sourceEntry,
+            holding: lease,
+            stagingRootFD: staging
+        )) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .leaseStoreParentMismatch)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expectedFixture.destination.path))
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try otherLock.tryAcquire(.exclusive), "mismatched lease must remain held")
+    }
+
+    func test_linkIdentityFailureRemovesOperationCreatedDestination() async throws {
+        let fixture = try ReuseFixture()
+        let reuser = try fixture.reuser(hooks: .init(forceDestinationStatFailureAfterLink: true))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path),
+                       "failed link identity lookup must remove its newly-created leaf")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+    }
+
     func test_reusesVerifiedWeightWithHardLinkAndCallerOwnership() async throws {
         let fixture = try ReuseFixture()
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)

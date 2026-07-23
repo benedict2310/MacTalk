@@ -38,6 +38,7 @@ enum ParakeetCompiledWeightReuseUnavailableReason: Error, Equatable, Sendable {
 
 enum ParakeetCompiledWeightReuseError: Error, Equatable, Sendable {
     case sourceEntryMismatch
+    case leaseStoreParentMismatch
     case leaseNotExclusive
     case leaseUnavailable
     case unsafeStagingRoot
@@ -64,14 +65,17 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     struct TestHooks {
         let forceCopy: Bool
         let forceLinkFailure: Bool
+        let forceDestinationStatFailureAfterLink: Bool
         let afterSourceVerification: (() -> Void)?
         let beforeDestinationVerification: (() -> Void)?
 
         init(forceCopy: Bool = false, forceLinkFailure: Bool = false,
+             forceDestinationStatFailureAfterLink: Bool = false,
              afterSourceVerification: (() -> Void)? = nil,
              beforeDestinationVerification: (() -> Void)? = nil) {
             self.forceCopy = forceCopy
             self.forceLinkFailure = forceLinkFailure
+            self.forceDestinationStatFailureAfterLink = forceDestinationStatFailureAfterLink
             self.afterSourceVerification = afterSourceVerification
             self.beforeDestinationVerification = beforeDestinationVerification
         }
@@ -106,6 +110,9 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         guard sourceEntry.role == "weights", sourceEntry.path == mapping.sourcePath,
               sourceEntry.size == mapping.size, sourceEntry.sha256 == mapping.sha256 else {
             throw ParakeetCompiledWeightReuseError.sourceEntryMismatch
+        }
+        guard lease.authorizesStoreParent(store.parent) else {
+            throw ParakeetCompiledWeightReuseError.leaseStoreParentMismatch
         }
         try checkCancellation()
         try validateStagingRoot(stagingRootFD)
@@ -171,7 +178,13 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             }
             if linked {
                 ownedDestination = true
-                guard let linkedInfo = destinationStat(parentFD: destination.parentFD, leaf: destination.leaf) else {
+                guard !hooks.forceDestinationStatFailureAfterLink,
+                      let linkedInfo = destinationStat(parentFD: destination.parentFD, leaf: destination.leaf) else {
+                    // The leaf was absent immediately before linkat, so this
+                    // operation still owns the name even though identity is
+                    // unavailable for the usual identity-matched cleanup.
+                    _ = unlinkat(destination.parentFD, destination.leaf, 0)
+                    ownedDestination = false
                     throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
                 }
                 ownedIdentity = linkedInfo

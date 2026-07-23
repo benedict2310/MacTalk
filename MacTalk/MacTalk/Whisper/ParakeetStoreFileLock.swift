@@ -42,16 +42,27 @@ struct ParakeetStoreFileLock: Sendable {
 
     final class Lease: @unchecked Sendable {
         let mode: Mode
+        private let storeParentIdentity: [String]
         private let stateLock = NSLock()
         private var fileDescriptor: Int32?
         private var storeParentDescriptor: Int32?
         private var activeBorrows = 0
         private var releaseRequested = false
 
-        fileprivate init(fileDescriptor: Int32, storeParentDescriptor: Int32, mode: Mode) {
+        fileprivate init(fileDescriptor: Int32, storeParentDescriptor: Int32, mode: Mode, storeParentIdentity: [String]) {
             self.fileDescriptor = fileDescriptor
             self.storeParentDescriptor = storeParentDescriptor
             self.mode = mode
+            self.storeParentIdentity = storeParentIdentity
+        }
+
+        /// Authorizes only the pure normalized identity captured when this lease
+        /// was acquired. This never resolves symlinks or reopens the path.
+        func authorizesStoreParent(_ expected: URL) -> Bool {
+            guard let expectedIdentity = ParakeetStoreFileLock.normalizedStoreParentIdentity(for: expected) else {
+                return false
+            }
+            return expectedIdentity == storeParentIdentity
         }
 
         /// Borrows the validated parent descriptor without holding the state
@@ -181,7 +192,8 @@ struct ParakeetStoreFileLock: Sendable {
         let operation: Int32 = mode == .shared ? LOCK_SH | LOCK_NB : LOCK_EX | LOCK_NB
         while true {
             guard flock(fd, operation) != 0 else {
-                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode)
+                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode,
+                             storeParentIdentity: descriptors.2)
             }
             let code = errno
             if code == EINTR { continue }
@@ -217,7 +229,8 @@ struct ParakeetStoreFileLock: Sendable {
                     throw error
                 }
                 closeOnExit = false
-                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode)
+                return Lease(fileDescriptor: fd, storeParentDescriptor: parentFD, mode: mode,
+                             storeParentIdentity: descriptors.2)
             }
 
             let code = errno
@@ -233,19 +246,19 @@ struct ParakeetStoreFileLock: Sendable {
         }
     }
 
-    private func openValidatedLockDescriptor() throws -> (Int32, Int32) {
-        let parentFD = try openStoreParentDirectory()
+    private func openValidatedLockDescriptor() throws -> (Int32, Int32, [String]) {
+        let components = try normalizedStoreComponents()
+        let parentFD = try openStoreParentDirectory(components: components)
         do {
             let lockFD = try openLockFile(parentFD: parentFD)
-            return (parentFD, lockFD)
+            return (parentFD, lockFD, components)
         } catch {
             _ = close(parentFD)
             throw error
         }
     }
 
-    private func openStoreParentDirectory() throws -> Int32 {
-        let components = try normalizedStoreComponents()
+    private func openStoreParentDirectory(components: [String]) throws -> Int32 {
         var currentFD = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard currentFD >= 0 else { throw LockError.openFailed(errno) }
         defer {
@@ -267,6 +280,10 @@ struct ParakeetStoreFileLock: Sendable {
     }
 
     private func normalizedStoreComponents() throws -> [String] {
+        try Self.normalizedStoreComponents(for: storeParent)
+    }
+
+    private static func normalizedStoreComponents(for storeParent: URL) throws -> [String] {
         guard storeParent.isFileURL, storeParent.path.hasPrefix("/") else {
             throw LockError.invalidStoreParent
         }
@@ -278,6 +295,10 @@ struct ParakeetStoreFileLock: Sendable {
             return ["private"] + raw
         }
         return raw
+    }
+
+    private static func normalizedStoreParentIdentity(for storeParent: URL) -> [String]? {
+        try? normalizedStoreComponents(for: storeParent)
     }
 
     private func openOrCreateDirectory(_ component: String, relativeTo parentFD: Int32) throws -> Int32 {
