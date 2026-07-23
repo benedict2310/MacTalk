@@ -26,6 +26,21 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertEqual(reuser.mappings.map(\.component), ParakeetSourceComponent.allCases)
     }
 
+    func test_configurationRejectsAlternateCompiledRootBeforeFilesystemMutation() throws {
+        let parent = temporaryParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let entries = fixtureEntries()
+        XCTAssertThrowsError(try ParakeetCompiledWeightReuser(
+            store: fixtureStore(entries: entries.source, parent: parent),
+            sourceEntries: entries.source,
+            compiledEntries: entries.compiled,
+            compiledDirectoryName: "alternate-root"
+        )) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseConfigurationError, .invalidCompiledDirectoryName)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(".mactalk-store.lock").path))
+    }
+
     func test_configurationRejectsPathRoleTupleAndDuplicateBeforeFilesystemMutation() throws {
         let parent = temporaryParent()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -77,6 +92,20 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         let destinationData = try Data(contentsOf: fixture.destination)
         XCTAssertEqual(destinationData, fixture.data)
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: fixture.destination.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func test_legacyShortAndOversizedArtifactsAreUnavailableWithoutDestination() async throws {
+        for artifact in [Data("short".utf8), Data(repeating: 0x41, count: 16)] {
+            let fixture = try ReuseFixture()
+            try artifact.write(to: fixture.compiled)
+            let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+            let lease = try await lock.acquire(.exclusive)
+            let staging = try openStaging(fixture.staging)
+            let result = try fixture.reuser().reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
+            guard case .unavailable(.sizeMismatch) = result else { XCTFail("expected size mismatch, got \(result)"); continue }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+            close(staging); lease.release()
+        }
     }
 
     func test_invalidLegacyArtifactIsUnavailableWithoutDestination() async throws {
@@ -146,6 +175,28 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
         let result = try fixture.reuser().reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
         guard case .reused = result else { return XCTFail("valid Encoder must not be blocked by Decoder") }
+    }
+
+    func test_compiledLeafSwapToSymlinkFallsBackWithoutLeavingSymlink() async throws {
+        let fixture = try ReuseFixture()
+        let old = fixture.compiled.deletingLastPathComponent().appendingPathComponent("old-weight.bin")
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            XCTAssertEqual(rename(fixture.compiled.path, old.path), 0)
+            XCTAssertEqual(symlink("attacker", fixture.compiled.path), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+        let result = try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
+        guard case .reused(.copy) = result else { return XCTFail("symlink swap must use retained FD copy, got \(result)") }
+        var destinationInfo = stat()
+        XCTAssertEqual(lstat(fixture.destination.path, &destinationInfo), 0)
+        XCTAssertEqual(destinationInfo.st_mode & S_IFMT, S_IFREG)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
+        var compiledInfo = stat()
+        XCTAssertEqual(lstat(fixture.compiled.path, &compiledInfo), 0)
+        XCTAssertEqual(compiledInfo.st_mode & S_IFMT, S_IFLNK)
     }
 
     func test_sourceLeafSwapFallsBackToRetainedVerifiedFD() async throws {

@@ -85,8 +85,11 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     init(store: ParakeetSourceStore,
          sourceEntries: [GeneratedParakeetManifestEntry],
          compiledEntries: [GeneratedParakeetManifestEntry],
-         compiledDirectoryName: String = "parakeet-tdt-0.6b-v3",
+         compiledDirectoryName: String = ParakeetModelDownloader.folderName,
          hooks: TestHooks = TestHooks()) throws {
+        guard compiledDirectoryName == ParakeetModelDownloader.folderName else {
+            throw ParakeetCompiledWeightReuseConfigurationError.invalidCompiledDirectoryName
+        }
         self.store = store
         self.compiledDirectoryName = compiledDirectoryName
         self.hooks = hooks
@@ -168,24 +171,18 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             }
             if linked {
                 ownedDestination = true
-                var linkedInfo = stat()
-                let linkedFD = openDestination(destination.parentFD, destination.leaf)
-                let linkStatSucceeded = linkedFD >= 0 && fstat(linkedFD, &linkedInfo) == 0
-                if linkedFD >= 0 { close(linkedFD) }
-                if !linkStatSucceeded {
-                    ownedDestination = false
-                    linked = false
+                guard let linkedInfo = destinationStat(parentFD: destination.parentFD, leaf: destination.leaf) else {
+                    throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
                 }
-                if linked {
-                    ownedIdentity = linkedInfo
-                    if linkedInfo.st_dev == source.info.st_dev && linkedInfo.st_ino == source.info.st_ino {
-                        ownedDestination = true
-                        method = .hardLink
-                    } else {
-                        unlinkIfMatches(parentFD: destination.parentFD, leaf: destination.leaf, expected: linkedInfo)
-                        ownedIdentity = nil
-                        ownedDestination = false
-                    }
+                ownedIdentity = linkedInfo
+                let linkedIsRegular = (linkedInfo.st_mode & S_IFMT) == S_IFREG
+                let linkedMatchesSource = linkedInfo.st_dev == source.info.st_dev && linkedInfo.st_ino == source.info.st_ino
+                if linkedIsRegular && linkedMatchesSource {
+                    method = .hardLink
+                } else {
+                    unlinkIfMatches(parentFD: destination.parentFD, leaf: destination.leaf, expected: linkedInfo)
+                    ownedIdentity = nil
+                    ownedDestination = false
                 }
             } else if linkError == EEXIST {
                 throw ParakeetCompiledWeightReuseError.destinationCollision
@@ -367,12 +364,20 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     }
 
     private func unlinkIfMatches(parentFD: Int32, leaf: String, expected: stat) {
-        let fd = openDestination(parentFD, leaf)
-        guard fd >= 0 else { return }
-        var actual = stat()
-        let matches = fstat(fd, &actual) == 0 && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino
-        close(fd)
-        if matches { _ = unlinkat(parentFD, leaf, 0) }
+        guard let actual = destinationStat(parentFD: parentFD, leaf: leaf) else { return }
+        if actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino {
+            _ = unlinkat(parentFD, leaf, 0)
+        }
+    }
+
+    private func destinationStat(parentFD: Int32, leaf: String) -> stat? {
+        var info = stat()
+        while true {
+            let result = leaf.withCString { fstatat(parentFD, $0, &info, AT_SYMLINK_NOFOLLOW) }
+            if result == 0 { return info }
+            if errno == EINTR { continue }
+            return nil
+        }
     }
 
     private func copyVerifiedSource(_ sourceFD: Int32, _ destinationParentFD: Int32, leaf: String, size: Int64) throws -> stat {
