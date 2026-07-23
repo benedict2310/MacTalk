@@ -58,6 +58,83 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(".mactalk-store.lock").path))
     }
 
+    func test_configurationRejectsExactSourcePathDriftWithoutFilesystemMutation() throws {
+        let parent = temporaryParent()
+        let entries = fixtureEntries()
+        var source = entries.source
+        source[0] = GeneratedParakeetManifestEntry(
+            path: "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/weights/drift.bin",
+            size: source[0].size, sha256: source[0].sha256,
+            component: source[0].component, role: source[0].role
+        )
+        try assertPureConfigurationRejection(parent: parent, expected: .pathMismatch(source[0].path)) {
+            _ = try ParakeetCompiledWeightReuser(
+                store: fixtureStore(entries: source, parent: parent),
+                sourceEntries: source, compiledEntries: entries.compiled
+            )
+        }
+    }
+
+    func test_configurationRejectsSourceCompiledSizeTupleMismatchWithoutFilesystemMutation() throws {
+        let parent = temporaryParent()
+        let entries = fixtureEntries()
+        var compiled = entries.compiled
+        compiled[0] = GeneratedParakeetManifestEntry(
+            path: compiled[0].path, size: compiled[0].size + 1, sha256: compiled[0].sha256,
+            component: compiled[0].component, role: compiled[0].role
+        )
+        try assertPureConfigurationRejection(parent: parent, expected: .tupleMismatch("Preprocessor")) {
+            _ = try ParakeetCompiledWeightReuser(
+                store: fixtureStore(entries: entries.source, parent: parent),
+                sourceEntries: entries.source, compiledEntries: compiled
+            )
+        }
+    }
+
+    func test_configurationRejectsSourceCompiledSHA256TupleMismatchWithoutFilesystemMutation() throws {
+        let parent = temporaryParent()
+        let entries = fixtureEntries()
+        var compiled = entries.compiled
+        compiled[0] = GeneratedParakeetManifestEntry(
+            path: compiled[0].path, size: compiled[0].size, sha256: digest(Data("bad".utf8)),
+            component: compiled[0].component, role: compiled[0].role
+        )
+        try assertPureConfigurationRejection(parent: parent, expected: .tupleMismatch("Preprocessor")) {
+            _ = try ParakeetCompiledWeightReuser(
+                store: fixtureStore(entries: entries.source, parent: parent),
+                sourceEntries: entries.source, compiledEntries: compiled
+            )
+        }
+    }
+
+    func test_configurationRejectsDuplicateSourceOrCompiledComponentWithoutFilesystemMutation() throws {
+        let parent = temporaryParent()
+        let entries = fixtureEntries()
+        var duplicateSource = entries.source
+        duplicateSource[1] = GeneratedParakeetManifestEntry(
+            path: duplicateSource[1].path, size: duplicateSource[1].size, sha256: duplicateSource[1].sha256,
+            component: "Preprocessor", role: duplicateSource[1].role
+        )
+        try assertPureConfigurationRejection(parent: parent, expected: .duplicateComponent("Preprocessor")) {
+            _ = try ParakeetCompiledWeightReuser(
+                store: fixtureStore(entries: duplicateSource, parent: parent),
+                sourceEntries: duplicateSource, compiledEntries: entries.compiled
+            )
+        }
+
+        var duplicateCompiled = entries.compiled
+        duplicateCompiled[1] = GeneratedParakeetManifestEntry(
+            path: duplicateCompiled[1].path, size: duplicateCompiled[1].size, sha256: duplicateCompiled[1].sha256,
+            component: "Preprocessor", role: duplicateCompiled[1].role
+        )
+        try assertPureConfigurationRejection(parent: parent, expected: .duplicateComponent("Preprocessor")) {
+            _ = try ParakeetCompiledWeightReuser(
+                store: fixtureStore(entries: entries.source, parent: parent),
+                sourceEntries: entries.source, compiledEntries: duplicateCompiled
+            )
+        }
+    }
+
     func test_rejectsExclusiveLeaseForDifferentStoreParentBeforeDestinationMutation() async throws {
         let expectedFixture = try ReuseFixture()
         let otherFixture = try ReuseFixture()
@@ -573,6 +650,38 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
     }
 
+    func test_forcedCopyVerifiedInodeMutationAfterVerificationFailsDestinationDigestAndPreservesRacedContent() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let raced = Data("tampered-weight".utf8)
+        XCTAssertEqual(raced.count, fixture.data.count)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterSourceVerification: {
+            let fd = open(fixture.compiled.path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            let written = raced.withUnsafeBytes { bytes in
+                pwrite(fd, bytes.baseAddress, raced.count, 0)
+            }
+            XCTAssertEqual(written, raced.count)
+            XCTAssertEqual(close(fd), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "failed copy leaf remains for caller-owned whole-tree cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced, "raced source bytes must be preserved")
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), raced, "copy must use the mutated verified inode")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source, destination, and ancestor descriptors must close")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
     func test_sameSizeCorruptSymlinkDirectoryAndFIFOAreUnavailableWithoutLeaf() async throws {
         for kind in ["corrupt", "symlink", "directory", "fifo"] {
             let fixture = try ReuseFixture()
@@ -628,6 +737,83 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         var destinationInfo = stat()
         XCTAssertEqual(stat(fixture.destination.path, &destinationInfo), 0)
         XCTAssertEqual(destinationInfo.st_mode & 0o777, 0o600)
+    }
+
+    func test_cancellationAfterCopyCreateLeavesPartialLeafAndPreservesCallerOwnership() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterCopyCreate: {
+            entered.signal()
+            release.wait()
+        }))
+        let task = Task<ParakeetCompiledWeightReuseResult, Error> { @Sendable in
+            try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        task.cancel()
+        release.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancellation unexpectedly succeeded")
+        } catch let error as ParakeetCompiledWeightReuseError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("unexpected cancellation error: \(error)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "partial leaf remains for caller-owned whole-tree cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), fixture.data, "source bytes remain unchanged")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "all internal descriptors must close")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_cancellationDuringDestinationVerificationLeavesLeafAndPreservesCallerOwnership() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, beforeDestinationVerification: {
+            entered.signal()
+            release.wait()
+        }))
+        let task = Task<ParakeetCompiledWeightReuseResult, Error> { @Sendable in
+            try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        task.cancel()
+        release.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancellation unexpectedly succeeded")
+        } catch let error as ParakeetCompiledWeightReuseError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("unexpected cancellation error: \(error)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "failed destination leaf remains for caller-owned whole-tree cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), fixture.data, "source bytes remain unchanged")
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data, "partial verification must not alter copied bytes")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "all internal descriptors must close")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
     }
 
     func test_cancellationDuringSourceStreamClosesSourceAncestorsAndPreservesCallerOwnership() async throws {
@@ -754,6 +940,26 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cancelledFixture.destination.path))
         var info = stat(); XCTAssertEqual(fstat(cancelledStaging, &info), 0)
         close(cancelledStaging); cancelledLease.release(); try? FileManager.default.removeItem(at: cancelledFixture.parent)
+    }
+
+    private func assertPureConfigurationRejection(
+        parent: URL,
+        expected: ParakeetCompiledWeightReuseConfigurationError,
+        operation: () throws -> Void
+    ) throws {
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let sentinel = parent.appendingPathComponent("sentinel")
+        let sentinelData = Data("configuration sentinel".utf8)
+        try sentinelData.write(to: sentinel)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        XCTAssertThrowsError(try operation()) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseConfigurationError, expected)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: parent.path), "constructor must not remove the parent")
+        XCTAssertEqual(try Data(contentsOf: sentinel), sentinelData, "constructor must not mutate existing files")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(".mactalk-store.lock").path),
+                       "pure configuration rejection must not create a lock")
     }
 
     private func fixtureEntries() -> (source: [GeneratedParakeetManifestEntry], compiled: [GeneratedParakeetManifestEntry]) {
