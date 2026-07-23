@@ -74,12 +74,47 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
         try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
         try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
-        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeActivation: { Thread.sleep(forTimeInterval: 0.01) })
-        let task = Task { try await preparer.prepareIfNeeded() }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeActivation: {
+            entered.signal()
+            release.wait()
+        })
+        let task = Task.detached { try await preparer.prepareIfNeeded() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
         task.cancel()
-        _ = try? await task.value
+        release.signal()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled preparation unexpectedly activated")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
         XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
-        XCTAssertFalse((try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) } ?? false)
+        XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+    }
+
+    func test_sourceCollisionAfterValidationFailsClosedAndPreservesSentinels() async throws {
+        let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+        let collision = fixture.sourceURL
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeActivation: {
+            try? FileManager.default.createDirectory(at: collision, withIntermediateDirectories: false)
+            try? Data("collision-sentinel".utf8).write(to: collision.appendingPathComponent("sentinel"))
+        })
+        do {
+            _ = try await preparer.prepareIfNeeded()
+            XCTFail("source collision unexpectedly activated")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .collision(fixture.store.sourceDirectoryName))
+        }
+        XCTAssertEqual(try Data(contentsOf: collision.appendingPathComponent("sentinel")), Data("collision-sentinel".utf8))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: collision.appendingPathComponent("parakeet_vocab.json").path))
+        XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
     }
 
     private func mode(of url: URL) throws -> Int {
@@ -106,7 +141,7 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         lease.release()
     }
 
-    func test_invalidStagingExtraPreservesPriorSource() async throws {
+    func test_existingInvalidSourceFailsClosedBeforeStagingMutation() async throws {
         let fixture = try SourcePreparationFixture()
         let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
         try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
@@ -116,15 +151,12 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         try Data("prior".utf8).write(to: fixture.sourceURL.appendingPathComponent("prior-sentinel"))
         XCTAssertEqual(chmod(fixture.parent.path, 0o700), 0)
         XCTAssertEqual(chmod(fixture.sourceURL.path, 0o700), 0)
-        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeValidation: {
-            guard let staging = (try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.first(where: { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) }) else { return }
-            try? Data("extra".utf8).write(to: staging.appendingPathComponent("extra"))
-        })
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer)
         do {
             _ = try await preparer.prepareIfNeeded()
-            XCTFail("invalid staging unexpectedly activated")
-        } catch {
-            // expected
+            XCTFail("invalid source unexpectedly activated")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .collision(fixture.store.sourceDirectoryName))
         }
         XCTAssertEqual(try Data(contentsOf: fixture.sourceURL.appendingPathComponent("prior-sentinel")), Data("prior".utf8))
         XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))

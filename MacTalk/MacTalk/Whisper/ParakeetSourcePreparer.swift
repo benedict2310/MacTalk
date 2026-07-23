@@ -126,6 +126,10 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 if (try? await provider.makeVerifiedSnapshot(holding: lease)) != nil {
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
                 }
+                // An existing but invalid source is not ours to replace. The
+                // descriptor-relative check closes this path before staging;
+                // activation repeats the check atomically for a racing creator.
+                try ensureAbsent(named: store.sourceDirectoryName, relativeTo: parentFD)
 
                 let stagingName = try uniqueName(prefix: ParakeetSourceStore.stagingPrefix)
                 try createDirectory(named: stagingName, relativeTo: parentFD)
@@ -344,25 +348,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     }
 
     private func activate(stagingName: String, sourceName: String, parentFD: Int32) throws {
-        let backupName = try uniqueName(prefix: ParakeetSourceStore.backupPrefix)
-        let sourceExists = entryExists(named: sourceName, relativeTo: parentFD)
-        if sourceExists {
-            try renameExclusively(from: sourceName, to: backupName, relativeTo: parentFD)
-        }
-        guard !entryExists(named: sourceName, relativeTo: parentFD) else {
-            throw ParakeetSourcePreparationError.collision(sourceName)
-        }
-        do {
-            try renameExclusively(from: stagingName, to: sourceName, relativeTo: parentFD)
-        } catch {
-            if sourceExists { try? renameExclusively(from: backupName, to: sourceName, relativeTo: parentFD) }
-            throw ParakeetSourcePreparationError.activationFailed
-        }
-        if sourceExists {
-            // Activation is committed. Cleanup failure is intentionally
-            // non-fatal; stale backup recovery belongs to the next writer.
-            try? removeTree(named: backupName, relativeTo: parentFD)
-        }
+        try renameExclusively(from: stagingName, to: sourceName, relativeTo: parentFD)
     }
 
     private func renameExclusively(from: String, to: String, relativeTo parentFD: Int32) throws {
