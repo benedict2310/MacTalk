@@ -73,6 +73,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         let afterSourceVerification: (() -> Void)?
         let beforeDestinationVerification: (() -> Void)?
         let afterDestinationIdentityObservation: (() -> Void)?
+        let afterDestinationAbsenceCheck: (() -> Void)?
 
         init(forceCopy: Bool = false, forceLinkFailure: Bool = false,
              forceDestinationStatFailureAfterLink: Bool = false,
@@ -82,7 +83,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
              beforeSourceStreamRead: (() -> Void)? = nil,
              afterSourceVerification: (() -> Void)? = nil,
              beforeDestinationVerification: (() -> Void)? = nil,
-             afterDestinationIdentityObservation: (() -> Void)? = nil) {
+             afterDestinationIdentityObservation: (() -> Void)? = nil,
+             afterDestinationAbsenceCheck: (() -> Void)? = nil) {
             self.forceCopy = forceCopy
             self.forceLinkFailure = forceLinkFailure
             self.forceDestinationStatFailureAfterLink = forceDestinationStatFailureAfterLink
@@ -93,6 +95,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             self.afterSourceVerification = afterSourceVerification
             self.beforeDestinationVerification = beforeDestinationVerification
             self.afterDestinationIdentityObservation = afterDestinationIdentityObservation
+            self.afterDestinationAbsenceCheck = afterDestinationAbsenceCheck
         }
     }
 
@@ -168,6 +171,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         let destination = try openDestinationParent(rootFD: stagingRootFD, path: mapping.sourcePath)
         defer { close(destination.parentFD) }
         try checkDestinationAbsent(parentFD: destination.parentFD, leaf: destination.leaf)
+        hooks.afterDestinationAbsenceCheck?()
 
         try checkCancellation()
 

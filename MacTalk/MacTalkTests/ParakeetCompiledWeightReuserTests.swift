@@ -225,6 +225,137 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.destination), Data("existing".utf8))
     }
 
+    func test_destinationCollisionAfterAbsenceCheckPreservesHardLinkSentinelAndCallerOwnership() async throws {
+        let fixture = try ReuseFixture()
+        let sentinel = Data("raced-hard-link".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterDestinationAbsenceCheck: {
+            XCTAssertTrue(FileManager.default.createFile(atPath: fixture.destination.path, contents: sentinel))
+            XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationCollision)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), sentinel)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "destination collision must close internal descriptors")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_destinationCollisionAfterAbsenceCheckPreservesCopySentinelAndCallerOwnership() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let sentinel = Data("raced-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterDestinationAbsenceCheck: {
+            XCTAssertTrue(FileManager.default.createFile(atPath: fixture.destination.path, contents: sentinel))
+            XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationCollision)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), sentinel)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "destination collision must close internal descriptors")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_sourceReplacementAfterVerificationPreservesRacedRegularFileAndCallerOwnership() async throws {
+        let fixture = try ReuseFixture()
+        let raced = Data("raced-regular".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            XCTAssertEqual(unlink(fixture.compiled.path), 0)
+            XCTAssertTrue(FileManager.default.createFile(atPath: fixture.compiled.path, contents: raced))
+            XCTAssertEqual(chmod(fixture.compiled.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path), "failed destination remains for caller cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), raced, "raced content must not be overwritten")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source race must close internal descriptors")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_sourceSymlinkReplacementAfterVerificationPreservesRacedSymlinkAndCallerOwnership() async throws {
+        let fixture = try ReuseFixture()
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            XCTAssertEqual(unlink(fixture.compiled.path), 0)
+            XCTAssertEqual(symlink("raced-target", fixture.compiled.path), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        var destinationInfo = stat()
+        XCTAssertEqual(lstat(fixture.destination.path, &destinationInfo), 0)
+        XCTAssertEqual(destinationInfo.st_mode & S_IFMT, S_IFLNK, "failed destination remains for caller cleanup")
+        var target = [CChar](repeating: 0, count: 256)
+        let targetLength = target.withUnsafeMutableBufferPointer { buffer in
+            readlink(fixture.destination.path, buffer.baseAddress, buffer.count)
+        }
+        XCTAssertEqual(String(decoding: target.prefix(Int(targetLength)).map { UInt8(bitPattern: $0) }, as: UTF8.self), "raced-target")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source race must close internal descriptors")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_verifiedInodeMutationAfterVerificationFailsDestinationDigestAndPreservesRacedContent() async throws {
+        let fixture = try ReuseFixture()
+        let raced = Data("tampered-weight".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            let fd = open(fixture.compiled.path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            let written = raced.withUnsafeBytes { bytes in
+                pwrite(fd, bytes.baseAddress, raced.count, 0)
+            }
+            XCTAssertEqual(written, raced.count)
+            XCTAssertEqual(close(fd), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path), "failed destination remains for caller cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), raced, "raced content must not be overwritten")
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "in-place source race must close internal descriptors")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
     func test_sameSizeCorruptSymlinkDirectoryAndFIFOAreUnavailableWithoutLeaf() async throws {
         for kind in ["corrupt", "symlink", "directory", "fifo"] {
             let fixture = try ReuseFixture()
