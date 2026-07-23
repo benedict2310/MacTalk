@@ -80,6 +80,8 @@ enum ParakeetSourceSnapshotError: Error, Equatable, Sendable {
     case sourceNotDirectory
     case sourceWrongOwner
     case sourceWrongPermissions(UInt16)
+    case pathWrongOwner(String)
+    case pathWrongPermissions(String, UInt16)
     case markerMissing
     case markerTooLarge
     case markerMalformed
@@ -343,12 +345,14 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
             let type = info.st_mode & S_IFMT
             if expectedDirectories.contains(path) {
                 guard type == S_IFDIR else { throw type == S_IFLNK ? ParakeetSourceSnapshotError.symlinkPath(path) : ParakeetSourceSnapshotError.nonRegularPath(path) }
+                try validatePrivateDirectory(info, path: path)
                 found.insert(path)
                 let child = try openDirectory(named: name, relativeTo: fd)
                 defer { _ = close(child) }
                 try walk(fd: child, relativePath: path, expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, found: &found, operation: operation)
             } else {
                 guard type == S_IFREG else { throw type == S_IFLNK ? ParakeetSourceSnapshotError.symlinkPath(path) : ParakeetSourceSnapshotError.nonRegularPath(path) }
+                try validatePrivateFile(info, path: path)
                 found.insert(path)
             }
         }
@@ -359,6 +363,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         defer { _ = close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw ParakeetSourceSnapshotError.markerMissing }
+        try validatePrivateFile(info, path: ParakeetSourceStore.identityMarkerName)
         guard info.st_size >= 0, info.st_size <= 16 * 1024 else { throw ParakeetSourceSnapshotError.markerTooLarge }
         let dataSize = Int(info.st_size)
         var data = Data(count: dataSize)
@@ -381,6 +386,18 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
         guard (info.st_mode & S_IFMT) == S_IFDIR else { throw ParakeetSourceSnapshotError.sourceNotDirectory }
         guard info.st_uid == getuid() else { throw ParakeetSourceSnapshotError.sourceWrongOwner }
         guard UInt16(info.st_mode & 0o777) == 0o700 else { throw ParakeetSourceSnapshotError.sourceWrongPermissions(UInt16(info.st_mode & 0o777)) }
+    }
+
+    private func validatePrivateDirectory(_ info: stat, path: String) throws {
+        guard info.st_uid == getuid() else { throw ParakeetSourceSnapshotError.pathWrongOwner(path) }
+        let permissions = UInt16(info.st_mode & 0o777)
+        guard permissions == 0o700 else { throw ParakeetSourceSnapshotError.pathWrongPermissions(path, permissions) }
+    }
+
+    private func validatePrivateFile(_ info: stat, path: String) throws {
+        guard info.st_uid == getuid() else { throw ParakeetSourceSnapshotError.pathWrongOwner(path) }
+        let permissions = UInt16(info.st_mode & 0o777)
+        guard permissions == 0o600 else { throw ParakeetSourceSnapshotError.pathWrongPermissions(path, permissions) }
     }
 
     private func openDirectory(named name: String, relativeTo fd: Int32) throws -> Int32 {

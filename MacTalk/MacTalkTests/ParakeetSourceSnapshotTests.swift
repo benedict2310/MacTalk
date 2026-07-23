@@ -329,11 +329,20 @@ private final class SourceFixture: @unchecked Sendable {
         entries = Self.makeEntries()
         for entry in entries {
             let url = source.appendingPathComponent(entry.path)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let directory = url.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var current = directory
+            while current.path != source.path && current.path.hasPrefix(source.path + "/") {
+                XCTAssertEqual(chmod(current.path, 0o700), 0)
+                current.deleteLastPathComponent()
+            }
             try data(for: entry).write(to: url)
+            XCTAssertEqual(chmod(url.path, 0o600), 0)
         }
         let marker = try JSONEncoder().encode(identity)
-        try marker.write(to: source.appendingPathComponent(ParakeetSourceStore.identityMarkerName))
+        let markerURL = source.appendingPathComponent(ParakeetSourceStore.identityMarkerName)
+        try marker.write(to: markerURL)
+        XCTAssertEqual(chmod(markerURL.path, 0o600), 0)
     }
 
     deinit { try? FileManager.default.removeItem(at: parent) }

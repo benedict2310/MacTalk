@@ -208,6 +208,120 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertFalse((try FileManager.default.fileExists(atPath: fixture.parent.path) ? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil) : []).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
     }
 
+    func test_stagingTamperedDirectoryMarkerAndArtifactModesFailBeforeActivation() async throws {
+        let tamperPaths = [
+            "mlpackages/Preprocessor.mlpackage/Data",
+            ParakeetSourceStore.identityMarkerName,
+            fixtureArtifactPath
+        ]
+        for relativePath in tamperPaths {
+            let fixture = try SourcePreparationFixture()
+            let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+            try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+            try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+            let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeValidation: {
+                let staging = (try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.first(where: { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+                if let staging { XCTAssertEqual(chmod(staging.appendingPathComponent(relativePath).path, 0o755), 0, relativePath) }
+            })
+            do {
+                _ = try await preparer.prepareIfNeeded()
+                XCTFail("tampered staging mode unexpectedly activated: \(relativePath)")
+            } catch let error as ParakeetSourcePreparationError {
+                XCTAssertEqual(error, .validationFailed)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path), relativePath)
+            XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+            XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+        }
+    }
+
+    func test_postMkdirStagingFailureRemovesEmptyDirectory() async throws {
+        let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, afterStagingDirectoryCreated: {
+            guard let staging = (try? FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil))?.first(where: { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) }) else { return }
+            _ = chmod(staging.path, 0o755)
+        })
+        do {
+            _ = try await preparer.prepareIfNeeded()
+            XCTFail("post-mkdir staging corruption unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .invalidTree)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+        XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+    }
+
+    func test_cancellationWhileValidatingExistingSourceMapsToTypedCancellation() async throws {
+        let fixture = try SourcePreparationFixture()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeExistingValidationCompletion: {
+            entered.signal()
+            release.wait()
+        })
+        let task = Task.detached { try await preparer.prepareIfNeeded() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "preparer must retain its exclusive lease while validation is blocked")
+        task.cancel()
+        release.signal()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled existing validation unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
+        let successor = try lock.tryAcquire(.exclusive)
+        XCTAssertNotNil(successor)
+        successor?.release()
+    }
+
+    func test_cancellationWhileValidatingStagingMapsToTypedCancellationAndCleansStaging() async throws {
+        let fixture = try SourcePreparationFixture()
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer, beforeStagingValidationCompletion: {
+            entered.signal()
+            release.wait()
+        })
+        let task = Task.detached { try await preparer.prepareIfNeeded() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(try ParakeetStoreFileLock(storeParent: fixture.parent).tryAcquire(.exclusive))
+        task.cancel()
+        release.signal()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled staging validation unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+        XCTAssertFalse((try FileManager.default.contentsOfDirectory(at: fixture.parent, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+    }
+
+    func test_lateMaterializerWriteAfterFinishSeesClosedSink() async throws {
+        let fixture = try SourcePreparationFixture()
+        let materializer = LateWritingSourceMaterializer(bytes: fixture.bytes)
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: materializer).prepareIfNeeded()
+        materializer.releaseLateWrite()
+        let result = await materializer.lateWriteResult()
+        XCTAssertEqual(result, .sinkClosed)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
+    }
+
+    private var fixtureArtifactPath: String { "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel" }
+
     func test_bootstrapDoesNotReferenceInactiveSourcePreparation() throws {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
         let source = try String(contentsOf: path, encoding: .utf8)
@@ -281,6 +395,61 @@ private final class StickySourceMaterializer: ParakeetSourceArtifactMaterializin
             }
         }
         try sink.write(bytes[entry.path]!)
+    }
+}
+
+private final class LateWritingSourceMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {
+    let bytes: [String: Data]
+    private let release = DispatchSemaphore(value: 0)
+    private let started = DispatchSemaphore(value: 0)
+    private let completed = DispatchSemaphore(value: 0)
+    private let resultLock = NSLock()
+    private var result: ParakeetSourcePreparationError?
+    private var writerStarted = false
+
+    init(bytes: [String: Data]) { self.bytes = bytes }
+
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
+        try sink.write(bytes[entry.path]!)
+        if !writerStarted {
+            writerStarted = true
+            let release = self.release
+            let started = self.started
+            let completed = self.completed
+            DispatchQueue.global().async {
+                started.signal()
+                release.wait()
+                do {
+                    try sink.write(Data("late-write".utf8))
+                } catch let error as ParakeetSourcePreparationError {
+                    self.resultLock.lock()
+                    self.result = error
+                    self.resultLock.unlock()
+                } catch {
+                    self.resultLock.lock()
+                    self.result = .activationFailed
+                    self.resultLock.unlock()
+                }
+                completed.signal()
+            }
+        }
+    }
+
+    func releaseLateWrite() {
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        release.signal()
+    }
+
+    func lateWriteResult() async -> ParakeetSourcePreparationError? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                self.completed.wait()
+                self.resultLock.lock()
+                let result = self.result
+                self.resultLock.unlock()
+                continuation.resume(returning: result)
+            }
+        }
     }
 }
 

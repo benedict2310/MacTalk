@@ -9,7 +9,8 @@ protocol ParakeetSourceArtifactMaterializing: Sendable {
 /// A bounded descriptor opened by the preparer for one exact manifest path.
 /// Materializers can write bytes, but cannot select paths or mutate the store.
 final class ParakeetSourceArtifactSink: @unchecked Sendable {
-    private let descriptor: Int32
+    private let stateLock = NSLock()
+    private var descriptor: Int32?
     private let expectedSize: Int64
     private let expectedDigest: String
     private var written: Int64 = 0
@@ -22,7 +23,9 @@ final class ParakeetSourceArtifactSink: @unchecked Sendable {
     }
 
     func write(_ data: Data) throws {
-        guard !closed else { throw ParakeetSourcePreparationError.sinkClosed }
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !closed, let descriptor else { throw ParakeetSourcePreparationError.sinkClosed }
         guard data.count <= expectedSize - written else { throw ParakeetSourcePreparationError.artifactSize }
         var offset = 0
         try data.withUnsafeBytes { bytes in
@@ -41,29 +44,52 @@ final class ParakeetSourceArtifactSink: @unchecked Sendable {
     }
 
     fileprivate func finish() throws {
-        guard !closed else { throw ParakeetSourcePreparationError.sinkClosed }
-        guard written == expectedSize else { throw ParakeetSourcePreparationError.artifactSize }
-        guard fsync(descriptor) == 0 else { throw ParakeetSourcePreparationError.io(errno) }
-        guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
-        var digest = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let count = Darwin.read(descriptor, &buffer, buffer.count)
-            if count < 0 {
-                if errno == EINTR { continue }
-                throw ParakeetSourcePreparationError.io(errno)
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !closed, let descriptor else { throw ParakeetSourcePreparationError.sinkClosed }
+        do {
+            guard written == expectedSize else { throw ParakeetSourcePreparationError.artifactSize }
+            guard fsync(descriptor) == 0 else { throw ParakeetSourcePreparationError.io(errno) }
+            guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
+            var digest = SHA256()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    throw ParakeetSourcePreparationError.io(errno)
+                }
+                if count == 0 { break }
+                digest.update(data: Data(buffer[0..<count]))
             }
-            if count == 0 { break }
-            digest.update(data: Data(buffer[0..<count]))
+            let actual = digest.finalize().map { String(format: "%02x", $0) }.joined()
+            guard actual == expectedDigest else { throw ParakeetSourcePreparationError.artifactDigest }
+            closeUnlocked()
+        } catch {
+            closeUnlocked()
+            throw error
         }
-        let actual = digest.finalize().map { String(format: "%02x", $0) }.joined()
-        guard actual == expectedDigest else { throw ParakeetSourcePreparationError.artifactDigest }
+    }
+
+    fileprivate func close() {
+        stateLock.lock()
+        closeUnlocked()
+        stateLock.unlock()
+    }
+
+    private func closeUnlocked() {
+        guard !closed else { return }
         closed = true
-        _ = Darwin.close(descriptor)
+        if let descriptor {
+            self.descriptor = nil
+            _ = Darwin.close(descriptor)
+        }
     }
 
     deinit {
-        if !closed { _ = Darwin.close(descriptor) }
+        stateLock.lock()
+        closeUnlocked()
+        stateLock.unlock()
     }
 }
 
@@ -89,21 +115,36 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     private let materializer: any ParakeetSourceArtifactMaterializing
     private let beforeValidation: (@Sendable () -> Void)?
     private let beforeActivation: (@Sendable () -> Void)?
+    private let afterStagingDirectoryCreated: (@Sendable () -> Void)?
+    private let beforeExistingValidationCompletion: (@Sendable () -> Void)?
+    private let beforeStagingValidationCompletion: (@Sendable () -> Void)?
 
     init(store: ParakeetSourceStore, materializer: any ParakeetSourceArtifactMaterializing,
          beforeValidation: (@Sendable () -> Void)? = nil,
-         beforeActivation: (@Sendable () -> Void)? = nil) {
+         beforeActivation: (@Sendable () -> Void)? = nil,
+         afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
+         beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
+         beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
         self.store = store
         self.materializer = materializer
         self.beforeValidation = beforeValidation
         self.beforeActivation = beforeActivation
+        self.afterStagingDirectoryCreated = afterStagingDirectoryCreated
+        self.beforeExistingValidationCompletion = beforeExistingValidationCompletion
+        self.beforeStagingValidationCompletion = beforeStagingValidationCompletion
     }
 
     convenience init(parent: URL, materializer: any ParakeetSourceArtifactMaterializing,
                      beforeValidation: (@Sendable () -> Void)? = nil,
-                     beforeActivation: (@Sendable () -> Void)? = nil) {
+                     beforeActivation: (@Sendable () -> Void)? = nil,
+                     afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
+                     beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
+                     beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
         self.init(store: .canonical(parent: parent), materializer: materializer,
-                  beforeValidation: beforeValidation, beforeActivation: beforeActivation)
+                  beforeValidation: beforeValidation, beforeActivation: beforeActivation,
+                  afterStagingDirectoryCreated: afterStagingDirectoryCreated,
+                  beforeExistingValidationCompletion: beforeExistingValidationCompletion,
+                  beforeStagingValidationCompletion: beforeStagingValidationCompletion)
     }
 
     func prepareIfNeeded() async throws -> URL {
@@ -122,10 +163,17 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         do {
             return try await lease.withStoreParentDescriptor { parentFD in
                 try checkCancellation()
-                let provider = VerifiedParakeetSourceSnapshotProvider(store: store)
-                if (try? await provider.makeVerifiedSnapshot(holding: lease)) != nil {
+                let provider = VerifiedParakeetSourceSnapshotProvider(store: store, beforeCompletion: beforeExistingValidationCompletion)
+                do {
+                    _ = try await provider.makeVerifiedSnapshot(holding: lease)
+                    try checkCancellation()
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
+                } catch let error as ParakeetSourceSnapshotError {
+                    guard error != .cancelled else { throw ParakeetSourcePreparationError.cancelled }
+                } catch is CancellationError {
+                    throw ParakeetSourcePreparationError.cancelled
                 }
+                try checkCancellation()
                 // An existing but invalid source is not ours to replace. The
                 // descriptor-relative check closes this path before staging;
                 // activation repeats the check atomically for a racing creator.
@@ -152,6 +200,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                             try checkCancellation()
                             try sink.finish()
                         } catch {
+                            sink.close()
                             throw map(error)
                         }
                     }
@@ -163,8 +212,13 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                     do {
                         let stagingStore = ParakeetSourceStore(parent: store.parent, sourceDirectoryName: stagingName,
                                                                entries: store.entries, identity: store.identity)
-                        let stagingProvider = VerifiedParakeetSourceSnapshotProvider(store: stagingStore)
+                        let stagingProvider = VerifiedParakeetSourceSnapshotProvider(store: stagingStore, beforeCompletion: beforeStagingValidationCompletion)
                         _ = try await stagingProvider.makeVerifiedSnapshot(holding: lease)
+                    } catch let error as ParakeetSourceSnapshotError {
+                        guard error != .cancelled else { throw ParakeetSourcePreparationError.cancelled }
+                        throw ParakeetSourcePreparationError.validationFailed
+                    } catch is CancellationError {
+                        throw ParakeetSourcePreparationError.cancelled
                     } catch {
                         throw ParakeetSourcePreparationError.validationFailed
                     }
@@ -259,6 +313,15 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         guard mkdirat(parentFD, name, mode_t(0o700)) == 0 else {
             throw errno == EEXIST ? ParakeetSourcePreparationError.collision(name) : .io(errno)
         }
+        var keepDirectory = false
+        defer {
+            if !keepDirectory {
+                _ = name.withCString { unlinkat(parentFD, $0, AT_REMOVEDIR) }
+            }
+        }
+        // This hook is intentionally pathless and immediately follows mkdirat;
+        // it exists only to exercise post-creation failure cleanup.
+        afterStagingDirectoryCreated?()
         let fd = try openDirectory(named: name, relativeTo: parentFD)
         guard fchmod(fd, mode_t(0o700)) == 0 else {
             let code = errno
@@ -266,6 +329,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             throw ParakeetSourcePreparationError.io(code)
         }
         _ = Darwin.close(fd)
+        keepDirectory = true
     }
 
     private func openDirectory(named name: String, relativeTo parentFD: Int32) throws -> Int32 {
@@ -379,7 +443,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
 
     private func removeTree(named name: String, relativeTo parentFD: Int32) throws {
         guard entryExists(named: name, relativeTo: parentFD) else { return }
-        let fd = try openDirectory(named: name, relativeTo: parentFD)
+        let fd = try openDirectoryForRemoval(named: name, relativeTo: parentFD)
         defer { _ = Darwin.close(fd) }
         let listingFD = dup(fd)
         guard listingFD >= 0, let directory = fdopendir(listingFD) else { throw ParakeetSourcePreparationError.io(errno) }
@@ -398,5 +462,16 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             }
         }
         guard name.withCString({ unlinkat(parentFD, $0, AT_REMOVEDIR) == 0 }) else { throw ParakeetSourcePreparationError.io(errno) }
+    }
+
+    private func openDirectoryForRemoval(named name: String, relativeTo parentFD: Int32) throws -> Int32 {
+        let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        guard fd >= 0 else { throw ParakeetSourcePreparationError.invalidTree }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid() else {
+            _ = Darwin.close(fd)
+            throw ParakeetSourcePreparationError.invalidTree
+        }
+        return fd
     }
 }
