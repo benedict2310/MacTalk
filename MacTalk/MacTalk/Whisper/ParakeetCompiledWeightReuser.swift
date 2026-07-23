@@ -223,9 +223,13 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             hooks.beforeDestinationVerification?()
             let verifiedDestinationInfo = try verifyDestination(parentFD: destination.parentFD, leaf: destination.leaf,
                                                                 expectedSize: mapping.size, expectedDigest: mapping.sha256)
-            hooks.afterDestinationVerification?()
             try revalidateDestinationPathIdentity(destination, authoritativeRootFD: stagingRootFD,
                                                   expectedLeaf: verifiedDestinationInfo)
+            hooks.afterDestinationVerification?()
+            let finalVerifiedDestinationInfo = try verifyDestination(parentFD: destination.parentFD, leaf: destination.leaf,
+                                                                     expectedSize: mapping.size, expectedDigest: mapping.sha256)
+            try revalidateDestinationPathIdentity(destination, authoritativeRootFD: stagingRootFD,
+                                                  expectedLeaf: finalVerifiedDestinationInfo)
             try verifySourcePathIdentity(source, authoritativeParentFD: parentFD)
             return .reused(method)
         } catch is CancellationError {
@@ -451,6 +455,12 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                                                       authoritativeRootFD: Int32) throws -> Int32 {
         var current = authoritativeRootFD
         var info = stat()
+        guard fstat(authoritativeRootFD, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == getuid(),
+              (info.st_mode & 0o777) == 0o700 else {
+            throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+        }
         for directory in destination.directories {
             while true {
                 let result = directory.name.withCString {
@@ -461,6 +471,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                 throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
             }
             guard (info.st_mode & S_IFMT) == S_IFDIR,
+                  info.st_uid == getuid(),
+                  (info.st_mode & 0o777) == 0o700,
                   info.st_dev == directory.info.st_dev,
                   info.st_ino == directory.info.st_ino else {
                 throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
@@ -484,6 +496,9 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
         }
         guard (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(),
+              (info.st_mode & 0o777) == 0o600,
+              info.st_size == expectedLeaf.st_size,
               info.st_dev == expectedLeaf.st_dev,
               info.st_ino == expectedLeaf.st_ino else {
             throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
