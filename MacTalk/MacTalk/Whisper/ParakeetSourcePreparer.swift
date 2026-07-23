@@ -287,8 +287,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
               sourceEntries.allSatisfy({ entry in
                   guard let component = ParakeetSourceComponent(rawValue: entry.component),
                         entry.role == "specification" || entry.role == "weights" else { return false }
-                  let suffix = entry.role == "specification" ? "model.mlmodel" : "weights/weight.bin"
-                  return entry.path == "mlpackages/\(component.rawValue).mlpackage/Data/com.apple.CoreML/\(suffix)"
+                  return ParakeetSourcePathContract.expectedPath(component: component, role: entry.role) == entry.path
               }) else { throw ParakeetSourcePreparationError.invalidManifest }
     }
 

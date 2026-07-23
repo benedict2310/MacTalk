@@ -5,6 +5,15 @@ import XCTest
 @testable import MacTalk
 
 final class ParakeetSourceSnapshotTests: XCTestCase {
+    func test_canonicalSourcePathsKeepJointAtSourceRoot() throws {
+        let fixture = try SourceFixture()
+        let entries = fixture.entries
+        XCTAssertEqual(entries.filter { $0.component == "JointDecisionv3" }.map(\.path), [
+            "JointDecisionv3.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "JointDecisionv3.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ])
+    }
+
     func test_completeSourceReturnsAllOwnedAssetsAndHoldsOneSharedLeaseDuringReads() async throws {
         let fixture = try SourceFixture()
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
@@ -358,7 +367,8 @@ private final class SourceFixture: @unchecked Sendable {
         var result = components.flatMap { component in
             ["model.mlmodel", "weights/weight.bin"].map { suffix in
                 let role = suffix == "model.mlmodel" ? "specification" : "weights"
-                let path = "mlpackages/\(component).mlpackage/Data/com.apple.CoreML/\(suffix)"
+                let packagePath = component == "JointDecisionv3" ? "\(component).mlpackage" : "mlpackages/\(component).mlpackage"
+                let path = "\(packagePath)/Data/com.apple.CoreML/\(suffix)"
                 let data = Data("fixture:\(component):\(role)".utf8)
                 return GeneratedParakeetManifestEntry(path: path, size: Int64(data.count), sha256: SHA256.hash(data: data).hexString, component: component, role: role)
             }

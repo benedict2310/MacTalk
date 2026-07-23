@@ -31,6 +31,34 @@ enum ParakeetSourceArtifactKind: String, Codable, Hashable, Sendable {
     case vocabulary
 }
 
+/// The generated source manifest is authoritative: package placement is part
+/// of each component/role contract, not a traversable directory convention.
+enum ParakeetSourcePathContract {
+    private static let paths: [ParakeetSourceComponent: [ParakeetSourceArtifactKind: String]] = [
+        .preprocessor: [
+            .specification: "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            .weights: "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ],
+        .encoder: [
+            .specification: "mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            .weights: "mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ],
+        .decoder: [
+            .specification: "mlpackages/Decoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            .weights: "mlpackages/Decoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ],
+        .joint: [
+            .specification: "JointDecisionv3.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            .weights: "JointDecisionv3.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ]
+    ]
+
+    static func expectedPath(component: ParakeetSourceComponent, role: String) -> String? {
+        guard let kind = ParakeetSourceArtifactKind(rawValue: role), kind != .vocabulary else { return nil }
+        return paths[component]?[kind]
+    }
+}
+
 struct VerifiedCoreMLAssetBytes: Sendable {
     let component: ParakeetSourceComponent
     let specification: VerifiedArtifactBytes
@@ -203,8 +231,7 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
               sourceEntries.allSatisfy({ entry in
                   guard let component = ParakeetSourceComponent(rawValue: entry.component),
                         entry.role == "specification" || entry.role == "weights" else { return false }
-                  let suffix = entry.role == "specification" ? "model.mlmodel" : "weights/weight.bin"
-                  return entry.path == "mlpackages/\(component.rawValue).mlpackage/Data/com.apple.CoreML/\(suffix)"
+                  return ParakeetSourcePathContract.expectedPath(component: component, role: entry.role) == entry.path
               }) else {
             throw ParakeetSourceSnapshotError.duplicateStructure("manifest")
         }

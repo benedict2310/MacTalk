@@ -16,6 +16,31 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertNotEqual(ParakeetSourceStore.backupPrefix, ".backup-")
     }
 
+    func test_canonicalSourcePathsKeepJointAtSourceRootAndRejectLegacyMlpackagesPath() async throws {
+        let fixture = try SourcePreparationFixture()
+        let expectedJointPaths = [
+            "JointDecisionv3.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "JointDecisionv3.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ]
+        XCTAssertEqual(fixture.entries.filter { $0.component == "JointDecisionv3" }.map(\.path), expectedJointPaths)
+
+        let legacyEntries = fixture.entries.map { entry in
+            guard entry.component == "JointDecisionv3" else { return entry }
+            return GeneratedParakeetManifestEntry(
+                path: "mlpackages/\(entry.path)", size: entry.size, sha256: entry.sha256,
+                component: entry.component, role: entry.role)
+        }
+        let legacyStore = ParakeetSourceStore(parent: fixture.parent, sourceDirectoryName: fixture.store.sourceDirectoryName,
+                                               entries: legacyEntries, identity: fixture.store.identity)
+        let legacyBytes = Dictionary(uniqueKeysWithValues: zip(legacyEntries, fixture.entries).map { ($0.0.path, fixture.bytes[$0.1.path]!) })
+        do {
+            _ = try await ParakeetSourcePreparer(store: legacyStore, materializer: TinySourceMaterializer(bytes: legacyBytes)).prepareIfNeeded()
+            XCTFail("legacy all-under-mlpackages paths were accepted")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .invalidManifest)
+        }
+    }
+
     func test_tinyMaterializerActivatesExactTreeAndMarker() async throws {
         let fixture = try SourcePreparationFixture()
         let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
@@ -40,7 +65,7 @@ final class ParakeetSourcePreparerTests: XCTestCase {
             let attrs = try? FileManager.default.attributesOfItem(atPath: activated.appendingPathComponent(entry.path).path)
             return (attrs?[.posixPermissions] as? NSNumber)?.intValue == 0o600
         })
-        for directory in ["mlpackages", "mlpackages/Preprocessor.mlpackage", "mlpackages/Preprocessor.mlpackage/Data", "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML"] {
+        for directory in ["mlpackages", "mlpackages/Preprocessor.mlpackage", "mlpackages/Preprocessor.mlpackage/Data", "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML", "JointDecisionv3.mlpackage", "JointDecisionv3.mlpackage/Data", "JointDecisionv3.mlpackage/Data/com.apple.CoreML"] {
             XCTAssertEqual(try mode(of: activated.appendingPathComponent(directory)), 0o700)
         }
     }
@@ -342,7 +367,8 @@ private final class SourcePreparationFixture: @unchecked Sendable {
         var values: [(String, String, String, Data)] = []
         for component in ["Preprocessor", "Encoder", "Decoder", "JointDecisionv3"] {
             for (role, suffix) in [("specification", "model.mlmodel"), ("weights", "weights/weight.bin")] {
-                let path = "mlpackages/\(component).mlpackage/Data/com.apple.CoreML/\(suffix)"
+                let packagePath = component == "JointDecisionv3" ? "\(component).mlpackage" : "mlpackages/\(component).mlpackage"
+                let path = "\(packagePath)/Data/com.apple.CoreML/\(suffix)"
                 values.append((path, component, role, Data("\(component)-\(role)".utf8)))
             }
         }

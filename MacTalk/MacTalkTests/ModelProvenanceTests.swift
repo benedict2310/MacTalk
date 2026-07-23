@@ -24,7 +24,20 @@ final class ModelProvenanceTests: XCTestCase {
         })
         XCTAssertEqual(GeneratedModelProvenance.parakeetCompiled.count, 21)
         XCTAssertEqual(GeneratedModelProvenance.parakeetSource.count, 9)
-        XCTAssertTrue(GeneratedModelProvenance.parakeetSource.allSatisfy { $0.path.contains(".mlpackage/") || $0.path == "parakeet_vocab.json" })
+        let expectedSourcePaths: [String: String] = [
+            "Preprocessor/specification": "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "Preprocessor/weights": "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "Encoder/specification": "mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "Encoder/weights": "mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "Decoder/specification": "mlpackages/Decoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "Decoder/weights": "mlpackages/Decoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "JointDecisionv3/specification": "JointDecisionv3.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "JointDecisionv3/weights": "JointDecisionv3.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ]
+        for entry in GeneratedModelProvenance.parakeetSource where entry.role != "vocabulary" {
+            XCTAssertEqual(entry.path, expectedSourcePaths["\(entry.component)/\(entry.role)"])
+        }
+        XCTAssertEqual(GeneratedModelProvenance.parakeetSource.last?.path, "parakeet_vocab.json")
         try ParakeetModelDownloader.validateManifest()
     }
 
