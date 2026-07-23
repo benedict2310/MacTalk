@@ -286,11 +286,10 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
 
         XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
-            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path), "failed destination remains for caller cleanup")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path), "source precheck must happen before destination mutation")
         XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced)
-        XCTAssertEqual(try Data(contentsOf: fixture.destination), raced, "raced content must not be overwritten")
         XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source race must close internal descriptors")
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
@@ -310,20 +309,95 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
 
         XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
-            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
         }
-        var destinationInfo = stat()
-        XCTAssertEqual(lstat(fixture.destination.path, &destinationInfo), 0)
-        XCTAssertEqual(destinationInfo.st_mode & S_IFMT, S_IFLNK, "failed destination remains for caller cleanup")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path), "source precheck must happen before destination mutation")
+        var sourceInfo = stat()
+        XCTAssertEqual(lstat(fixture.compiled.path, &sourceInfo), 0)
+        XCTAssertEqual(sourceInfo.st_mode & S_IFMT, S_IFLNK, "raced source symlink must be preserved")
         var target = [CChar](repeating: 0, count: 256)
         let targetLength = target.withUnsafeMutableBufferPointer { buffer in
-            readlink(fixture.destination.path, buffer.baseAddress, buffer.count)
+            readlink(fixture.compiled.path, buffer.baseAddress, buffer.count)
         }
         XCTAssertEqual(String(decoding: target.prefix(Int(targetLength)).map { UInt8(bitPattern: $0) }, as: UTF8.self), "raced-target")
         XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source race must close internal descriptors")
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
         XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_forcedCopySourceReplacementAfterVerificationIsSourceChangedWithoutDestination() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let raced = Data("forced-copy-race".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterSourceVerification: {
+            XCTAssertEqual(unlink(fixture.compiled.path), 0)
+            XCTAssertTrue(FileManager.default.createFile(atPath: fixture.compiled.path, contents: raced))
+            XCTAssertEqual(chmod(fixture.compiled.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0)
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
+    }
+
+    func test_modeCopySymlinkReplacementAfterVerificationIsSourceChangedWithoutDestination() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            XCTAssertEqual(unlink(fixture.compiled.path), 0)
+            XCTAssertEqual(symlink("raced-target", fixture.compiled.path), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0)
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
+    }
+
+    func test_sourceReplacementAfterMaterializationFailsBeforePublishingReuseAndLeavesDestination() async throws {
+        let fixture = try ReuseFixture()
+        let raced = Data("post-materialization-race".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterDestinationIdentityObservation: {
+            XCTAssertEqual(unlink(fixture.compiled.path), 0)
+            XCTAssertTrue(FileManager.default.createFile(atPath: fixture.compiled.path, contents: raced))
+            XCTAssertEqual(chmod(fixture.compiled.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "post-materialization failure leaves the leaf for caller-owned cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), raced)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0)
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
     }
 
     func test_verifiedInodeMutationAfterVerificationFailsDestinationDigestAndPreservesRacedContent() async throws {

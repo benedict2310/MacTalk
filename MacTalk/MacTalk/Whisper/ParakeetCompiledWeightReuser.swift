@@ -37,6 +37,7 @@ enum ParakeetCompiledWeightReuseUnavailableReason: Error, Equatable, Sendable {
 }
 
 enum ParakeetCompiledWeightReuseError: Error, Equatable, Sendable {
+    case sourceChanged
     case sourceEntryMismatch
     case leaseStoreParentMismatch
     case leaseNotExclusive
@@ -166,6 +167,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             return .unavailable(reason)
         }
         hooks.afterSourceVerification?()
+        try verifySourcePathIdentity(source)
         try checkCancellation()
 
         let destination = try openDestinationParent(rootFD: stagingRootFD, path: mapping.sourcePath)
@@ -216,6 +218,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             hooks.beforeDestinationVerification?()
             try verifyDestination(parentFD: destination.parentFD, leaf: destination.leaf,
                                   expectedSize: mapping.size, expectedDigest: mapping.sha256)
+            try verifySourcePathIdentity(source)
             return .reused(method)
         } catch is CancellationError {
             throw ParakeetCompiledWeightReuseError.cancelled
@@ -315,6 +318,23 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         guard info.st_size == expectedSize else { throw ParakeetCompiledWeightReuseUnavailableReason.sizeMismatch }
         return try streamMatches(fd: fd, expectedSize: expectedSize, expectedDigest: expectedDigest,
                                  unavailable: true, beforeRead: hooks.beforeSourceStreamRead)
+    }
+
+    private func verifySourcePathIdentity(_ source: OpenedSource) throws {
+        var info = stat()
+        while true {
+            let result = source.leaf.withCString {
+                fstatat(source.parentFD, $0, &info, AT_SYMLINK_NOFOLLOW)
+            }
+            if result == 0 { break }
+            if errno == EINTR { continue }
+            throw ParakeetCompiledWeightReuseError.sourceChanged
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_dev == source.info.st_dev,
+              info.st_ino == source.info.st_ino else {
+            throw ParakeetCompiledWeightReuseError.sourceChanged
+        }
     }
 
     private func streamMatches(fd: Int32, expectedSize: Int64, expectedDigest: String, unavailable: Bool,
