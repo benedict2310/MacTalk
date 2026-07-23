@@ -230,6 +230,19 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                                                                      expectedSize: mapping.size, expectedDigest: mapping.sha256)
             try revalidateDestinationPathIdentity(destination, authoritativeRootFD: stagingRootFD,
                                                   expectedLeaf: finalVerifiedDestinationInfo)
+            let destinationAliasesSource = finalVerifiedDestinationInfo.st_dev == source.info.st_dev &&
+                finalVerifiedDestinationInfo.st_ino == source.info.st_ino
+            switch method {
+            case .hardLink:
+                guard destinationAliasesSource else {
+                    throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+                }
+            case .copy:
+                guard !destinationAliasesSource else {
+                    throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+                }
+            }
+            try verifyRetainedSource(source, expectedSize: mapping.size, expectedDigest: mapping.sha256)
             try verifySourcePathIdentity(source, authoritativeParentFD: parentFD)
             return .reused(method)
         } catch is CancellationError {
@@ -356,6 +369,24 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         guard info.st_size == expectedSize else { throw ParakeetCompiledWeightReuseUnavailableReason.sizeMismatch }
         return try streamMatches(fd: fd, expectedSize: expectedSize, expectedDigest: expectedDigest,
                                  unavailable: true, beforeRead: hooks.beforeSourceStreamRead)
+    }
+
+    private func verifyRetainedSource(_ source: OpenedSource, expectedSize: Int64, expectedDigest: String) throws {
+        var info = stat()
+        guard fstat(source.fileFD, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(),
+              info.st_size == expectedSize else {
+            throw ParakeetCompiledWeightReuseError.sourceChanged
+        }
+        do {
+            _ = try streamMatches(fd: source.fileFD, expectedSize: expectedSize, expectedDigest: expectedDigest,
+                                   unavailable: false)
+        } catch let error as ParakeetCompiledWeightReuseError where error == .cancelled {
+            throw error
+        } catch {
+            throw ParakeetCompiledWeightReuseError.sourceChanged
+        }
     }
 
     private func verifySourcePathIdentity(_ source: OpenedSource, authoritativeParentFD: Int32) throws {
