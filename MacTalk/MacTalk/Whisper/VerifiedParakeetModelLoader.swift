@@ -187,18 +187,26 @@ final class VerifiedParakeetModelLoader: VerifiedParakeetModelLoading, @unchecke
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static let productionArtifacts: [ParakeetExpectedArtifact] = {
+    static let productionArtifacts: [ParakeetExpectedArtifact] = {
         var result = [ParakeetExpectedArtifact]()
         for component in ParakeetSourceComponent.allCases {
-            let entries = GeneratedModelProvenance.parakeetSource.filter { $0.path.contains("/\(component.rawValue).mlpackage/") }
-            if let spec = entries.first(where: { $0.path.hasSuffix("model.mlmodel") }) {
-                result.append(ParakeetExpectedArtifact(component: component, role: "specification", entry: spec))
-            }
-            if let weights = entries.first(where: { $0.path.hasSuffix("weights/weight.bin") }) {
-                result.append(ParakeetExpectedArtifact(component: component, role: "weights", entry: weights))
+            for role in ["specification", "weights"] {
+                guard let expectedPath = ParakeetSourcePathContract.expectedPath(component: component, role: role),
+                      let entry = GeneratedModelProvenance.parakeetSource.first(where: {
+                          $0.component == component.rawValue &&
+                          $0.role == role &&
+                          $0.path == expectedPath
+                      }) else {
+                    continue
+                }
+                result.append(ParakeetExpectedArtifact(component: component, role: role, entry: entry))
             }
         }
-        if let vocabulary = GeneratedModelProvenance.parakeetSource.first(where: { $0.path == "parakeet_vocab.json" }) {
+        if let vocabulary = GeneratedModelProvenance.parakeetSource.first(where: {
+            $0.component == "Vocabulary" &&
+            $0.role == "vocabulary" &&
+            $0.path == "parakeet_vocab.json"
+        }) {
             result.append(ParakeetExpectedArtifact(component: nil, role: "vocabulary", entry: vocabulary))
         }
         return result

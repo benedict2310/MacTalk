@@ -7,6 +7,20 @@ import XCTest
 final class VerifiedParakeetModelLoaderTests: XCTestCase {
     private var fixture: Fixture!
 
+    func test_productionArtifactsUseAllCanonicalGeneratedEntries() {
+        let artifacts = VerifiedParakeetModelLoader.productionArtifacts
+
+        XCTAssertEqual(artifacts.count, 9)
+        XCTAssertEqual(Set(artifacts.map(\.entry)), Set(GeneratedModelProvenance.parakeetSource))
+        XCTAssertEqual(
+            artifacts.filter { $0.component == .joint }.map(\.entry.path).sorted(),
+            [
+                "JointDecisionv3.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+                "JointDecisionv3.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+            ]
+        )
+    }
+
     override func setUpWithError() throws {
         fixture = try Fixture()
     }
