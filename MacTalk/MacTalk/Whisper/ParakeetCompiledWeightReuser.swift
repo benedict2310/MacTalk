@@ -66,16 +66,22 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         let forceCopy: Bool
         let forceLinkFailure: Bool
         let forceDestinationStatFailureAfterLink: Bool
+        let forceCopyStatFailureAfterCreate: Bool
+        let beforeSourceStreamRead: (() -> Void)?
         let afterSourceVerification: (() -> Void)?
         let beforeDestinationVerification: (() -> Void)?
 
         init(forceCopy: Bool = false, forceLinkFailure: Bool = false,
              forceDestinationStatFailureAfterLink: Bool = false,
+             forceCopyStatFailureAfterCreate: Bool = false,
+             beforeSourceStreamRead: (() -> Void)? = nil,
              afterSourceVerification: (() -> Void)? = nil,
              beforeDestinationVerification: (() -> Void)? = nil) {
             self.forceCopy = forceCopy
             self.forceLinkFailure = forceLinkFailure
             self.forceDestinationStatFailureAfterLink = forceDestinationStatFailureAfterLink
+            self.forceCopyStatFailureAfterCreate = forceCopyStatFailureAfterCreate
+            self.beforeSourceStreamRead = beforeSourceStreamRead
             self.afterSourceVerification = afterSourceVerification
             self.beforeDestinationVerification = beforeDestinationVerification
         }
@@ -133,22 +139,20 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
 
     private func reuse(relativeTo parentFD: Int32, mapping: ParakeetCompiledWeightReuseMapping,
                        stagingRootFD: Int32) throws -> ParakeetCompiledWeightReuseResult {
-        var source: OpenedSource
+        let source: OpenedSource
         do {
             source = try openCompiledSource(parentFD: parentFD, path: mapping.compiledPath)
-            do {
-                guard try verifySource(source.fileFD, expectedSize: mapping.size, expectedDigest: mapping.sha256) else {
-                    source.close()
-                    return .unavailable(.digestMismatch)
-                }
-            } catch let reason as ParakeetCompiledWeightReuseUnavailableReason {
-                source.close()
-                return .unavailable(reason)
-            }
         } catch let reason as ParakeetCompiledWeightReuseUnavailableReason {
             return .unavailable(reason)
         }
         defer { source.close() }
+        do {
+            guard try verifySource(source.fileFD, expectedSize: mapping.size, expectedDigest: mapping.sha256) else {
+                return .unavailable(.digestMismatch)
+            }
+        } catch let reason as ParakeetCompiledWeightReuseUnavailableReason {
+            return .unavailable(reason)
+        }
         hooks.afterSourceVerification?()
         try checkCancellation()
 
@@ -309,13 +313,16 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         guard (info.st_mode & S_IFMT) == S_IFREG else { throw ParakeetCompiledWeightReuseUnavailableReason.nonRegular }
         guard info.st_uid == getuid() else { throw ParakeetCompiledWeightReuseUnavailableReason.wrongOwner }
         guard info.st_size == expectedSize else { throw ParakeetCompiledWeightReuseUnavailableReason.sizeMismatch }
-        return try streamMatches(fd: fd, expectedSize: expectedSize, expectedDigest: expectedDigest, unavailable: true)
+        return try streamMatches(fd: fd, expectedSize: expectedSize, expectedDigest: expectedDigest,
+                                 unavailable: true, beforeRead: hooks.beforeSourceStreamRead)
     }
 
-    private func streamMatches(fd: Int32, expectedSize: Int64, expectedDigest: String, unavailable: Bool) throws -> Bool {
+    private func streamMatches(fd: Int32, expectedSize: Int64, expectedDigest: String, unavailable: Bool,
+                               beforeRead: (() -> Void)? = nil) throws -> Bool {
         guard lseek(fd, 0, SEEK_SET) >= 0 else { throw unavailable ? ParakeetCompiledWeightReuseUnavailableReason.unreadable : ParakeetCompiledWeightReuseError.io(errno) }
         var hasher = SHA256(); var total: Int64 = 0; var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while total < expectedSize {
+            beforeRead?()
             try checkCancellation()
             let count = Darwin.read(fd, &buffer, buffer.count)
             if count < 0 { if errno == EINTR { continue }; throw unavailable ? ParakeetCompiledWeightReuseUnavailableReason.unreadable : ParakeetCompiledWeightReuseError.io(errno) }
@@ -396,17 +403,26 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     private func copyVerifiedSource(_ sourceFD: Int32, _ destinationParentFD: Int32, leaf: String, size: Int64) throws -> stat {
         let destinationFD = leaf.withCString { openat(destinationParentFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600)) }
         guard destinationFD >= 0 else { throw errno == EEXIST ? ParakeetCompiledWeightReuseError.destinationCollision : .io(errno) }
-        var createdInfo = stat()
-        guard fstat(destinationFD, &createdInfo) == 0 else {
-            let code = errno
-            close(destinationFD)
-            throw ParakeetCompiledWeightReuseError.io(code)
-        }
+        var createdInfo: stat?
         var keep = false
         defer {
             close(destinationFD)
-            if !keep { unlinkIfMatches(parentFD: destinationParentFD, leaf: leaf, expected: createdInfo) }
+            if !keep {
+                if let createdInfo {
+                    unlinkIfMatches(parentFD: destinationParentFD, leaf: leaf, expected: createdInfo)
+                } else {
+                    _ = unlinkat(destinationParentFD, leaf, 0)
+                }
+            }
         }
+        if hooks.forceCopyStatFailureAfterCreate {
+            throw ParakeetCompiledWeightReuseError.io(EIO)
+        }
+        var info = stat()
+        guard fstat(destinationFD, &info) == 0 else {
+            throw ParakeetCompiledWeightReuseError.io(errno)
+        }
+        createdInfo = info
         guard fchmod(destinationFD, mode_t(0o600)) == 0 else { throw ParakeetCompiledWeightReuseError.io(errno) }
         guard lseek(sourceFD, 0, SEEK_SET) >= 0 else { throw ParakeetCompiledWeightReuseError.io(errno) }
         var remaining = size; var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -429,7 +445,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         }
         guard fsync(destinationFD) == 0 else { throw ParakeetCompiledWeightReuseError.io(errno) }
         keep = true
-        return createdInfo
+        return info
     }
 
     private func verifyDestination(parentFD: Int32, leaf: String, expectedSize: Int64, expectedDigest: String) throws {

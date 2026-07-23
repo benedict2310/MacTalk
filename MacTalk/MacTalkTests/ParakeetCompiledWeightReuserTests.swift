@@ -274,6 +274,71 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
     }
 
+    func test_cancellationDuringSourceStreamClosesSourceAncestorsAndPreservesCallerOwnership() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let reuser = try fixture.reuser(hooks: .init(beforeSourceStreamRead: {
+            entered.signal()
+            release.wait()
+        }))
+        let task = Task<ParakeetCompiledWeightReuseResult, Error> { @Sendable in
+            try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        task.cancel()
+        release.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancellation unexpectedly succeeded")
+        } catch let error as ParakeetCompiledWeightReuseError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("unexpected cancellation error: \(error)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "source and ancestor descriptors must close on cancellation")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_copyFstatFailureAfterCreateUnlinksLeafAndPreservesSourceAndCallerOwnership() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let sourceData = try Data(contentsOf: fixture.compiled)
+        var sourceInfo = stat()
+        XCTAssertEqual(stat(fixture.compiled.path, &sourceInfo), 0)
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, forceCopyStatFailureAfterCreate: true))
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .io(EIO))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path),
+                       "post-create fstat failure must remove the operation-created leaf")
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), sourceData)
+        var afterInfo = stat()
+        XCTAssertEqual(stat(fixture.compiled.path, &afterInfo), 0)
+        XCTAssertEqual(afterInfo.st_dev, sourceInfo.st_dev)
+        XCTAssertEqual(afterInfo.st_ino, sourceInfo.st_ino)
+        XCTAssertEqual(afterInfo.st_mode, sourceInfo.st_mode)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline, "copy failure must close its destination descriptor")
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
+        XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
     func test_sharedReleasedAndCancelledLeasesAreTypedAndCleanup() async throws {
         let fixture = try ReuseFixture()
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
