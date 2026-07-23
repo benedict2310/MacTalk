@@ -101,6 +101,29 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
     }
 
+    func test_linkIdentityFailurePreservesDestinationReplacedAfterLink() async throws {
+        let fixture = try ReuseFixture()
+        let replacement = Data("replacement-link".utf8)
+        let reuser = try fixture.reuser(hooks: .init(
+            forceDestinationStatFailureAfterLink: true,
+            afterLink: {
+                XCTAssertEqual(unlink(fixture.destination.path), 0)
+                XCTAssertEqual(FileManager.default.createFile(atPath: fixture.destination.path, contents: replacement), true)
+                XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
+            }
+        ))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement,
+                       "identity-only cleanup must preserve a replaced destination leaf")
+    }
+
     func test_reusesVerifiedWeightWithHardLinkAndCallerOwnership() async throws {
         let fixture = try ReuseFixture()
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
@@ -310,7 +333,7 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
     }
 
-    func test_copyFstatFailureAfterCreateUnlinksLeafAndPreservesSourceAndCallerOwnership() async throws {
+    func test_copyFstatFailureAfterCreateLeavesLeafForCallerCleanupAndPreservesSourceAndCallerOwnership() async throws {
         let fixture = try ReuseFixture(sourceMode: 0o644)
         let sourceData = try Data(contentsOf: fixture.compiled)
         var sourceInfo = stat()
@@ -325,8 +348,8 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
             XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .io(EIO))
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path),
-                       "post-create fstat failure must remove the operation-created leaf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "post-create fstat failure has no trustworthy identity; caller-owned cleanup retains the leaf")
         XCTAssertEqual(try Data(contentsOf: fixture.compiled), sourceData)
         var afterInfo = stat()
         XCTAssertEqual(stat(fixture.compiled.path, &afterInfo), 0)
@@ -337,6 +360,30 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
         XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_copyFstatFailurePreservesDestinationReplacedAfterCreate() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let replacement = Data("replacement-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(
+            forceCopy: true,
+            forceCopyStatFailureAfterCreate: true,
+            afterCopyCreate: {
+                XCTAssertEqual(unlink(fixture.destination.path), 0)
+                XCTAssertEqual(FileManager.default.createFile(atPath: fixture.destination.path, contents: replacement), true)
+                XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
+            }
+        ))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .io(EIO))
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement,
+                       "cleanup without a created identity must preserve a replaced destination leaf")
     }
 
     func test_sharedReleasedAndCancelledLeasesAreTypedAndCleanup() async throws {

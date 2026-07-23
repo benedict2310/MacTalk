@@ -67,6 +67,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         let forceLinkFailure: Bool
         let forceDestinationStatFailureAfterLink: Bool
         let forceCopyStatFailureAfterCreate: Bool
+        let afterLink: (() -> Void)?
+        let afterCopyCreate: (() -> Void)?
         let beforeSourceStreamRead: (() -> Void)?
         let afterSourceVerification: (() -> Void)?
         let beforeDestinationVerification: (() -> Void)?
@@ -74,6 +76,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         init(forceCopy: Bool = false, forceLinkFailure: Bool = false,
              forceDestinationStatFailureAfterLink: Bool = false,
              forceCopyStatFailureAfterCreate: Bool = false,
+             afterLink: (() -> Void)? = nil,
+             afterCopyCreate: (() -> Void)? = nil,
              beforeSourceStreamRead: (() -> Void)? = nil,
              afterSourceVerification: (() -> Void)? = nil,
              beforeDestinationVerification: (() -> Void)? = nil) {
@@ -81,6 +85,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             self.forceLinkFailure = forceLinkFailure
             self.forceDestinationStatFailureAfterLink = forceDestinationStatFailureAfterLink
             self.forceCopyStatFailureAfterCreate = forceCopyStatFailureAfterCreate
+            self.afterLink = afterLink
+            self.afterCopyCreate = afterCopyCreate
             self.beforeSourceStreamRead = beforeSourceStreamRead
             self.afterSourceVerification = afterSourceVerification
             self.beforeDestinationVerification = beforeDestinationVerification
@@ -182,12 +188,14 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             }
             if linked {
                 ownedDestination = true
+                hooks.afterLink?()
                 guard !hooks.forceDestinationStatFailureAfterLink,
                       let linkedInfo = destinationStat(parentFD: destination.parentFD, leaf: destination.leaf) else {
-                    // The leaf was absent immediately before linkat, so this
-                    // operation still owns the name even though identity is
-                    // unavailable for the usual identity-matched cleanup.
-                    _ = unlinkat(destination.parentFD, destination.leaf, 0)
+                    // The retained source identity is the only trustworthy
+                    // cleanup identity when destination lookup fails. If the
+                    // source name raced, this deliberately leaves the raced
+                    // destination untouched.
+                    unlinkIfMatches(parentFD: destination.parentFD, leaf: destination.leaf, expected: source.info)
                     ownedDestination = false
                     throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
                 }
@@ -407,14 +415,11 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         var keep = false
         defer {
             close(destinationFD)
-            if !keep {
-                if let createdInfo {
-                    unlinkIfMatches(parentFD: destinationParentFD, leaf: leaf, expected: createdInfo)
-                } else {
-                    _ = unlinkat(destinationParentFD, leaf, 0)
-                }
+            if !keep, let createdInfo {
+                unlinkIfMatches(parentFD: destinationParentFD, leaf: leaf, expected: createdInfo)
             }
         }
+        hooks.afterCopyCreate?()
         if hooks.forceCopyStatFailureAfterCreate {
             throw ParakeetCompiledWeightReuseError.io(EIO)
         }
