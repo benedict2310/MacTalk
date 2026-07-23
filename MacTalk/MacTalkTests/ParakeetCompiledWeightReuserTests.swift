@@ -84,7 +84,7 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertNil(try otherLock.tryAcquire(.exclusive), "mismatched lease must remain held")
     }
 
-    func test_linkIdentityFailureRemovesOperationCreatedDestination() async throws {
+    func test_linkIdentityFailureLeavesOperationCreatedDestinationForCallerCleanup() async throws {
         let fixture = try ReuseFixture()
         let reuser = try fixture.reuser(hooks: .init(forceDestinationStatFailureAfterLink: true))
         let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
@@ -95,8 +95,9 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
             XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path),
-                       "failed link identity lookup must remove its newly-created leaf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path),
+                      "failed link identity lookup leaves its leaf for caller-owned tree cleanup")
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
     }
@@ -105,8 +106,7 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         let fixture = try ReuseFixture()
         let replacement = Data("replacement-link".utf8)
         let reuser = try fixture.reuser(hooks: .init(
-            forceDestinationStatFailureAfterLink: true,
-            afterLink: {
+            afterDestinationIdentityObservation: {
                 XCTAssertEqual(unlink(fixture.destination.path), 0)
                 XCTAssertEqual(FileManager.default.createFile(atPath: fixture.destination.path, contents: replacement), true)
                 XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
@@ -121,7 +121,27 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
             XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
         }
         XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement,
-                       "identity-only cleanup must preserve a replaced destination leaf")
+                       "caller-owned cleanup must preserve a replaced destination leaf")
+    }
+
+    func test_linkIdentityMismatchFailsWithoutFallbackAndPreservesReplacement() async throws {
+        let fixture = try ReuseFixture()
+        let replacement = Data("replacement-mismatch".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterLink: {
+            XCTAssertEqual(unlink(fixture.destination.path), 0)
+            XCTAssertEqual(FileManager.default.createFile(atPath: fixture.destination.path, contents: replacement), true)
+            XCTAssertEqual(chmod(fixture.destination.path, 0o600), 0)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement,
+                       "identity mismatch must not fall back over an occupied replacement")
     }
 
     func test_reusesVerifiedWeightWithHardLinkAndCallerOwnership() async throws {
@@ -243,46 +263,7 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         guard case .reused = result else { return XCTFail("valid Encoder must not be blocked by Decoder") }
     }
 
-    func test_compiledLeafSwapToSymlinkFallsBackWithoutLeavingSymlink() async throws {
-        let fixture = try ReuseFixture()
-        let old = fixture.compiled.deletingLastPathComponent().appendingPathComponent("old-weight.bin")
-        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
-            XCTAssertEqual(rename(fixture.compiled.path, old.path), 0)
-            XCTAssertEqual(symlink("attacker", fixture.compiled.path), 0)
-        }))
-        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
-        let lease = try await lock.acquire(.exclusive)
-        let staging = try openStaging(fixture.staging)
-        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
-        let result = try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
-        guard case .reused(.copy) = result else { return XCTFail("symlink swap must use retained FD copy, got \(result)") }
-        var destinationInfo = stat()
-        XCTAssertEqual(lstat(fixture.destination.path, &destinationInfo), 0)
-        XCTAssertEqual(destinationInfo.st_mode & S_IFMT, S_IFREG)
-        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
-        var compiledInfo = stat()
-        XCTAssertEqual(lstat(fixture.compiled.path, &compiledInfo), 0)
-        XCTAssertEqual(compiledInfo.st_mode & S_IFMT, S_IFLNK)
-    }
-
-    func test_sourceLeafSwapFallsBackToRetainedVerifiedFD() async throws {
-        let fixture = try ReuseFixture()
-        let old = fixture.compiled.deletingLastPathComponent().appendingPathComponent("old-weight.bin")
-        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
-            XCTAssertEqual(rename(fixture.compiled.path, old.path), 0)
-            try? Data("attacker-bytes".utf8).write(to: fixture.compiled)
-            _ = chmod(fixture.compiled.path, 0o600)
-        }))
-        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
-        let lease = try await lock.acquire(.exclusive)
-        let staging = try openStaging(fixture.staging)
-        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
-        let result = try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)
-        guard case .reused(.copy) = result else { return XCTFail("swapped leaf must use retained FD copy") }
-        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
-    }
-
-    func test_destinationTamperIsReverifiedAndCleaned() async throws {
+    func test_destinationTamperIsReverifiedAndPreservedForCallerCleanup() async throws {
         let fixture = try ReuseFixture(sourceMode: 0o644)
         let reuser = try fixture.reuser(hooks: .init(beforeDestinationVerification: {
             try? Data("tampered".utf8).write(to: fixture.destination)
@@ -294,7 +275,11 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
             XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), Data("tampered".utf8),
+                       "failed destination verification leaves the tampered leaf for caller-owned tree cleanup")
+        var destinationInfo = stat()
+        XCTAssertEqual(stat(fixture.destination.path, &destinationInfo), 0)
+        XCTAssertEqual(destinationInfo.st_mode & 0o777, 0o600)
     }
 
     func test_cancellationDuringSourceStreamClosesSourceAncestorsAndPreservesCallerOwnership() async throws {
