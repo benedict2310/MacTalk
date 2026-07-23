@@ -225,6 +225,47 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.destination), Data("existing".utf8))
     }
 
+    func test_destinationAncestorReplacementAfterAbsenceCheckFailsClosedForHardLink() async throws {
+        let fixture = try ReuseFixture()
+        let replacement = Data("replacement-destination-root".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterDestinationAbsenceCheck: {
+            fixture.replaceDestinationRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0)
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
+    }
+
+    func test_destinationAncestorReplacementAfterAbsenceCheckFailsClosedForForcedCopy() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let replacement = Data("replacement-destination-root-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterDestinationAbsenceCheck: {
+            fixture.replaceDestinationRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+    }
+
     func test_destinationCollisionAfterAbsenceCheckPreservesHardLinkSentinelAndCallerOwnership() async throws {
         let fixture = try ReuseFixture()
         let sentinel = Data("raced-hard-link".utf8)
@@ -269,6 +310,46 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0, "caller-owned staging FD remains usable")
         XCTAssertNil(try lock.tryAcquire(.exclusive), "caller-owned exclusive lease remains held")
+    }
+
+    func test_sourceAncestorReplacementAfterVerificationFailsBeforeDestinationForHardLink() async throws {
+        let fixture = try ReuseFixture()
+        let replacement = Data("replacement-source-root".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterSourceVerification: {
+            fixture.replaceCompiledRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+    }
+
+    func test_sourceAncestorReplacementAfterVerificationFailsBeforeDestinationForForcedCopy() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let replacement = Data("replacement-source-root-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterSourceVerification: {
+            fixture.replaceCompiledRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
     }
 
     func test_sourceReplacementAfterVerificationPreservesRacedRegularFileAndCallerOwnership() async throws {
@@ -367,6 +448,68 @@ final class ParakeetCompiledWeightReuserTests: XCTestCase {
             XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+        var stagingInfo = stat()
+        XCTAssertEqual(fstat(staging, &stagingInfo), 0)
+        XCTAssertNil(try lock.tryAcquire(.exclusive))
+    }
+
+    func test_destinationAncestorReplacementAfterDetachedByteVerificationFailsClosedAndPreservesCanonicalReplacement() async throws {
+        let fixture = try ReuseFixture()
+        let replacement = Data("replacement-after-destination-verification".utf8)
+        let reuser = try fixture.reuser(hooks: .init(afterDestinationVerification: {
+            fixture.replaceDestinationRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+    }
+
+    func test_destinationAncestorReplacementAfterDetachedByteVerificationFailsClosedForForcedCopy() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let replacement = Data("replacement-after-destination-verification-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterDestinationVerification: {
+            fixture.replaceDestinationRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .destinationVerificationFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), replacement)
+        XCTAssertEqual(FileDescriptorCensus.count(), baseline)
+    }
+
+    func test_sourceAncestorReplacementAfterMaterializationFailsForForcedCopy() async throws {
+        let fixture = try ReuseFixture(sourceMode: 0o644)
+        let replacement = Data("replacement-post-materialization-copy".utf8)
+        let reuser = try fixture.reuser(hooks: .init(forceCopy: true, afterDestinationVerification: {
+            fixture.replaceCompiledRoot(with: replacement)
+        }))
+        let lock = ParakeetStoreFileLock(storeParent: fixture.parent)
+        let lease = try await lock.acquire(.exclusive)
+        let staging = try openStaging(fixture.staging)
+        let baseline = FileDescriptorCensus.count()
+        defer { close(staging); lease.release(); try? FileManager.default.removeItem(at: fixture.parent) }
+
+        XCTAssertThrowsError(try reuser.reuse(sourceEntry: fixture.sourceEntry, holding: lease, stagingRootFD: staging)) { error in
+            XCTAssertEqual(error as? ParakeetCompiledWeightReuseError, .sourceChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.data)
+        XCTAssertEqual(try Data(contentsOf: fixture.compiled), replacement)
         XCTAssertEqual(FileDescriptorCensus.count(), baseline)
         var stagingInfo = stat()
         XCTAssertEqual(fstat(staging, &stagingInfo), 0)
@@ -680,6 +823,43 @@ private final class ReuseFixture: @unchecked Sendable {
         XCTAssertEqual(chmod(staging.path, 0o700), 0)
     }
     deinit { try? FileManager.default.removeItem(at: parent) }
+    func replaceCompiledRoot(with replacement: Data) {
+        let root = parent.appendingPathComponent("parakeet-tdt-0.6b-v3")
+        let backup = parent.appendingPathComponent("compiled-replaced-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: root, to: backup)
+            let leaf = compiled
+            try FileManager.default.createDirectory(at: leaf.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try replacement.write(to: leaf)
+            try setDirectoryModes(from: leaf.deletingLastPathComponent(), through: parent)
+            XCTAssertEqual(chmod(leaf.path, 0o600), 0)
+        } catch {
+            XCTFail("failed to replace compiled root: \(error)")
+        }
+    }
+
+    func replaceDestinationRoot(with replacement: Data) {
+        let root = staging.appendingPathComponent("mlpackages")
+        let backup = staging.appendingPathComponent("destination-replaced-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: root, to: backup)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try replacement.write(to: destination)
+            try setDirectoryModes(from: destination.deletingLastPathComponent(), through: staging)
+            XCTAssertEqual(chmod(destination.path, 0o600), 0)
+        } catch {
+            XCTFail("failed to replace destination root: \(error)")
+        }
+    }
+
+    private func setDirectoryModes(from leafParent: URL, through root: URL) throws {
+        var directory = leafParent
+        while directory.path != root.path && directory.path.hasPrefix(root.path + "/") {
+            XCTAssertEqual(chmod(directory.path, 0o700), 0)
+            directory.deleteLastPathComponent()
+        }
+    }
+
     func reuser(hooks: ParakeetCompiledWeightReuser.TestHooks = .init()) throws -> ParakeetCompiledWeightReuser {
         return try ParakeetCompiledWeightReuser(store: ParakeetSourceStore(parent: parent, sourceDirectoryName: "source", entries: sourceEntries, identity: .production), sourceEntries: sourceEntries, compiledEntries: compiledEntries, hooks: hooks)
     }

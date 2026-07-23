@@ -75,6 +75,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         let beforeDestinationVerification: (() -> Void)?
         let afterDestinationIdentityObservation: (() -> Void)?
         let afterDestinationAbsenceCheck: (() -> Void)?
+        let afterDestinationVerification: (() -> Void)?
 
         init(forceCopy: Bool = false, forceLinkFailure: Bool = false,
              forceDestinationStatFailureAfterLink: Bool = false,
@@ -85,7 +86,8 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
              afterSourceVerification: (() -> Void)? = nil,
              beforeDestinationVerification: (() -> Void)? = nil,
              afterDestinationIdentityObservation: (() -> Void)? = nil,
-             afterDestinationAbsenceCheck: (() -> Void)? = nil) {
+             afterDestinationAbsenceCheck: (() -> Void)? = nil,
+             afterDestinationVerification: (() -> Void)? = nil) {
             self.forceCopy = forceCopy
             self.forceLinkFailure = forceLinkFailure
             self.forceDestinationStatFailureAfterLink = forceDestinationStatFailureAfterLink
@@ -97,6 +99,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             self.beforeDestinationVerification = beforeDestinationVerification
             self.afterDestinationIdentityObservation = afterDestinationIdentityObservation
             self.afterDestinationAbsenceCheck = afterDestinationAbsenceCheck
+            self.afterDestinationVerification = afterDestinationVerification
         }
     }
 
@@ -167,13 +170,15 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
             return .unavailable(reason)
         }
         hooks.afterSourceVerification?()
-        try verifySourcePathIdentity(source)
+        try verifySourcePathIdentity(source, authoritativeParentFD: parentFD)
         try checkCancellation()
 
         let destination = try openDestinationParent(rootFD: stagingRootFD, path: mapping.sourcePath)
-        defer { close(destination.parentFD) }
+        defer { destination.close() }
         try checkDestinationAbsent(parentFD: destination.parentFD, leaf: destination.leaf)
         hooks.afterDestinationAbsenceCheck?()
+        _ = try revalidateDestinationDirectoryChain(destination, authoritativeRootFD: stagingRootFD)
+        try checkDestinationAbsent(parentFD: destination.parentFD, leaf: destination.leaf)
 
         try checkCancellation()
 
@@ -216,9 +221,12 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
 
         do {
             hooks.beforeDestinationVerification?()
-            try verifyDestination(parentFD: destination.parentFD, leaf: destination.leaf,
-                                  expectedSize: mapping.size, expectedDigest: mapping.sha256)
-            try verifySourcePathIdentity(source)
+            let verifiedDestinationInfo = try verifyDestination(parentFD: destination.parentFD, leaf: destination.leaf,
+                                                                expectedSize: mapping.size, expectedDigest: mapping.sha256)
+            hooks.afterDestinationVerification?()
+            try revalidateDestinationPathIdentity(destination, authoritativeRootFD: stagingRootFD,
+                                                  expectedLeaf: verifiedDestinationInfo)
+            try verifySourcePathIdentity(source, authoritativeParentFD: parentFD)
             return .reused(method)
         } catch is CancellationError {
             throw ParakeetCompiledWeightReuseError.cancelled
@@ -289,26 +297,52 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     private func openCompiledSource(parentFD: Int32, path: String) throws -> OpenedSource {
         let components = path.split(separator: "/").map(String.init)
         var current = parentFD
-        var owned: [Int32] = []
+        var ancestors: [RetainedDirectory] = []
         for component in components.dropLast() {
             let fd = component.withCString { openat(current, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
             guard fd >= 0 else {
-                for descriptor in owned { close(descriptor) }
+                for directory in ancestors.reversed() { close(directory.fd) }
                 throw unavailable(errno)
             }
-            owned.append(fd); current = fd
+            var info = stat()
+            guard fstat(fd, &info) == 0 else {
+                let code = errno
+                close(fd)
+                for directory in ancestors.reversed() { close(directory.fd) }
+                throw unavailable(code)
+            }
+            guard (info.st_mode & S_IFMT) == S_IFDIR else {
+                close(fd)
+                for directory in ancestors.reversed() { close(directory.fd) }
+                throw ParakeetCompiledWeightReuseUnavailableReason.nonRegular
+            }
+            ancestors.append(RetainedDirectory(name: component, fd: fd, info: info))
+            current = fd
         }
         let leaf = components.last!
         let fileFD = leaf.withCString { openat(current, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
         guard fileFD >= 0 else {
-            for descriptor in owned { close(descriptor) }
+            for directory in ancestors.reversed() { close(directory.fd) }
             throw unavailable(errno)
         }
         var info = stat()
-        guard fstat(fileFD, &info) == 0 else { close(fileFD); for descriptor in owned { close(descriptor) }; throw unavailable(errno) }
-        guard (info.st_mode & S_IFMT) == S_IFREG else { close(fileFD); for descriptor in owned { close(descriptor) }; throw ParakeetCompiledWeightReuseUnavailableReason.nonRegular }
-        guard info.st_uid == getuid() else { close(fileFD); for descriptor in owned { close(descriptor) }; throw ParakeetCompiledWeightReuseUnavailableReason.wrongOwner }
-        return OpenedSource(fileFD: fileFD, parentFD: current, leaf: leaf, info: info, ancestors: owned)
+        guard fstat(fileFD, &info) == 0 else {
+            let code = errno
+            close(fileFD)
+            for directory in ancestors.reversed() { close(directory.fd) }
+            throw unavailable(code)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            close(fileFD)
+            for directory in ancestors.reversed() { close(directory.fd) }
+            throw ParakeetCompiledWeightReuseUnavailableReason.nonRegular
+        }
+        guard info.st_uid == getuid() else {
+            close(fileFD)
+            for directory in ancestors.reversed() { close(directory.fd) }
+            throw ParakeetCompiledWeightReuseUnavailableReason.wrongOwner
+        }
+        return OpenedSource(fileFD: fileFD, leaf: leaf, info: info, ancestors: ancestors)
     }
 
     private func verifySource(_ fd: Int32, expectedSize: Int64, expectedDigest: String) throws -> Bool {
@@ -320,11 +354,28 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                                  unavailable: true, beforeRead: hooks.beforeSourceStreamRead)
     }
 
-    private func verifySourcePathIdentity(_ source: OpenedSource) throws {
+    private func verifySourcePathIdentity(_ source: OpenedSource, authoritativeParentFD: Int32) throws {
+        var current = authoritativeParentFD
         var info = stat()
+        for directory in source.ancestors {
+            while true {
+                let result = directory.name.withCString {
+                    fstatat(current, $0, &info, AT_SYMLINK_NOFOLLOW)
+                }
+                if result == 0 { break }
+                if errno == EINTR { continue }
+                throw ParakeetCompiledWeightReuseError.sourceChanged
+            }
+            guard (info.st_mode & S_IFMT) == S_IFDIR,
+                  info.st_dev == directory.info.st_dev,
+                  info.st_ino == directory.info.st_ino else {
+                throw ParakeetCompiledWeightReuseError.sourceChanged
+            }
+            current = directory.fd
+        }
         while true {
             let result = source.leaf.withCString {
-                fstatat(source.parentFD, $0, &info, AT_SYMLINK_NOFOLLOW)
+                fstatat(current, $0, &info, AT_SYMLINK_NOFOLLOW)
             }
             if result == 0 { break }
             if errno == EINTR { continue }
@@ -361,12 +412,14 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         return true
     }
 
-    private func openDestinationParent(rootFD: Int32, path: String) throws -> (parentFD: Int32, leaf: String) {
+    private func openDestinationParent(rootFD: Int32, path: String) throws -> OpenedDestinationParent {
         let components = path.split(separator: "/").map(String.init)
-        var current = rootFD; var owned: [Int32] = []; var handedOff = false
+        var current = rootFD
+        var directories: [RetainedDirectory] = []
+        var handedOff = false
         defer {
             if !handedOff {
-                for fd in owned.reversed() { close(fd) }
+                for directory in directories.reversed() { close(directory.fd) }
             }
         }
         for component in components.dropLast() {
@@ -384,13 +437,57 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                 }
             }
             guard fd >= 0 else { throw ParakeetCompiledWeightReuseError.io(errno) }
-            var info = stat(); guard fstat(fd, &info) == 0 else { let code = errno; close(fd); throw ParakeetCompiledWeightReuseError.io(code) }
+            var info = stat()
+            guard fstat(fd, &info) == 0 else { let code = errno; close(fd); throw ParakeetCompiledWeightReuseError.io(code) }
             guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(), (info.st_mode & 0o777) == 0o700 else { close(fd); throw ParakeetCompiledWeightReuseError.unsafeStagingRoot }
-            owned.append(fd); current = fd
+            directories.append(RetainedDirectory(name: component, fd: fd, info: info))
+            current = fd
         }
-        for fd in owned.dropLast() { close(fd) }
         handedOff = true
-        return (current, components.last!)
+        return OpenedDestinationParent(directories: directories, leaf: components.last!)
+    }
+
+    private func revalidateDestinationDirectoryChain(_ destination: OpenedDestinationParent,
+                                                      authoritativeRootFD: Int32) throws -> Int32 {
+        var current = authoritativeRootFD
+        var info = stat()
+        for directory in destination.directories {
+            while true {
+                let result = directory.name.withCString {
+                    fstatat(current, $0, &info, AT_SYMLINK_NOFOLLOW)
+                }
+                if result == 0 { break }
+                if errno == EINTR { continue }
+                throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+            }
+            guard (info.st_mode & S_IFMT) == S_IFDIR,
+                  info.st_dev == directory.info.st_dev,
+                  info.st_ino == directory.info.st_ino else {
+                throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+            }
+            current = directory.fd
+        }
+        return current
+    }
+
+    private func revalidateDestinationPathIdentity(_ destination: OpenedDestinationParent,
+                                                   authoritativeRootFD: Int32,
+                                                   expectedLeaf: stat) throws {
+        let current = try revalidateDestinationDirectoryChain(destination, authoritativeRootFD: authoritativeRootFD)
+        var info = stat()
+        while true {
+            let result = destination.leaf.withCString {
+                fstatat(current, $0, &info, AT_SYMLINK_NOFOLLOW)
+            }
+            if result == 0 { break }
+            if errno == EINTR { continue }
+            throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_dev == expectedLeaf.st_dev,
+              info.st_ino == expectedLeaf.st_ino else {
+            throw ParakeetCompiledWeightReuseError.destinationVerificationFailed
+        }
     }
 
     private func checkDestinationAbsent(parentFD: Int32, leaf: String) throws {
@@ -452,7 +549,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         return info
     }
 
-    private func verifyDestination(parentFD: Int32, leaf: String, expectedSize: Int64, expectedDigest: String) throws {
+    private func verifyDestination(parentFD: Int32, leaf: String, expectedSize: Int64, expectedDigest: String) throws -> stat {
         let fd = openDestination(parentFD, leaf)
         guard fd >= 0 else { throw ParakeetCompiledWeightReuseError.destinationVerificationFailed }
         defer { close(fd) }
@@ -460,6 +557,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         guard (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(), (info.st_mode & 0o777) == 0o600,
               info.st_size == expectedSize else { throw ParakeetCompiledWeightReuseError.destinationVerificationFailed }
         _ = try streamMatches(fd: fd, expectedSize: expectedSize, expectedDigest: expectedDigest, unavailable: false)
+        return info
     }
 
     private func validateStagingRoot(_ fd: Int32) throws {
@@ -486,12 +584,25 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         !value.isEmpty && value != "." && value != ".." && !value.contains("/") && !value.utf8.contains(0)
     }
 
+    private struct RetainedDirectory {
+        let name: String
+        let fd: Int32
+        let info: stat
+    }
+
     private struct OpenedSource {
         let fileFD: Int32
-        let parentFD: Int32
         let leaf: String
         let info: stat
-        let ancestors: [Int32]
-        func close() { Darwin.close(fileFD); for fd in ancestors.reversed() { Darwin.close(fd) } }
+        let ancestors: [RetainedDirectory]
+        var parentFD: Int32 { ancestors.last!.fd }
+        func close() { Darwin.close(fileFD); for directory in ancestors.reversed() { Darwin.close(directory.fd) } }
+    }
+
+    private struct OpenedDestinationParent {
+        let directories: [RetainedDirectory]
+        let leaf: String
+        var parentFD: Int32 { directories.last!.fd }
+        func close() { for directory in directories.reversed() { Darwin.close(directory.fd) } }
     }
 }
