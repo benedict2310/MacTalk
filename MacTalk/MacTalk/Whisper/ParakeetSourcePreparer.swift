@@ -4,6 +4,15 @@ import Foundation
 
 protocol ParakeetSourceArtifactMaterializing: Sendable {
     func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws
+    /// Optional preparation for dynamic download sets. Default is a no-op so
+    /// tiny in-memory materializers stay unchanged.
+    func beginPreparation(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws
+    func cancelPreparation(operationID: UUID)
+}
+
+extension ParakeetSourceArtifactMaterializing {
+    func beginPreparation(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws {}
+    func cancelPreparation(operationID: UUID) {}
 }
 
 /// A bounded descriptor opened by the preparer for one exact manifest path.
@@ -140,6 +149,7 @@ enum ParakeetSourcePreparationError: Error, Equatable, Sendable {
 final class ParakeetSourcePreparer: @unchecked Sendable {
     private let store: ParakeetSourceStore
     private let materializer: any ParakeetSourceArtifactMaterializing
+    private let weightReuser: ParakeetCompiledWeightReuser?
     private let beforeValidation: (@Sendable () -> Void)?
     private let beforeActivation: (@Sendable () -> Void)?
     private let afterStagingDirectoryCreated: (@Sendable () -> Void)?
@@ -147,6 +157,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     private let beforeStagingValidationCompletion: (@Sendable () -> Void)?
 
     init(store: ParakeetSourceStore, materializer: any ParakeetSourceArtifactMaterializing,
+         weightReuser: ParakeetCompiledWeightReuser? = nil,
          beforeValidation: (@Sendable () -> Void)? = nil,
          beforeActivation: (@Sendable () -> Void)? = nil,
          afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
@@ -154,6 +165,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
          beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
         self.store = store
         self.materializer = materializer
+        self.weightReuser = weightReuser
         self.beforeValidation = beforeValidation
         self.beforeActivation = beforeActivation
         self.afterStagingDirectoryCreated = afterStagingDirectoryCreated
@@ -162,12 +174,14 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     }
 
     convenience init(parent: URL, materializer: any ParakeetSourceArtifactMaterializing,
+                     weightReuser: ParakeetCompiledWeightReuser? = nil,
                      beforeValidation: (@Sendable () -> Void)? = nil,
                      beforeActivation: (@Sendable () -> Void)? = nil,
                      afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
                      beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
                      beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
         self.init(store: .canonical(parent: parent), materializer: materializer,
+                  weightReuser: weightReuser,
                   beforeValidation: beforeValidation, beforeActivation: beforeActivation,
                   afterStagingDirectoryCreated: afterStagingDirectoryCreated,
                   beforeExistingValidationCompletion: beforeExistingValidationCompletion,
@@ -218,7 +232,13 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 do {
                     let stagingFD = try openDirectory(named: stagingName, relativeTo: parentFD)
                     defer { _ = Darwin.close(stagingFD) }
-                    for entry in store.entries {
+                    let operationID = UUID()
+                    let downloadEntries = try entriesRequiringDownload(
+                        holding: lease,
+                        stagingRootFD: stagingFD
+                    )
+                    try materializer.beginPreparation(operationID: operationID, remainingEntries: downloadEntries)
+                    for entry in downloadEntries {
                         try checkCancellation()
                         let sinkFD = try openArtifactSink(entry: entry, rootFD: stagingFD)
                         let sink = ParakeetSourceArtifactSink(descriptor: sinkFD, entry: entry)
@@ -272,9 +292,54 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         guard !Task.isCancelled else { throw ParakeetSourcePreparationError.cancelled }
     }
 
+    /// Attempts verified compiled-weight reuse first. Successfully reused
+    /// weights are already present under the staging root and are omitted from
+    /// the download set. Unavailable weights fall through to bounded fetch.
+    private func entriesRequiringDownload(
+        holding lease: ParakeetStoreFileLock.Lease,
+        stagingRootFD: Int32
+    ) throws -> [GeneratedParakeetManifestEntry] {
+        guard let weightReuser else { return store.entries }
+        var downloads: [GeneratedParakeetManifestEntry] = []
+        for entry in store.entries {
+            try checkCancellation()
+            guard entry.role == "weights" else {
+                downloads.append(entry)
+                continue
+            }
+            do {
+                switch try weightReuser.reuse(sourceEntry: entry, holding: lease, stagingRootFD: stagingRootFD) {
+                case .reused:
+                    continue
+                case .unavailable:
+                    downloads.append(entry)
+                }
+            } catch let error as ParakeetCompiledWeightReuseError {
+                throw mapReuse(error)
+            }
+        }
+        return downloads
+    }
+
+    private func mapReuse(_ error: ParakeetCompiledWeightReuseError) -> ParakeetSourcePreparationError {
+        switch error {
+        case .cancelled:
+            return .cancelled
+        case .sourceEntryMismatch, .unsafeStagingRoot, .leaseNotExclusive, .leaseUnavailable, .leaseStoreParentMismatch:
+            return .invalidManifest
+        case .destinationCollision:
+            return .collision(store.sourceDirectoryName)
+        case .destinationVerificationFailed, .sourceChanged:
+            return .validationFailed
+        case .io(let code):
+            return .io(code)
+        }
+    }
+
     private func map(_ error: Error) -> ParakeetSourcePreparationError {
         if error is CancellationError || Task.isCancelled { return .cancelled }
         if let error = error as? ParakeetSourcePreparationError { return error }
+        if let error = error as? ParakeetCompiledWeightReuseError { return mapReuse(error) }
         if let error = error as? ParakeetSourceSnapshotError {
             if error == .cancelled { return .cancelled }
             return .validationFailed

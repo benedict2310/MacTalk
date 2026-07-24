@@ -75,6 +75,10 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
     /// Pure operation setup. Validates remaining entries and stores the one
     /// operation ID used for subsequent materialize/cancel calls.
     func begin(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws {
+        try beginPreparation(operationID: operationID, remainingEntries: remainingEntries)
+    }
+
+    func beginPreparation(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws {
         _ = try ParakeetSourceDownloadRequestFactory.remainingBytes(remainingEntries)
         for entry in remainingEntries {
             _ = try ParakeetSourceDownloadRequestFactory.downloadIdentity(for: entry)
@@ -86,6 +90,10 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
     }
 
     func cancel(operationID: UUID) {
+        cancelPreparation(operationID: operationID)
+    }
+
+    func cancelPreparation(operationID: UUID) {
         transport.cancel(operationID: operationID)
     }
 

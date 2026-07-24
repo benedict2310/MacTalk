@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 import XCTest
 @testable import MacTalk
 
@@ -347,6 +348,52 @@ final class ParakeetSourcePreparerTests: XCTestCase {
 
     private var fixtureArtifactPath: String { "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel" }
 
+    func test_weightReuseSkipsMaterializerForSuccessfulWeightsAndDownloadsRemainder() async throws {
+        let fixture = try SourcePreparationFixture()
+        try fixture.installCompiledWeights(mode: 0o600)
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+
+        let recording = RecordingSourceMaterializer(bytes: fixture.bytes)
+        let reuser = try fixture.makeWeightReuser()
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: recording, weightReuser: reuser)
+        let activated = try await preparer.prepareIfNeeded()
+
+        let downloaded = recording.materializedPaths
+        XCTAssertEqual(downloaded.count, 5, "four reused weights leave five downloads")
+        XCTAssertFalse(downloaded.contains { $0.contains("weights/weight.bin") })
+        XCTAssertTrue(downloaded.contains("parakeet_vocab.json"))
+        XCTAssertEqual(recording.beginCalls.count, 1)
+        XCTAssertEqual(recording.beginCalls[0].map(\.path), downloaded)
+
+        for entry in fixture.entries where entry.role == "weights" {
+            XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent(entry.path)), fixture.bytes[entry.path]!)
+        }
+        XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+    }
+
+    func test_unavailableCompiledWeightFallsBackToMaterializerDownload() async throws {
+        let fixture = try SourcePreparationFixture()
+        try fixture.installCompiledWeights(mode: 0o600)
+        // Corrupt one compiled weight so reuse is unavailable for that component only.
+        let bad = fixture.parent
+            .appendingPathComponent(ParakeetModelDownloader.folderName)
+            .appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try Data("not-encoder-weight".utf8).write(to: bad)
+        XCTAssertEqual(chmod(bad.path, 0o600), 0)
+
+        let recording = RecordingSourceMaterializer(bytes: fixture.bytes)
+        let reuser = try fixture.makeWeightReuser()
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: recording, weightReuser: reuser).prepareIfNeeded()
+
+        let downloaded = recording.materializedPaths
+        XCTAssertEqual(downloaded.count, 6)
+        XCTAssertTrue(downloaded.contains { $0.contains("Encoder") && $0.contains("weights/weight.bin") })
+        XCTAssertEqual(downloaded.filter { $0.contains("weights/weight.bin") }.count, 1)
+        XCTAssertEqual(recording.beginCalls[0].count, 6)
+    }
+
     func test_bootstrapDoesNotReferenceInactiveSourcePreparation() throws {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
         let source = try String(contentsOf: path, encoding: .utf8)
@@ -381,7 +428,62 @@ private final class SourcePreparationFixture: @unchecked Sendable {
     var sourceURL: URL { parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true) }
     var materializer: TinySourceMaterializer { TinySourceMaterializer(bytes: bytes) }
 
+    func installCompiledWeights(mode: mode_t) throws {
+        let root = parent.appendingPathComponent(ParakeetModelDownloader.folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(parent.path, 0o700), 0)
+        for entry in entries where entry.role == "weights" {
+            let compiledPath = "\(entry.component).mlmodelc/weights/weight.bin"
+            let url = root.appendingPathComponent(compiledPath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes[entry.path]!.write(to: url)
+            XCTAssertEqual(chmod(url.path, mode), 0)
+        }
+    }
+
+    func makeWeightReuser() throws -> ParakeetCompiledWeightReuser {
+        let compiledEntries = entries.compactMap { entry -> GeneratedParakeetManifestEntry? in
+            guard entry.role == "weights" else { return nil }
+            return GeneratedParakeetManifestEntry(
+                path: "\(entry.component).mlmodelc/weights/weight.bin",
+                size: entry.size,
+                sha256: entry.sha256,
+                component: entry.component,
+                role: "compiled"
+            )
+        }
+        return try ParakeetCompiledWeightReuser(
+            store: store,
+            sourceEntries: entries.filter { $0.role == "weights" },
+            compiledEntries: compiledEntries
+        )
+    }
+
     deinit { try? FileManager.default.removeItem(at: parent) }
+}
+
+private final class RecordingSourceMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {
+    let bytes: [String: Data]
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    private struct State {
+        var paths: [String] = []
+        var beginCalls: [[GeneratedParakeetManifestEntry]] = []
+    }
+
+    init(bytes: [String: Data]) { self.bytes = bytes }
+
+    var materializedPaths: [String] { state.withLock { $0.paths } }
+    var beginCalls: [[GeneratedParakeetManifestEntry]] { state.withLock { $0.beginCalls } }
+
+    func beginPreparation(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws {
+        state.withLock { $0.beginCalls.append(remainingEntries) }
+    }
+
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
+        state.withLock { $0.paths.append(entry.path) }
+        try sink.write(bytes[entry.path]!)
+    }
 }
 
 private struct TinySourceMaterializer: ParakeetSourceArtifactMaterializing {
