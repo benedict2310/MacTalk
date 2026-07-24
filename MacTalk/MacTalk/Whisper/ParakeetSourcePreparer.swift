@@ -93,6 +93,33 @@ final class ParakeetSourceArtifactSink: @unchecked Sendable {
     }
 }
 
+/// Same-file test support so hermetic materializer tests can own a sink without
+/// widening production destination authority beyond the preparer.
+enum ParakeetSourceArtifactSinkTestSupport {
+    static func withTemporarySink(
+        entry: GeneratedParakeetManifestEntry,
+        perform: (ParakeetSourceArtifactSink, URL) async throws -> Void
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mactalk-source-sink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("payload.bin")
+        let fd = fileURL.path.withCString {
+            open($0, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+        }
+        guard fd >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
+        let sink = ParakeetSourceArtifactSink(descriptor: fd, entry: entry)
+        do {
+            try await perform(sink, fileURL)
+            try sink.finish()
+        } catch {
+            sink.close()
+            throw error
+        }
+    }
+}
+
 enum ParakeetSourcePreparationError: Error, Equatable, Sendable {
     case cancelled
     case invalidManifest
