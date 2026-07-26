@@ -37,8 +37,8 @@ final class LoadedCoreMLByteAsset: @unchecked Sendable {
     }
 }
 
-/// Inactive loader primitive for the future Parakeet source-store cutover.
-/// Production callers must first obtain `VerifiedCoreMLAssetBytes` from the
+/// Production CoreML byte-loader primitive for verified Parakeet snapshots.
+/// Callers must first obtain `VerifiedCoreMLAssetBytes` from the
 /// descriptor-bound source snapshot provider.
 struct CoreMLByteAssetLoader: Sendable {
     private static let blobKey = URL(string: "weights/weight.bin")!

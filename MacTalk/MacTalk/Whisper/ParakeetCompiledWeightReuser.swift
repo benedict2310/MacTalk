@@ -59,9 +59,9 @@ enum ParakeetCompiledWeightReuseResult: Sendable, Equatable {
     case unavailable(ParakeetCompiledWeightReuseUnavailableReason)
 }
 
-/// Inactive, descriptor-relative reuse of compiled weight files into a source
-/// staging tree. This type intentionally has no downloader or activation
-/// integration; a later source preparer may call it under its own lease.
+/// Descriptor-relative reuse of verified compiled weights into a source
+/// staging tree. `ParakeetSourcePreparer` invokes it under the source-store
+/// lease before bounded transport acquires only missing artifacts.
 final class ParakeetCompiledWeightReuser: @unchecked Sendable {
     struct TestHooks {
         let forceCopy: Bool

@@ -17,6 +17,23 @@ if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
 fi
 cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
 
+printf '\n// The source loader is inactive and reserved for a future loader.\n' >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+    echo 'model-security source guard accepted retired inactive-loader documentation' >&2
+    exit 1
+fi
+cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+
+cat > "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift" <<'SWIFT'
+import Foundation
+let alternateSession = URLSession(configuration: .ephemeral)
+SWIFT
+if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+    echo 'model-security source guard accepted URLSession outside bounded transport' >&2
+    exit 1
+fi
+rm "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift"
+
 python3 - "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" <<'PY'
 from pathlib import Path
 import sys
@@ -30,6 +47,26 @@ if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
 fi
 cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
 
+for requirement in \
+    'VerifiedParakeetSourceSnapshotProvider(store: store)' \
+    'GeneratedModelProvenance.parakeetSource' \
+    'ParakeetLegacyCompiledCleaner(parent: parent)' \
+    'try await cleaner.removeCompiledGeneration()'; do
+    python3 - "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$requirement" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+requirement = sys.argv[2]
+path.write_text(text.replace(requirement, "REMOVED_REVIEWED_BOUNDARY", 1))
+PY
+    if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+        echo "model-security source guard accepted removal of: $requirement" >&2
+        exit 1
+    fi
+    cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+done
+
 python3 - "$fixture/MacTalk/MacTalk/Whisper/ModelDownloader.swift" <<'PY'
 from pathlib import Path
 import sys
@@ -39,6 +76,19 @@ path.write_text(text.replace("BoundedModelDownloadTransport()", "UnboundedModelD
 PY
 if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
     echo 'model-security source guard accepted removal of bounded Whisper transport' >&2
+    exit 1
+fi
+cp "$ROOT/MacTalk/MacTalk/Whisper/ModelDownloader.swift" "$fixture/MacTalk/MacTalk/Whisper/ModelDownloader.swift"
+
+python3 - "$fixture/MacTalk/MacTalk/Whisper/ParakeetModelDownloader.swift" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+path.write_text(text.replace("BoundedModelDownloadTransport()", "UnboundedModelDownloadTransport()", 1))
+PY
+if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+    echo 'model-security source guard accepted removal of bounded Parakeet transport' >&2
     exit 1
 fi
 

@@ -330,7 +330,7 @@ def emit(root: Path) -> str:
         lines.append(f"        .init(id: {swift_string(x['id'])}, displayName: {swift_string(x['displayName'])}, filename: {swift_string(x['path'])}, sha256: {swift_string(x['sha256'])}, sizeBytes: {x['bytes']}, license: {swift_string(x['license'])}, languages: [{', '.join(swift_string(v) for v in x['languages'])}], revision: whisperRevision, source: whisperRepository),")
     lines += ["    ]", "", "    static let parakeetCompiled: [GeneratedParakeetManifestEntry] = ["]
     for x in compiled: lines.append(f"        .init(path: {swift_string(x['path'])}, size: {x['bytes']}, sha256: {swift_string(x['sha256'])}, component: {swift_string(x['component'])}, role: {swift_string(x['role'])}),")
-    lines += ["    ]", "", "    // Generated for the inactive in-memory .mlpackage snapshot provider.", "    static let parakeetSource: [GeneratedParakeetManifestEntry] = ["]
+    lines += ["    ]", "", "    // Active source manifest consumed by verified Parakeet source preparation.", "    static let parakeetSource: [GeneratedParakeetManifestEntry] = ["]
     for x in source: lines.append(f"        .init(path: {swift_string(x['path'])}, size: {x['bytes']}, sha256: {swift_string(x['sha256'])}, component: {swift_string(x['component'])}, role: {swift_string(x['role'])}),")
     lines += ["    ]", f"    static let canonicalProvenanceSHA256 = {swift_string(provenance_sha256)}", "}", ""]
     return "\n".join(lines)

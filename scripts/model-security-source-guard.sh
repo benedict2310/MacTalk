@@ -17,6 +17,20 @@ if grep -RFn --include='*.swift' -e 'AsrModels.load(from:' -e 'ModelHub.loadMode
     exit 1
 fi
 
+if grep -REin --include='*.swift' \
+    'inactive (in-memory|loader|Parakeet source|source generation)|future (Parakeet source-store|source artifact|source loader)|future loader|not referenced by active composition' \
+    "$SOURCE/Whisper"; then
+    echo 'production source contains retired inactive/future model-loading documentation' >&2
+    exit 1
+fi
+
+while IFS= read -r source; do
+    if grep -En 'URLSession\(|URLSession(Configuration|DataTask|DownloadTask|DataDelegate|TaskDelegate)' "$source"; then
+        echo "$source must not introduce transport outside BoundedModelDownloadTransport" >&2
+        exit 1
+    fi
+done < <(find "$SOURCE/Whisper" -type f -name '*.swift' ! -name 'BoundedModelDownloadTransport.swift' -print)
+
 for requirement in \
     'BoundedParakeetSourceArtifactMaterializer(' \
     'BoundedModelDownloadTransport()' \

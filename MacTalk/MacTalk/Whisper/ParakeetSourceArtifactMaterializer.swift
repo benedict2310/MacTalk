@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import os
 
-/// Builds official, immutable download requests for inactive Parakeet source
+/// Builds official, immutable download requests for active Parakeet source
 /// artifacts. Identities and mirrors stay pinned to generated provenance;
 /// callers only supply dynamic operation/aggregate context.
 enum ParakeetSourceDownloadRequestFactory {

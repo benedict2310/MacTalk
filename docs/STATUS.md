@@ -79,6 +79,7 @@ loading fallback. Legacy compiled storage is retired only after successful
 source publication through validated, quarantined, retryable cleanup. The
 canonical provenance lock SHA-256 at that commit is
 `9707fb09598e23902d5a3847e84acae468ca85b357d6c100b199f35a7312e3b2`.
-Repository owner and sole maintainer Benedict Evert approved that lock and
-cutover on 2026-07-26 under the documented solo-maintainer governance policy;
-this is not represented as independent or branch-protection-backed approval.
+During Task 12, the sole maintainer declared approval and risk acceptance for
+that lock and cutover under the documented solo-maintainer governance policy.
+This repository record is not represented as a cryptographically authenticated,
+independent, or branch-protection-backed approval.

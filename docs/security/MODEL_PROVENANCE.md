@@ -100,15 +100,18 @@ quarantine content is preserved for diagnosis rather than deleted.
 
 ## Governance boundary
 
-MacTalk is a **solo-maintainer** repository. Repository owner Benedict Evert
-(`benedict2310`) explicitly approved the canonical lock and source cutover at
-commit `d6eab1041efc024976502099c157907274ff3154`; the lock SHA-256 was
+MacTalk is a **solo-maintainer** repository. During Task 12, the sole
+maintainer declared owner approval and risk acceptance for the canonical lock
+and source cutover at commit
+`d6eab1041efc024976502099c157907274ff3154`; the lock SHA-256 was
 `9707fb09598e23902d5a3847e84acae468ca85b357d6c100b199f35a7312e3b2`.
-For this project, explicit owner review and risk acceptance is the provenance
-governance gate. Changes to the canonical lock require a newly recorded owner
-approval binding the changed lock digest and reviewed commit.
+For this project, that recorded maintainer declaration is the provenance
+governance gate. Changes to the canonical lock require a new declaration
+binding the changed lock digest and reviewed commit.
 
-This is a manual solo-project policy, not a claim of independent attestation,
-CODEOWNERS review, required GitHub approvals, or branch-protection enforcement.
-If another maintainer joins the project, this policy should be revisited rather
-than retroactively inventing independent evidence.
+This repository record is not a cryptographically authenticated signature or a
+claim of independent attestation, CODEOWNERS review, required GitHub approvals,
+or branch-protection enforcement. Git author display names and the repository
+owner account are not treated as independent identity proof. If another
+maintainer joins the project, this policy should be revisited rather than
+retroactively inventing independent evidence.

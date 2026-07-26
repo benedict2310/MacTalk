@@ -68,7 +68,7 @@ enum GeneratedModelProvenance {
         .init(path: "parakeet_vocab.json", size: 151122, sha256: "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735", component: "Vocabulary", role: "compiled"),
     ]
 
-    // Generated for the inactive in-memory .mlpackage snapshot provider.
+    // Active source manifest consumed by verified Parakeet source preparation.
     static let parakeetSource: [GeneratedParakeetManifestEntry] = [
         .init(path: "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/model.mlmodel", size: 20454, sha256: "abc41e3d6c4f2d401ca445c85aa4884244eabed9bdec7b4ec7e60d691140cdfb", component: "Preprocessor", role: "specification"),
         .init(path: "mlpackages/Preprocessor.mlpackage/Data/com.apple.CoreML/weights/weight.bin", size: 491072, sha256: "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea", component: "Preprocessor", role: "weights"),

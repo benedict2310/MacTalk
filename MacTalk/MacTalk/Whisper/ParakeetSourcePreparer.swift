@@ -144,9 +144,9 @@ enum ParakeetSourcePreparationError: Error, Equatable, Sendable {
     case validationFailed
 }
 
-/// Builds the inactive source generation behind one exclusive store lease.
-/// No production caller is installed in Task 10a; materializers are an
-/// internal seam for the future source artifact acquisition work.
+/// Builds the active source generation behind one exclusive store lease.
+/// Production bootstrap supplies a bounded materializer and may copy already
+/// verified legacy weights before downloading only missing source artifacts.
 final class ParakeetSourcePreparer: @unchecked Sendable {
     private struct OperationState {
         var current: UUID?
