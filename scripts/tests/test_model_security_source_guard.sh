@@ -17,22 +17,28 @@ if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
 fi
 cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
 
-printf '\n// The source loader is inactive and reserved for a future loader.\n' >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
-if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
-    echo 'model-security source guard accepted retired inactive-loader documentation' >&2
-    exit 1
-fi
-cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+for stale_claim in \
+    'The source loader is inactive and reserved for a future loader.' \
+    'The Parakeet source loader remains inactive.'; do
+    printf '\n// %s\n' "$stale_claim" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+    if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+        echo "model-security source guard accepted retired claim: $stale_claim" >&2
+        exit 1
+    fi
+    cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+done
 
-cat > "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift" <<'SWIFT'
+for session_expression in 'URLSession(configuration: .ephemeral)' 'Foundation.URLSession.shared'; do
+    cat > "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift" <<SWIFT
 import Foundation
-let alternateSession = URLSession(configuration: .ephemeral)
+let alternateSession = $session_expression
 SWIFT
-if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
-    echo 'model-security source guard accepted URLSession outside bounded transport' >&2
-    exit 1
-fi
-rm "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift"
+    if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+        echo "model-security source guard accepted $session_expression outside bounded transport" >&2
+        exit 1
+    fi
+    rm "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift"
+done
 
 python3 - "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" <<'PY'
 from pathlib import Path

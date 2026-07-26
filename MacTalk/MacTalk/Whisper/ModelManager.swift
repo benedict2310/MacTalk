@@ -44,8 +44,8 @@ final class ModelManager: ModelManaging {
     private var stateHandlers: [ModelDownloadOperationID: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)] = [:]
     private var completionHandlers: [ModelDownloadOperationID: @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void] = [:]
 
-    /// The downloader seam lets tests provide temporary roots and a fake
-    /// URLSession/task factory without touching the user's model store.
+    /// The downloader seam lets tests provide temporary roots and an injected
+    /// transport/task factory without touching the user's model store.
     init(downloader: ModelDownloader = ModelDownloader()) {
         self.downloader = downloader
         downloader.onOperationState = { [weak self] operationID, state in
