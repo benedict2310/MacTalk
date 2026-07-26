@@ -7,7 +7,7 @@ GUARD="$ROOT/scripts/model-security-source-guard.sh"
 
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/mactalk-model-source-guard.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/MacTalk/MacTalk"
+mkdir -p "$fixture/MacTalk/MacTalk/Utilities"
 cp -R "$ROOT/MacTalk/MacTalk/Whisper" "$fixture/MacTalk/MacTalk/Whisper"
 
 printf '\n// AsrModels.load(from: legacyURL)\n' >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
@@ -19,7 +19,11 @@ cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/Mac
 
 for stale_claim in \
     'The source loader is inactive and reserved for a future loader.' \
-    'The Parakeet source loader remains inactive.'; do
+    'The Parakeet source loader remains inactive.' \
+    'The Parakeet source loader is dormant pending activation.' \
+    'The Parakeet source loader is deferred until a later cutover.' \
+    'The Parakeet source loader is reserved for later use.' \
+    'The Parakeet source loader is disabled.'; do
     printf '\n// %s\n' "$stale_claim" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
     if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
         echo "model-security source guard accepted retired claim: $stale_claim" >&2
@@ -39,6 +43,16 @@ SWIFT
     fi
     rm "$fixture/MacTalk/MacTalk/Whisper/AlternateModelTransport.swift"
 done
+
+cat > "$fixture/MacTalk/MacTalk/Utilities/ModelTransport.swift" <<'SWIFT'
+import Foundation
+let misplacedModelSession = Foundation.URLSession.shared
+SWIFT
+if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+    echo 'model-security source guard accepted URLSession outside the Whisper directory' >&2
+    exit 1
+fi
+rm "$fixture/MacTalk/MacTalk/Utilities/ModelTransport.swift"
 
 python3 - "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" <<'PY'
 from pathlib import Path
