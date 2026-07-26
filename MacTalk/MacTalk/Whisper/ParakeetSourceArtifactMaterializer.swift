@@ -19,11 +19,17 @@ enum ParakeetSourceDownloadRequestFactory {
         try ParakeetModelDownloader.mirrorURL(for: manifestEntry(for: entry))
     }
 
+    /// Reserves one bounded-download payload plus one same-volume unlinked
+    /// spool for each pending source artifact. The final source sink is owned
+    /// by the preparer's separately validated store parent.
     static func remainingBytes(_ entries: [GeneratedParakeetManifestEntry]) throws -> Int64 {
-        try ParakeetModelDownloader.remainingBytes(
+        let downloads = try ParakeetModelDownloader.remainingBytes(
             from: 0,
             entries: entries.map(manifestEntry(for:))
         )
+        let doubled = downloads.multipliedReportingOverflow(by: 2)
+        guard !doubled.overflow else { throw ParakeetSourcePreparationError.invalidManifest }
+        return doubled.partialValue
     }
 
     static func makeRequest(
@@ -161,13 +167,12 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
         guard info.st_uid == getuid() else { throw ParakeetSourcePreparationError.invalidTree }
         guard info.st_size == entry.size else { throw ParakeetSourcePreparationError.artifactSize }
 
-        // Spool verified bytes to an unlinked temporary file rather than
-        // retaining an entire model artifact in RAM (the Encoder is ~425 MiB).
-        // This also freezes the validated byte sequence before it reaches the
-        // preparer-owned sink if another same-UID writer changes the payload.
-        guard let spool = tmpfile() else { throw ParakeetSourcePreparationError.io(errno) }
-        defer { fclose(spool) }
-        let spoolFD = fileno(spool)
+        // Spool under the preflighted workspace volume rather than process
+        // temp. It is immediately unlinked, so it has no later path authority.
+        // This avoids retaining the ~425 MiB Encoder in RAM and freezes the
+        // verified bytes before they reach the preparer-owned sink.
+        let spoolFD = try openUnlinkedWorkspaceSpool()
+        defer { _ = Darwin.close(spoolFD) }
         var hasher = SHA256()
         var total: Int64 = 0
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -210,6 +215,32 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
             try sink.write(chunk)
             remaining -= Int64(count)
         }
+    }
+
+    private func openUnlinkedWorkspaceSpool() throws -> Int32 {
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        let rootFD = workspaceRoot.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard rootFD >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
+        defer { _ = Darwin.close(rootFD) }
+        var info = stat()
+        guard fstat(rootFD, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == getuid() else {
+            throw ParakeetSourcePreparationError.invalidTree
+        }
+        let name = ".mactalk-source-spool-\(UUID().uuidString)"
+        let fd = name.withCString {
+            openat(rootFD, $0, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        }
+        guard fd >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
+        guard name.withCString({ unlinkat(rootFD, $0, 0) == 0 }) else {
+            let code = errno
+            _ = Darwin.close(fd)
+            throw ParakeetSourcePreparationError.io(code)
+        }
+        return fd
     }
 
     private func writeAll(_ data: Data, to descriptor: Int32) throws {
