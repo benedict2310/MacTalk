@@ -155,6 +155,9 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     private let afterStagingDirectoryCreated: (@Sendable () -> Void)?
     private let beforeExistingValidationCompletion: (@Sendable () -> Void)?
     private let beforeStagingValidationCompletion: (@Sendable () -> Void)?
+    /// Test-only seam for proving that an interruption after staging becomes
+    /// a backup leaves a recoverable, fully validated generation.
+    private let beforeBackupPromotion: (@Sendable () -> Void)?
 
     init(store: ParakeetSourceStore, materializer: any ParakeetSourceArtifactMaterializing,
          weightReuser: ParakeetCompiledWeightReuser? = nil,
@@ -162,7 +165,8 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
          beforeActivation: (@Sendable () -> Void)? = nil,
          afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
          beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
-         beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
+         beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil,
+         beforeBackupPromotion: (@Sendable () -> Void)? = nil) {
         self.store = store
         self.materializer = materializer
         self.weightReuser = weightReuser
@@ -171,6 +175,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         self.afterStagingDirectoryCreated = afterStagingDirectoryCreated
         self.beforeExistingValidationCompletion = beforeExistingValidationCompletion
         self.beforeStagingValidationCompletion = beforeStagingValidationCompletion
+        self.beforeBackupPromotion = beforeBackupPromotion
     }
 
     convenience init(parent: URL, materializer: any ParakeetSourceArtifactMaterializing,
@@ -179,13 +184,15 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                      beforeActivation: (@Sendable () -> Void)? = nil,
                      afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
                      beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
-                     beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil) {
+                     beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil,
+                     beforeBackupPromotion: (@Sendable () -> Void)? = nil) {
         self.init(store: .canonical(parent: parent), materializer: materializer,
                   weightReuser: weightReuser,
                   beforeValidation: beforeValidation, beforeActivation: beforeActivation,
                   afterStagingDirectoryCreated: afterStagingDirectoryCreated,
                   beforeExistingValidationCompletion: beforeExistingValidationCompletion,
-                  beforeStagingValidationCompletion: beforeStagingValidationCompletion)
+                  beforeStagingValidationCompletion: beforeStagingValidationCompletion,
+                  beforeBackupPromotion: beforeBackupPromotion)
     }
 
     func prepareIfNeeded() async throws -> URL {
@@ -204,10 +211,15 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         do {
             return try await lease.withStoreParentDescriptor { parentFD in
                 try checkCancellation()
+                // Only these exact UUID namespaces are owned by source
+                // preparation. Compiled generations and unexpected names are
+                // never enumerated as cleanup targets.
+                try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: false)
                 let provider = VerifiedParakeetSourceSnapshotProvider(store: store, beforeCompletion: beforeExistingValidationCompletion)
                 do {
                     _ = try await provider.makeVerifiedSnapshot(holding: lease)
                     try checkCancellation()
+                    try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: true)
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
                 } catch let error as ParakeetSourceSnapshotError {
                     guard error != .cancelled else { throw ParakeetSourcePreparationError.cancelled }
@@ -215,9 +227,15 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                     throw ParakeetSourcePreparationError.cancelled
                 }
                 try checkCancellation()
-                // An existing but invalid source is not ours to replace. The
-                // descriptor-relative check closes this path before staging;
-                // activation repeats the check atomically for a racing creator.
+                // An existing but invalid source is not ours to replace.
+                // Recovery is allowed only when it is absent.
+                if entryExists(named: store.sourceDirectoryName, relativeTo: parentFD) {
+                    throw ParakeetSourcePreparationError.collision(store.sourceDirectoryName)
+                }
+                if try await recoverValidatedBackup(holding: lease, parentFD: parentFD) {
+                    return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
+                }
+                try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: true)
                 try ensureAbsent(named: store.sourceDirectoryName, relativeTo: parentFD)
 
                 let stagingName = try uniqueName(prefix: ParakeetSourceStore.stagingPrefix)
@@ -503,7 +521,51 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     }
 
     private func activate(stagingName: String, sourceName: String, parentFD: Int32) throws {
-        try renameExclusively(from: stagingName, to: sourceName, relativeTo: parentFD)
+        // The first exclusive rename turns verified staging into a recoverable
+        // backup. If interruption follows, the next exclusive lease validates
+        // and restores it only while no active source exists.
+        let backupName = try uniqueName(prefix: ParakeetSourceStore.backupPrefix)
+        try renameExclusively(from: stagingName, to: backupName, relativeTo: parentFD)
+        try syncDirectory(parentFD)
+        beforeBackupPromotion?()
+        try checkCancellation()
+        try renameExclusively(from: backupName, to: sourceName, relativeTo: parentFD)
+        try syncDirectory(parentFD)
+    }
+
+    private func recoverValidatedBackup(
+        holding lease: ParakeetStoreFileLock.Lease,
+        parentFD: Int32
+    ) async throws -> Bool {
+        for backupName in try ownedArtifactNames(relativeTo: parentFD, prefix: ParakeetSourceStore.backupPrefix) {
+            try checkCancellation()
+            let backupStore = ParakeetSourceStore(
+                parent: store.parent,
+                sourceDirectoryName: backupName,
+                entries: store.entries,
+                identity: store.identity
+            )
+            do {
+                _ = try await VerifiedParakeetSourceSnapshotProvider(store: backupStore)
+                    .makeVerifiedSnapshot(holding: lease)
+                try checkCancellation()
+                try renameExclusively(from: backupName, to: store.sourceDirectoryName, relativeTo: parentFD)
+                try syncDirectory(parentFD)
+                // Any remaining owned backups are stale after recovery.
+                try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: true)
+                return true
+            } catch let error as ParakeetSourceSnapshotError {
+                if error == .cancelled { throw ParakeetSourcePreparationError.cancelled }
+                try removeTree(named: backupName, relativeTo: parentFD)
+            } catch is CancellationError {
+                throw ParakeetSourcePreparationError.cancelled
+            }
+        }
+        return false
+    }
+
+    private func syncDirectory(_ fd: Int32) throws {
+        guard fsync(fd) == 0 else { throw ParakeetSourcePreparationError.io(errno) }
     }
 
     private func renameExclusively(from: String, to: String, relativeTo parentFD: Int32) throws {
@@ -521,6 +583,39 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     private func isOwnedArtifactName(_ name: String, prefix: String) -> Bool {
         guard name.hasPrefix(prefix) else { return false }
         return UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+    }
+
+    private func removeOwnedArtifacts(relativeTo parentFD: Int32, includeBackups: Bool) throws {
+        let prefixes = includeBackups
+            ? [ParakeetSourceStore.stagingPrefix, ParakeetSourceStore.backupPrefix]
+            : [ParakeetSourceStore.stagingPrefix]
+        for prefix in prefixes {
+            for name in try ownedArtifactNames(relativeTo: parentFD, prefix: prefix) {
+                try removeTree(named: name, relativeTo: parentFD)
+            }
+        }
+    }
+
+    private func ownedArtifactNames(relativeTo parentFD: Int32, prefix: String) throws -> [String] {
+        // Reopen relative to the validated parent rather than dup'ing it:
+        // directory descriptors from dup share a cursor, so a prior scan could
+        // otherwise hide backups from a later scan.
+        let listingFD = ".".withCString {
+            openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard listingFD >= 0, let directory = fdopendir(listingFD) else {
+            if listingFD >= 0 { _ = Darwin.close(listingFD) }
+            throw ParakeetSourcePreparationError.io(errno)
+        }
+        defer { closedir(directory) }
+        var names: [String] = []
+        while let item = readdir(directory) {
+            let name = withUnsafePointer(to: item.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            if isOwnedArtifactName(name, prefix: prefix) { names.append(name) }
+        }
+        return names.sorted()
     }
 
     private func ensureAbsent(named name: String, relativeTo fd: Int32) throws {

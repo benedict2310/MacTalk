@@ -394,6 +394,77 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertEqual(recording.beginCalls[0].count, 6)
     }
 
+    func test_recoversValidatedOwnedBackupOnlyWhenActiveSourceIsAbsent() async throws {
+        let fixture = try SourcePreparationFixture()
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
+        let backupName = ParakeetSourceStore.backupPrefix + UUID().uuidString
+        try FileManager.default.moveItem(
+            at: fixture.sourceURL,
+            to: fixture.parent.appendingPathComponent(backupName, isDirectory: true)
+        )
+        let recording = RecordingSourceMaterializer(bytes: fixture.bytes)
+        let recovered = try await ParakeetSourcePreparer(store: fixture.store, materializer: recording).prepareIfNeeded()
+
+        XCTAssertEqual(recovered, fixture.sourceURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovered.appendingPathComponent("parakeet_vocab.json").path))
+        XCTAssertTrue(recording.materializedPaths.isEmpty, "unexpected downloads: \(recording.materializedPaths)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.parent.appendingPathComponent(backupName).path), "backup survived recovery")
+    }
+
+    func test_ownedStaleArtifactsAreRemovedWithoutTouchingCompiledGeneration() async throws {
+        let fixture = try SourcePreparationFixture()
+        try fixture.installCompiledWeights(mode: 0o600)
+        let compiled = fixture.parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        try Data("compiled-sentinel".utf8).write(to: compiled.appendingPathComponent("sentinel"))
+        let staleNames = [
+            ParakeetSourceStore.stagingPrefix + UUID().uuidString,
+            ParakeetSourceStore.backupPrefix + UUID().uuidString
+        ]
+        for name in staleNames {
+            let stale = fixture.parent.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+            try Data("stale".utf8).write(to: stale.appendingPathComponent("sentinel"))
+        }
+
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
+
+        for name in staleNames {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.parent.appendingPathComponent(name).path), "owned stale artifact survived: \(name)")
+        }
+        XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
+    }
+
+    func test_interruptedBackupPromotionLeavesRecoverableValidatedBackup() async throws {
+        let fixture = try SourcePreparationFixture()
+        let collisionCreated = OSAllocatedUnfairLock(initialState: false)
+        let preparer = ParakeetSourcePreparer(
+            store: fixture.store,
+            materializer: fixture.materializer,
+            beforeBackupPromotion: {
+                collisionCreated.withLock { didCreate in
+                    guard !didCreate else { return }
+                    didCreate = true
+                    try? FileManager.default.createDirectory(at: fixture.sourceURL, withIntermediateDirectories: false)
+                }
+            }
+        )
+        do {
+            _ = try await preparer.prepareIfNeeded()
+            XCTFail("promotion collision unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .collision(fixture.store.sourceDirectoryName))
+        }
+        XCTAssertTrue(collisionCreated.withLock { $0 })
+        try FileManager.default.removeItem(at: fixture.sourceURL)
+        let backupNames = try FileManager.default.contentsOfDirectory(atPath: fixture.parent.path)
+            .filter { $0.hasPrefix(ParakeetSourceStore.backupPrefix) }
+        XCTAssertEqual(backupNames.count, 1)
+
+        let recovered = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
+        XCTAssertEqual(recovered, fixture.sourceURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.parent.appendingPathComponent(backupNames[0]).path), "backup survived successful recovery")
+    }
+
     func test_bootstrapDoesNotReferenceInactiveSourcePreparation() throws {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
         let source = try String(contentsOf: path, encoding: .utf8)
