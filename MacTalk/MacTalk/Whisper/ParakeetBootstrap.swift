@@ -69,13 +69,6 @@ private struct ProductionParakeetVerifiedLoader: ParakeetBootstrapVerifiedLoadin
     }
 }
 
-private struct ProductionParakeetLegacyCleaner: ParakeetBootstrapLegacyCleaning {
-    func removeCompiledGeneration() async throws {
-        // Task 11b installs descriptor-safe retirement after the source load
-        // boundary is fully characterized.
-    }
-}
-
 final class ParakeetBootstrap: @unchecked Sendable {
     enum BootstrapError: LocalizedError, Sendable, Equatable {
         case modelsNotAvailable
@@ -115,7 +108,7 @@ final class ParakeetBootstrap: @unchecked Sendable {
         return ParakeetBootstrap(
             preparer: ProductionParakeetSourcePreparer(parent: parent),
             loader: ProductionParakeetVerifiedLoader(store: store),
-            cleaner: ProductionParakeetLegacyCleaner()
+            cleaner: ParakeetLegacyCompiledCleaner(parent: parent)
         )
     }()
 

@@ -32,6 +32,7 @@
 		324D5DEB6A98DBF07FCE11C9 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF01E16D9F042ED0D5426CE5 /* Permissions.swift */; };
 		36BE7A849EAF97B712375786 /* StatusMenuPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FF9AD343E04BC2892622DA6 /* StatusMenuPresenter.swift */; };
 		37407C0F05057C1A5732BF2F /* VerifiedParakeetModelLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EC92E3B0E1A975F4EABECA /* VerifiedParakeetModelLoaderTests.swift */; };
+		3DC3B37AAA1125B354C6348F /* ParakeetLegacyCompiledCleanerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62D1940C92BEB0A193A7B55D /* ParakeetLegacyCompiledCleanerTests.swift */; };
 		40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */; };
 		40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */; };
 		412BF05F3E2D5087CDEC8B84 /* TranscriptionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42AC9BF93A12B5DACBA6C86 /* TranscriptionControllerTests.swift */; };
@@ -104,6 +105,7 @@
 		B1686C5A121C33BA3613F8BD /* VerifiedCoreMLByteAssetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E4B4CAD0586F4946841B9F9 /* VerifiedCoreMLByteAssetTests.swift */; };
 		B3F73ADD40DB9EFDFE8E8FA2 /* FileDescriptorCensus.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24F8409C75D653CE8D83807 /* FileDescriptorCensus.swift */; };
 		B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */; };
+		B938F4BC255CE6202D92B1BD /* ParakeetLegacyCompiledCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = E653866ED30EC429128346F5 /* ParakeetLegacyCompiledCleaner.swift */; };
 		BA9FFF3F1CCA6EB8B399BC2C /* PermissionFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96000BE65E6ABE18BF19F1EC /* PermissionFlowCoordinator.swift */; };
 		BAD2320D9521ED8C2B05863B /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AFDF15D9275C7B2662A6B51F /* FluidAudio */; };
 		BDFE38B4252172DDC3BA3DBF /* AudioLevelMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53EA43BA4AA6597912BEEE4 /* AudioLevelMonitor.swift */; };
@@ -196,6 +198,7 @@
 		59E9EED0C012BA63AE29807D /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 		5DB70657909AA233570D5503 /* ParakeetSourceSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetSourceSnapshotTests.swift; sourceTree = "<group>"; };
 		5E6931972136052785F5F5EC /* AppAudioSourceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAudioSourceCoordinatorTests.swift; sourceTree = "<group>"; };
+		62D1940C92BEB0A193A7B55D /* ParakeetLegacyCompiledCleanerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetLegacyCompiledCleanerTests.swift; sourceTree = "<group>"; };
 		63E40FCC9174C4CE0C094B6E /* DeterministicHarnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicHarnessTests.swift; sourceTree = "<group>"; };
 		66B5122D76E3EC68FD7D4D00 /* ProductionRecordingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRecordingSession.swift; sourceTree = "<group>"; };
 		6715914C4DF7FFB0CF653B4D /* MacTalk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacTalk.entitlements; sourceTree = "<group>"; };
@@ -266,6 +269,7 @@
 		E3F0302B577C1C5229BAC8C6 /* PerformanceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMonitor.swift; sourceTree = "<group>"; };
 		E50295A8423A63C0C24A987E /* BoundedModelDownloadTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoundedModelDownloadTransportTests.swift; sourceTree = "<group>"; };
 		E56E468FDC7C54B3C1374991 /* PermissionsActor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsActor.swift; sourceTree = "<group>"; };
+		E653866ED30EC429128346F5 /* ParakeetLegacyCompiledCleaner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParakeetLegacyCompiledCleaner.swift; sourceTree = "<group>"; };
 		E76FC409C68F7574C43B90B4 /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
 		E81ABE900575F1149ED6F49B /* TestHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHelpers.swift; sourceTree = "<group>"; };
 		E8A0EC9AE0244E5A3BE85E3A /* PermissionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsTests.swift; sourceTree = "<group>"; };
@@ -400,6 +404,7 @@
 				91F5EC92342C259157444464 /* ParakeetCompiledWeightReuserTests.swift */,
 				FDE99A89C4C1D64F0EB83F0C /* ParakeetDownloadTransportTests.swift */,
 				7BA03E79E85BCE31206EE4ED /* ParakeetEngineTests.swift */,
+				62D1940C92BEB0A193A7B55D /* ParakeetLegacyCompiledCleanerTests.swift */,
 				98AE9ED879E4053EB5D0BAD9 /* ParakeetSourceArtifactMaterializerTests.swift */,
 				3995E1605534137112A9FF82 /* ParakeetSourcePreparerTests.swift */,
 				5DB70657909AA233570D5503 /* ParakeetSourceSnapshotTests.swift */,
@@ -524,6 +529,7 @@
 				F902ABAAF29E3BD4DC3E4C6B /* ParakeetBootstrap.swift */,
 				2CA28134425414A55A6FBC56 /* ParakeetCompiledWeightReuser.swift */,
 				09619C8C32029E72614A1683 /* ParakeetEngine.swift */,
+				E653866ED30EC429128346F5 /* ParakeetLegacyCompiledCleaner.swift */,
 				858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */,
 				884FC81B3956158E206A3F9D /* ParakeetSourceArtifactMaterializer.swift */,
 				345BA526E58415F775DEF65D /* ParakeetSourcePreparer.swift */,
@@ -775,6 +781,7 @@
 				6CA60FEE44034413EF9AD91D /* ParakeetBootstrap.swift in Sources */,
 				41C205DE52912728B1073A08 /* ParakeetCompiledWeightReuser.swift in Sources */,
 				93BD41773F100E2B0F8FA5C6 /* ParakeetEngine.swift in Sources */,
+				B938F4BC255CE6202D92B1BD /* ParakeetLegacyCompiledCleaner.swift in Sources */,
 				40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */,
 				A73A0C173A958B2323B5FC8C /* ParakeetSourceArtifactMaterializer.swift in Sources */,
 				60BFB26F88516459EB2835CF /* ParakeetSourcePreparer.swift in Sources */,
@@ -840,6 +847,7 @@
 				ADE77A00C7E4C5446A312EBC /* ParakeetCompiledWeightReuserTests.swift in Sources */,
 				F310B9846809335670C69C38 /* ParakeetDownloadTransportTests.swift in Sources */,
 				B7C2424928B4F87569EBF8FC /* ParakeetEngineTests.swift in Sources */,
+				3DC3B37AAA1125B354C6348F /* ParakeetLegacyCompiledCleanerTests.swift in Sources */,
 				6B15F5BBD14B51CC5C7EE848 /* ParakeetSourceArtifactMaterializerTests.swift in Sources */,
 				214D7F03CDC5B6FD44D6BBA8 /* ParakeetSourcePreparerTests.swift in Sources */,
 				5BF457320E7641C8C63E80D0 /* ParakeetSourceSnapshotTests.swift in Sources */,

@@ -54,6 +54,23 @@ final class ParakeetBootstrapTests: XCTestCase {
         XCTAssertNil(bootstrap.currentManager())
     }
 
+    func test_cleanupFailureDoesNotRevokeVerifiedSourceManager() async throws {
+        let events = LockedBootstrapEvents()
+        let expected = AsrManager()
+        let bootstrap = ParakeetBootstrap(
+            preparer: FakeBootstrapPreparer(events: events),
+            loader: FakeBootstrapLoader(events: events, results: [.success(.init(manager: expected, retained: BootstrapRetentionProbe()))]),
+            cleaner: FakeLegacyCleaner(events: events, error: BootstrapTestError.failed)
+        )
+
+        let actual = try await bootstrap.ensureReady()
+
+        XCTAssertTrue(actual === expected)
+        XCTAssertTrue(bootstrap.currentManager() === expected)
+        XCTAssertEqual(bootstrap.currentState(), .ready)
+        XCTAssertEqual(events.snapshot(), ["load", "cleanup"])
+    }
+
     func test_newDownloadGenerationPreventsOlderLoadPublishing() async throws {
         let events = LockedBootstrapEvents()
         let gate = AsyncBootstrapGate()
@@ -126,7 +143,15 @@ private final class FakeBootstrapLoader: ParakeetBootstrapVerifiedLoading, @unch
 
 private struct FakeLegacyCleaner: ParakeetBootstrapLegacyCleaning {
     let events: LockedBootstrapEvents
-    func removeCompiledGeneration() async throws { events.append("cleanup") }
+    var error: BootstrapTestError?
+    init(events: LockedBootstrapEvents, error: BootstrapTestError? = nil) {
+        self.events = events
+        self.error = error
+    }
+    func removeCompiledGeneration() async throws {
+        events.append("cleanup")
+        if let error { throw error }
+    }
 }
 
 private actor AsyncBootstrapGate {
