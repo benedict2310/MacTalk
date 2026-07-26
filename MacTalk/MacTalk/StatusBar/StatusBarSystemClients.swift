@@ -266,7 +266,7 @@ struct StatusBarDependencies {
                     guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
                     return (try? ModelIntegrityVerifier.validate(source: ModelStore.path(for: spec), spec: spec)) != nil
                 case .parakeet:
-                    return ParakeetModelDownloader.modelsAvailable()
+                    return ParakeetBootstrap.shared.modelsAvailable()
                 }
             }
         )

@@ -9,6 +9,7 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
     private let modelPath: @Sendable (ModelSpec) -> URL
     private let whisperEngineFactory: WhisperEngineFactory
     private let parakeetEngineFactory: ParakeetEngineFactory
+    private let parakeetAvailable: @Sendable () -> Bool
 
     init(
         integrityValidator: @escaping IntegrityValidator = { source, spec in
@@ -20,12 +21,14 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
         whisperEngineFactory: @escaping WhisperEngineFactory = { spec, url in
             NativeWhisperEngine(modelSpec: spec, modelURL: url)
         },
-        parakeetEngineFactory: @escaping ParakeetEngineFactory = { ParakeetEngine() }
+        parakeetEngineFactory: @escaping ParakeetEngineFactory = { ParakeetEngine() },
+        parakeetAvailable: @escaping @Sendable () -> Bool = { ParakeetBootstrap.shared.modelsAvailable() }
     ) {
         self.integrityValidator = integrityValidator
         self.modelPath = modelPath
         self.whisperEngineFactory = whisperEngineFactory
         self.parakeetEngineFactory = parakeetEngineFactory
+        self.parakeetAvailable = parakeetAvailable
     }
 
     func isAvailable(selection: EngineSelection) -> Bool {
@@ -34,7 +37,7 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
             guard let spec = ModelCatalog.findById(selection.modelID), spec.sha256 == selection.revision else { return false }
             return (try? integrityValidator(modelPath(spec), spec)) != nil
         case .parakeet:
-            return ParakeetModelDownloader.modelsAvailable()
+            return parakeetAvailable()
         }
     }
 
@@ -68,7 +71,7 @@ struct DefaultEngineSelectionLoader: EngineSelectionLoader {
         case .parakeet:
             guard selection.modelID == EngineSelection.parakeet.modelID,
                   selection.revision == EngineSelection.parakeet.revision,
-                  ParakeetModelDownloader.modelsAvailable() else {
+                  parakeetAvailable() else {
                 throw NSError(domain: "MacTalk.EngineSelection", code: 2, userInfo: [
                     NSLocalizedDescriptionKey: "The selected Parakeet model is not available locally."
                 ])

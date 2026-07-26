@@ -1,23 +1,37 @@
+import CryptoKit
 import Darwin
 import Foundation
 
-/// Errors are intentionally narrow: cleanup is post-publication and callers
-/// may report/ retry it, but must never revoke a verified source manager.
 enum ParakeetLegacyCompiledCleanupError: Error, Equatable, Sendable {
     case invalidCompiledTree
     case io(Int32)
     case cancelled
 }
 
-/// Removes only MacTalk's exact legacy compiled generation under the same
-/// inter-process store lock used by source activation. Every traversal is
-/// descriptor-relative, no links are followed, and pathname identity is
-/// rechecked immediately before unlinking.
+/// Removes only a fully validated legacy compiled generation under the shared
+/// inter-process store lock. Validation completes before the first unlink.
 final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unchecked Sendable {
-    private let parent: URL
+    private struct ManifestIdentity: Codable, Equatable {
+        let repository: String
+        let revision: String
+        let files: [ParakeetManifestEntry]
+    }
 
-    init(parent: URL) {
+    private let parent: URL
+    private let entries: [ParakeetManifestEntry]
+    private let repository: String
+    private let revision: String
+
+    init(
+        parent: URL,
+        entries: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
+        repository: String = ParakeetModelDownloader.repository,
+        revision: String = ParakeetModelDownloader.revision
+    ) {
         self.parent = parent
+        self.entries = entries
+        self.repository = repository
+        self.revision = revision
     }
 
     func removeCompiledGeneration() async throws {
@@ -32,11 +46,11 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         defer { lease.release() }
         try lease.withStoreParentDescriptor { parentFD in
             try checkCancellation()
-            try removeTreeIfPresent(named: ParakeetModelDownloader.folderName, relativeTo: parentFD)
+            try validateAndRemoveTreeIfPresent(named: ParakeetModelDownloader.folderName, relativeTo: parentFD)
         }
     }
 
-    private func removeTreeIfPresent(named name: String, relativeTo parentFD: Int32) throws {
+    private func validateAndRemoveTreeIfPresent(named name: String, relativeTo parentFD: Int32) throws {
         var pathInfo = stat()
         let status = name.withCString { fstatat(parentFD, $0, &pathInfo, AT_SYMLINK_NOFOLLOW) }
         if status != 0 {
@@ -46,19 +60,154 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         guard (pathInfo.st_mode & S_IFMT) == S_IFDIR, pathInfo.st_uid == getuid() else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
-
-        let directoryFD = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard directoryFD >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        let directoryFD = try openValidatedDirectory(named: name, relativeTo: parentFD, expected: pathInfo)
         defer { _ = Darwin.close(directoryFD) }
-        var openedInfo = stat()
-        guard fstat(directoryFD, &openedInfo) == 0,
-              sameIdentity(pathInfo, openedInfo),
-              openedInfo.st_uid == getuid() else {
+
+        try validateConfiguration()
+        let expectedFiles = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
+        let expectedDirectories = Set(entries.flatMap { entry -> [String] in
+            let components = entry.path.split(separator: "/").dropLast()
+            return components.indices.map { index in components[...index].joined(separator: "/") }
+        })
+        var seen = Set<String>()
+        let marker = try validateTree(
+            directoryFD: directoryFD,
+            prefix: "",
+            expectedFiles: expectedFiles,
+            expectedDirectories: expectedDirectories,
+            seen: &seen
+        )
+        guard marker == ManifestIdentity(repository: repository, revision: revision, files: entries),
+              seen == Set(expectedFiles.keys).union([".mactalk-manifest.json"]) else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
+        try checkCancellation()
+        try removeValidatedTree(named: name, relativeTo: parentFD, expected: pathInfo)
+    }
 
+    private func validateConfiguration() throws {
+        guard !entries.isEmpty, Set(entries.map(\.path)).count == entries.count else {
+            throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+        }
+        for entry in entries {
+            let components = entry.path.split(separator: "/", omittingEmptySubsequences: false)
+            guard !entry.path.hasPrefix("/"), !components.isEmpty,
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  entry.size >= 0, entry.sha256.count == 64 else {
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+        }
+    }
+
+    private func validateTree(
+        directoryFD: Int32,
+        prefix: String,
+        expectedFiles: [String: ParakeetManifestEntry],
+        expectedDirectories: Set<String>,
+        seen: inout Set<String>
+    ) throws -> ManifestIdentity? {
+        var marker: ManifestIdentity?
+        let listingFD = dup(directoryFD)
+        guard listingFD >= 0, let directory = fdopendir(listingFD) else {
+            if listingFD >= 0 { _ = Darwin.close(listingFD) }
+            throw ParakeetLegacyCompiledCleanupError.io(errno)
+        }
+        defer { closedir(directory) }
+        while let item = readdir(directory) {
+            try checkCancellation()
+            let name = withUnsafePointer(to: item.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            guard name != ".", name != ".." else { continue }
+            let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
+            var info = stat()
+            guard name.withCString({ fstatat(directoryFD, $0, &info, AT_SYMLINK_NOFOLLOW) == 0 }),
+                  info.st_uid == getuid() else {
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR:
+                guard expectedDirectories.contains(path) else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                let childFD = try openValidatedDirectory(named: name, relativeTo: directoryFD, expected: info)
+                defer { _ = Darwin.close(childFD) }
+                if let nestedMarker = try validateTree(directoryFD: childFD, prefix: path, expectedFiles: expectedFiles, expectedDirectories: expectedDirectories, seen: &seen) {
+                    guard marker == nil else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                    marker = nestedMarker
+                }
+            case S_IFREG:
+                guard info.st_nlink == 1, seen.insert(path).inserted else {
+                    throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                }
+                if path == ".mactalk-manifest.json" {
+                    let data = try readValidatedFile(named: name, relativeTo: directoryFD, expected: info, maximumSize: 64 * 1024)
+                    guard marker == nil, let decoded = try? JSONDecoder().decode(ManifestIdentity.self, from: data) else {
+                        throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                    }
+                    marker = decoded
+                } else {
+                    guard let entry = expectedFiles[path] else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                    try validateArtifactFile(named: name, relativeTo: directoryFD, expected: info, entry: entry)
+                }
+            default:
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+        }
+        return marker
+    }
+
+    private func readValidatedFile(named name: String, relativeTo parentFD: Int32, expected: stat, maximumSize: Int) throws -> Data {
+        guard expected.st_size >= 0, expected.st_size <= maximumSize else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
+        guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        defer { _ = Darwin.close(fd) }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, sameIdentity(expected, opened), opened.st_uid == getuid(), opened.st_nlink == 1 else {
+            throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+        }
+        let fileSize = Int(opened.st_size)
+        var data = Data(count: fileSize)
+        var offset = 0
+        while offset < fileSize {
+            let count = data.withUnsafeMutableBytes { bytes in Darwin.read(fd, bytes.baseAddress!.advanced(by: offset), fileSize - offset) }
+            if count < 0 { if errno == EINTR { continue }; throw ParakeetLegacyCompiledCleanupError.io(errno) }
+            guard count > 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+            offset += count
+        }
+        var trailing: UInt8 = 0
+        guard Darwin.read(fd, &trailing, 1) == 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        return data
+    }
+
+    private func validateArtifactFile(named name: String, relativeTo parentFD: Int32, expected: stat, entry: ParakeetManifestEntry) throws {
+        guard expected.st_size == entry.size else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
+        guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        defer { _ = Darwin.close(fd) }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, sameIdentity(expected, opened), opened.st_uid == getuid(), opened.st_nlink == 1 else {
+            throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+        }
+        var hasher = SHA256()
+        var total: Int64 = 0
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while total < entry.size {
+            try checkCancellation()
+            let count = Darwin.read(fd, &buffer, min(buffer.count, Int(entry.size - total)))
+            if count < 0 { if errno == EINTR { continue }; throw ParakeetLegacyCompiledCleanupError.io(errno) }
+            guard count > 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+            hasher.update(data: Data(buffer[0..<count]))
+            total += Int64(count)
+        }
+        var trailing: UInt8 = 0
+        guard Darwin.read(fd, &trailing, 1) == 0,
+              hasher.finalize().map({ String(format: "%02x", $0) }).joined() == entry.sha256 else {
+            throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+        }
+    }
+
+    private func removeValidatedTree(named name: String, relativeTo parentFD: Int32, expected: stat) throws {
+        let directoryFD = try openValidatedDirectory(named: name, relativeTo: parentFD, expected: expected)
+        defer { _ = Darwin.close(directoryFD) }
         let listingFD = dup(directoryFD)
         guard listingFD >= 0, let directory = fdopendir(listingFD) else {
             if listingFD >= 0 { _ = Darwin.close(listingFD) }
@@ -71,43 +220,44 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
                 String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
             }
             guard child != ".", child != ".." else { continue }
-            try removeEntry(named: child, relativeTo: directoryFD)
+            var info = stat()
+            guard child.withCString({ fstatat(directoryFD, $0, &info, AT_SYMLINK_NOFOLLOW) == 0 }), info.st_uid == getuid() else {
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+            if (info.st_mode & S_IFMT) == S_IFDIR {
+                try removeValidatedTree(named: child, relativeTo: directoryFD, expected: info)
+            } else {
+                guard (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1 else {
+                    throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                }
+                let fd = child.withCString { openat(directoryFD, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
+                guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                var opened = stat(); var final = stat()
+                let valid = fstat(fd, &opened) == 0 && sameIdentity(info, opened) && opened.st_uid == getuid() && opened.st_nlink == 1 &&
+                    child.withCString({ fstatat(directoryFD, $0, &final, AT_SYMLINK_NOFOLLOW) == 0 }) && sameIdentity(opened, final)
+                _ = Darwin.close(fd)
+                guard valid, child.withCString({ unlinkat(directoryFD, $0, 0) == 0 }) else {
+                    throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                }
+            }
         }
-
-        var finalInfo = stat()
-        guard name.withCString({ fstatat(parentFD, $0, &finalInfo, AT_SYMLINK_NOFOLLOW) == 0 }),
-              sameIdentity(openedInfo, finalInfo),
+        var final = stat()
+        guard name.withCString({ fstatat(parentFD, $0, &final, AT_SYMLINK_NOFOLLOW) == 0 }),
+              sameIdentity(expected, final),
               name.withCString({ unlinkat(parentFD, $0, AT_REMOVEDIR) == 0 }) else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
     }
 
-    private func removeEntry(named name: String, relativeTo parentFD: Int32) throws {
-        var info = stat()
-        guard name.withCString({ fstatat(parentFD, $0, &info, AT_SYMLINK_NOFOLLOW) == 0 }),
-              info.st_uid == getuid() else {
+    private func openValidatedDirectory(named name: String, relativeTo parentFD: Int32, expected: stat) throws -> Int32 {
+        let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, sameIdentity(expected, opened), opened.st_uid == getuid() else {
+            _ = Darwin.close(fd)
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
-        switch info.st_mode & S_IFMT {
-        case S_IFDIR:
-            try removeTreeIfPresent(named: name, relativeTo: parentFD)
-        case S_IFREG:
-            let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
-            guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
-            defer { _ = Darwin.close(fd) }
-            var opened = stat()
-            var final = stat()
-            guard fstat(fd, &opened) == 0,
-                  sameIdentity(info, opened),
-                  opened.st_uid == getuid(),
-                  name.withCString({ fstatat(parentFD, $0, &final, AT_SYMLINK_NOFOLLOW) == 0 }),
-                  sameIdentity(opened, final),
-                  name.withCString({ unlinkat(parentFD, $0, 0) == 0 }) else {
-                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
-            }
-        default:
-            throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
-        }
+        return fd
     }
 
     private func sameIdentity(_ lhs: stat, _ rhs: stat) -> Bool {

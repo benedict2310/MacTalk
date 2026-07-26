@@ -44,6 +44,23 @@ final class EngineSelectionLoaderTests: XCTestCase {
         XCTAssertEqual(probe.engineInitializationCount, 0)
     }
 
+    func test_sourceOnlyParakeetIsAvailableAndSelectableWithoutCompiledStore() async throws {
+        let probe = LoaderProbe()
+        let loader = DefaultEngineSelectionLoader(
+            parakeetEngineFactory: {
+                probe.engineInitializationCount += 1
+                return UninitializedFakeParakeetEngine()
+            },
+            parakeetAvailable: { true }
+        )
+
+        XCTAssertTrue(loader.isAvailable(selection: .parakeet))
+        let engine = try await loader.load(selection: .parakeet)
+
+        XCTAssertEqual(engine.provider, .parakeet)
+        XCTAssertEqual(probe.engineInitializationCount, 1)
+    }
+
     func test_unverifiedWhisperCacheIsRejectedBeforeEngineInitialization() async throws {
         let spec = try XCTUnwrap(ModelCatalog.bundled().first)
         let fixture = try write(Data("unverified model cache".utf8))
@@ -81,6 +98,14 @@ private final class LoaderProbe: @unchecked Sendable {
     var validationURL: URL?
     var validatedSpec: ModelSpec?
     var engineInitializationCount = 0
+}
+
+private final class UninitializedFakeParakeetEngine: ASREngine, @unchecked Sendable {
+    let provider: ASRProvider = .parakeet
+    func prepare() async throws {}
+    func reset() async {}
+    func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? { nil }
+    func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? { nil }
 }
 
 private final class UninitializedFakeEngine: ASREngine, @unchecked Sendable {

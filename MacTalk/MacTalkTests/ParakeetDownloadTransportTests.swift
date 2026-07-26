@@ -268,6 +268,21 @@ final class ParakeetDownloadTransportTests: XCTestCase {
         XCTAssertFalse(source.contains("MLModelAsset(url:"))
     }
 
+    func test_productionSourcesContainNoCoreMLPathLoadingAPIs() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("MacTalk")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+        let forbidden = ["AsrModels.load(from:", "ModelHub.loadModels", "MLModel(contentsOf:", "MLModelAsset(url:"]
+        for case let file as URL in enumerator where file.pathExtension == "swift" {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for symbol in forbidden {
+                XCTAssertFalse(source.contains(symbol), "\(file.lastPathComponent) retains forbidden path API \(symbol)")
+            }
+        }
+    }
+
     func test_compiledManifestMapsAllTwentyOneArtifactsInOrder() throws {
         XCTAssertEqual(ParakeetModelDownloader.manifest.count, 21)
         for (index, entry) in ParakeetModelDownloader.manifest.enumerated() {

@@ -55,7 +55,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
 
 private actor ParakeetEngineCore {
     private let bootstrap: ParakeetBootstrap
-    private var manager: AsrManager?
+    private var loadedManager: ParakeetBootstrapLoadedManager?
     private var decoderState: TdtDecoderState?
 
     init(bootstrap: ParakeetBootstrap) {
@@ -63,7 +63,7 @@ private actor ParakeetEngineCore {
     }
 
     func prepare() async throws {
-        manager = try await bootstrap.ensureReady()
+        loadedManager = try await bootstrap.ensureReady()
     }
 
     func reset() async {
@@ -72,19 +72,21 @@ private actor ParakeetEngineCore {
     }
 
     func transcribe(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
-        let manager = try await bootstrap.ensureReady()
+        let loaded = try await bootstrap.ensureReady()
+        loadedManager = loaded
         if decoderState == nil {
-            decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+            decoderState = TdtDecoderState.make(decoderLayers: await loaded.manager.decoderLayerCount)
         }
         var state = decoderState!
-        let result = try await manager.transcribe(buffer, decoderState: &state)
+        let result = try await loaded.manager.transcribe(buffer, decoderState: &state)
         decoderState = state
         return result
     }
 
     func finalize(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
-        let manager = try await bootstrap.ensureReady()
-        var finalState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        return try await manager.transcribe(buffer, decoderState: &finalState)
+        let loaded = try await bootstrap.ensureReady()
+        loadedManager = loaded
+        var finalState = TdtDecoderState.make(decoderLayers: await loaded.manager.decoderLayerCount)
+        return try await loaded.manager.transcribe(buffer, decoderState: &finalState)
     }
 }
