@@ -577,11 +577,11 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.parent.appendingPathComponent(backupNames[0]).path), "backup survived successful recovery")
     }
 
-    func test_bootstrapDoesNotReferenceInactiveSourcePreparation() throws {
+    func test_bootstrapUsesCanonicalSourceStoreAtCutover() throws {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
         let source = try String(contentsOf: path, encoding: .utf8)
-        XCTAssertFalse(source.contains("ParakeetSourcePreparer"))
-        XCTAssertFalse(source.contains("parakeetSource"))
+        XCTAssertTrue(source.contains("ParakeetSourceStore.canonical"))
+        XCTAssertTrue(source.contains("ParakeetSourcePreparer"))
     }
 }
 

@@ -253,16 +253,19 @@ final class ParakeetDownloadTransportTests: XCTestCase {
                        "activation must not await an arbitrary callback under the commit lock")
     }
 
-    func test_bootstrapRoutesCompiledLoadThroughValidatedSharedLeaseBoundary() throws {
+    func test_bootstrapComposesVerifiedSourceLoadingWithoutPathAPIs() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("MacTalk/Whisper/ParakeetBootstrap.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        XCTAssertTrue(source.contains("withValidatedSharedLease"),
-                      "compiled path loading must execute inside the downloader's validated shared lease")
-        XCTAssertTrue(source.contains("let models = try await downloader.withValidatedSharedLease"),
-                      "Bootstrap must compose the native path load through the boundary")
+        XCTAssertTrue(source.contains("ParakeetSourcePreparer"))
+        XCTAssertTrue(source.contains("VerifiedParakeetSourceSnapshotProvider"))
+        XCTAssertTrue(source.contains("VerifiedParakeetModelLoader"))
+        XCTAssertFalse(source.contains("AsrModels.load(from:"))
+        XCTAssertFalse(source.contains("ModelHub.loadModels"))
+        XCTAssertFalse(source.contains("MLModel(contentsOf:"))
+        XCTAssertFalse(source.contains("MLModelAsset(url:"))
     }
 
     func test_compiledManifestMapsAllTwentyOneArtifactsInOrder() throws {

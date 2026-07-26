@@ -179,15 +179,16 @@ final class ParakeetSourceArtifactMaterializerTests: XCTestCase {
         XCTAssertTrue(transport.requestSnapshot().isEmpty)
     }
 
-    func test_bootstrapAndPreparerDoNotReferenceBoundedSourceMaterializerYet() throws {
+    func test_bootstrapOwnsBoundedSourceMaterializerComposition() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("MacTalk/Whisper")
         let bootstrap = try String(contentsOf: root.appendingPathComponent("ParakeetBootstrap.swift"), encoding: .utf8)
         let preparer = try String(contentsOf: root.appendingPathComponent("ParakeetSourcePreparer.swift"), encoding: .utf8)
-        XCTAssertFalse(bootstrap.contains("BoundedParakeetSourceArtifactMaterializer"))
-        XCTAssertFalse(preparer.contains("BoundedParakeetSourceArtifactMaterializer"))
+        XCTAssertTrue(bootstrap.contains("BoundedParakeetSourceArtifactMaterializer"))
+        XCTAssertFalse(preparer.contains("BoundedParakeetSourceArtifactMaterializer"),
+                       "generic preparer must not choose a production transport")
     }
 
     private func temporaryRoot() -> URL {
