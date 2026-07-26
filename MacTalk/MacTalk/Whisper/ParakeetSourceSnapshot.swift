@@ -124,6 +124,7 @@ enum ParakeetSourceSnapshotError: Error, Equatable, Sendable {
     case missingComponent(String)
     case missingArtifact(String, String)
     case duplicateArtifact(String, String)
+    case leaseStoreParentMismatch
     case cancelled
 }
 
@@ -160,7 +161,12 @@ final class VerifiedParakeetSourceSnapshotProvider: VerifiedParakeetSourceSnapsh
     /// Validates through a caller-owned exclusive lease. This overload never
     /// acquires or releases a lease; cancellation only cancels this read.
     func makeVerifiedSnapshot(holding lease: ParakeetStoreFileLock.Lease) async throws -> VerifiedParakeetSourceSnapshot {
-        try await makeVerifiedSnapshot(lease: lease, releaseLease: false)
+        // The caller-owned descriptor is authoritative only for the store it
+        // was acquired for. Never let a provider for parent A read via B.
+        guard lease.authorizesStoreParent(store.parent) else {
+            throw ParakeetSourceSnapshotError.leaseStoreParentMismatch
+        }
+        return try await makeVerifiedSnapshot(lease: lease, releaseLease: false)
     }
 
     private func makeVerifiedSnapshot(lease: ParakeetStoreFileLock.Lease, releaseLease: Bool) async throws -> VerifiedParakeetSourceSnapshot {

@@ -64,6 +64,26 @@ final class ParakeetSourceArtifactMaterializerTests: XCTestCase {
         XCTAssertTrue(expectedMirrorA.absoluteString.hasPrefix("https://huggingface.co/"))
     }
 
+    func test_largePayloadSpoolsAndStreamsVerifiedChunksToSink() async throws {
+        // More than four internal chunks: the materializer must use its
+        // unlinked spool rather than retain a payload-sized Data buffer.
+        var bytes = Data(count: 64 * 1024 * 5 + 17)
+        for index in bytes.indices { bytes[index] = UInt8(index & 0xff) }
+        let entry = makeEntry(path: "parakeet_vocab.json", component: "Vocabulary", role: "vocabulary", data: bytes)
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let materializer = BoundedParakeetSourceArtifactMaterializer(
+            transport: RecordingSourceTransport(payloads: [entry.path: bytes]),
+            workspaceRoot: root
+        )
+        try materializer.begin(operationID: UUID(), remainingEntries: [entry])
+
+        try await ParakeetSourceArtifactSinkTestSupport.withTemporarySink(entry: entry) { sink, url in
+            try await materializer.materialize(entry: entry, sink: sink)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
     func test_corruptPayloadFailsBeforeSuccessfulSinkFinish() async throws {
         let good = Data("good-payload".utf8)
         let entry = makeEntry(path: "parakeet_vocab.json", component: "Vocabulary", role: "vocabulary", data: good)

@@ -161,11 +161,16 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
         guard info.st_uid == getuid() else { throw ParakeetSourcePreparationError.invalidTree }
         guard info.st_size == entry.size else { throw ParakeetSourcePreparationError.artifactSize }
 
+        // Spool verified bytes to an unlinked temporary file rather than
+        // retaining an entire model artifact in RAM (the Encoder is ~425 MiB).
+        // This also freezes the validated byte sequence before it reaches the
+        // preparer-owned sink if another same-UID writer changes the payload.
+        guard let spool = tmpfile() else { throw ParakeetSourcePreparationError.io(errno) }
+        defer { fclose(spool) }
+        let spoolFD = fileno(spool)
         var hasher = SHA256()
         var total: Int64 = 0
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        var verified = Data()
-        verified.reserveCapacity(Int(entry.size))
         while total < entry.size {
             try checkCancellation()
             let count = Darwin.read(fd, &buffer, buffer.count)
@@ -175,10 +180,11 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
             }
             if count == 0 { throw ParakeetSourcePreparationError.artifactSize }
             let used = Int(min(Int64(count), entry.size - total))
-            hasher.update(data: Data(buffer[0..<used]))
-            verified.append(contentsOf: buffer[0..<used])
-            total += Int64(used)
             if count > used { throw ParakeetSourcePreparationError.artifactSize }
+            let chunk = Data(buffer[0..<used])
+            hasher.update(data: chunk)
+            try writeAll(chunk, to: spoolFD)
+            total += Int64(used)
         }
         try checkCancellation()
         var trailing: UInt8 = 0
@@ -187,15 +193,38 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
         guard end == 0 else { throw ParakeetSourcePreparationError.artifactSize }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest == entry.sha256 else { throw ParakeetSourcePreparationError.artifactDigest }
+        guard lseek(spoolFD, 0, SEEK_SET) >= 0 else { throw ParakeetSourcePreparationError.io(errno) }
 
-        // Only after exact descriptor verification may bytes enter the sink.
-        var offset = 0
-        let chunk = 64 * 1024
-        while offset < verified.count {
+        // Only after complete descriptor verification may bounded chunks enter
+        // the sink. `buffer` and `chunk` cap retained payload memory at 64 KiB.
+        var remaining = entry.size
+        while remaining > 0 {
             try checkCancellation()
-            let endIndex = min(offset + chunk, verified.count)
-            try sink.write(verified.subdata(in: offset..<endIndex))
-            offset = endIndex
+            let count = Darwin.read(spoolFD, &buffer, min(buffer.count, Int(remaining)))
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw ParakeetSourcePreparationError.io(errno)
+            }
+            guard count > 0 else { throw ParakeetSourcePreparationError.artifactSize }
+            let chunk = Data(buffer[0..<count])
+            try sink.write(chunk)
+            remaining -= Int64(count)
+        }
+    }
+
+    private func writeAll(_ data: Data, to descriptor: Int32) throws {
+        var offset = 0
+        try data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            while offset < data.count {
+                let result = Darwin.write(descriptor, base.advanced(by: offset), data.count - offset)
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw ParakeetSourcePreparationError.io(errno)
+                }
+                guard result > 0 else { throw ParakeetSourcePreparationError.io(EIO) }
+                offset += result
+            }
         }
     }
 }

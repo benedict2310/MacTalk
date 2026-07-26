@@ -34,6 +34,21 @@ final class ParakeetSourceSnapshotTests: XCTestCase {
         successor.release()
     }
 
+    func test_callerOwnedLeaseMustAuthorizeTheSnapshotStoreParent() async throws {
+        let sourceA = try SourceFixture()
+        let sourceB = try SourceFixture()
+        let leaseB = try await ParakeetStoreFileLock(storeParent: sourceB.parent).acquire(.exclusive)
+        defer { leaseB.release() }
+
+        do {
+            _ = try await VerifiedParakeetSourceSnapshotProvider(store: sourceA.store)
+                .makeVerifiedSnapshot(holding: leaseB)
+            XCTFail("a lease for another parent unexpectedly supplied a snapshot")
+        } catch let error as ParakeetSourceSnapshotError {
+            XCTAssertEqual(error, .leaseStoreParentMismatch)
+        }
+    }
+
     func test_sourceReplacementAfterOpenCannotRedirectSnapshot() async throws {
         let fixture = try SourceFixture()
         let renamed = fixture.parent.appendingPathComponent("renamed-source", isDirectory: true)

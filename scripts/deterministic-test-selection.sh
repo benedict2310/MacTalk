@@ -21,6 +21,8 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/VerifiedArtifactReaderTests
   MacTalkTests/VerifiedCoreMLByteAssetTests
   MacTalkTests/ParakeetStoreFileLockTests
+  MacTalkTests/ParakeetCompiledWeightReuserTests
+  MacTalkTests/ParakeetSourceArtifactMaterializerTests
   MacTalkTests/ParakeetSourceSnapshotTests
   MacTalkTests/ParakeetSourcePreparerTests
   MacTalkTests/VerifiedParakeetModelLoaderTests
