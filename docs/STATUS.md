@@ -70,3 +70,15 @@ The app has Whisper and Parakeet providers. Captured audio is processed locally
 by the selected engine after models are present, but model download code has
 network URLs; therefore “offline” means after provisioning, not “no network
 code exists.”
+
+At model-security cutover commit
+`d6eab1041efc024976502099c157907274ff3154`, production Parakeet composition
+uses the canonical source store, a descriptor-backed verified snapshot, and
+retained in-memory CoreML assets. Production source contains no compiled/path
+loading fallback. Legacy compiled storage is retired only after successful
+source publication through validated, quarantined, retryable cleanup. The
+canonical provenance lock SHA-256 at that commit is
+`9707fb09598e23902d5a3847e84acae468ca85b357d6c100b199f35a7312e3b2`.
+Repository owner and sole maintainer Benedict Evert approved that lock and
+cutover on 2026-07-26 under the documented solo-maintainer governance policy;
+this is not represented as independent or branch-protection-backed approval.

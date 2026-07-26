@@ -1,6 +1,6 @@
 # MacTalk architecture (current)
 
-**Evidence date:** 2026-07-18
+**Evidence date:** 2026-07-26
 **Source of truth:** Swift sources under `MacTalk/MacTalk`, `project.yml`, and
 `MacTalk.xcodeproj` generated from it. This document describes the current
 implementation, not the historical stories in `docs/stories/`.
@@ -87,18 +87,34 @@ stories into new code.
 
 ## Engine and model trust
 
-`NativeWhisperEngine` validates the selected model at the native boundary and
-uses the whisper.cpp bridge. `ParakeetEngine` is selected through FluidAudio
-and its pinned model revision. `ModelCatalog` records Whisper filename, size,
-SHA-256, source, immutable revision, and URLs. Downloaders stage files and
-verify integrity before installation; the mirror URL is a byte-source fallback,
-not a provenance authority. A real model is never implicit in deterministic
-unit tests.
+`GeneratedModelProvenance.swift` is generated from the canonical lock and
+checked-in immutable evidence described in
+[`MODEL_PROVENANCE.md`](../security/MODEL_PROVENANCE.md). `ModelCatalog` records
+Whisper filename, size, SHA-256, source, immutable revision, and URLs.
+Production Whisper and Parakeet transfers share `BoundedModelDownloadTransport`;
+download managers stage and verify bytes before publication. A mirror is a
+byte-source fallback, never a provenance authority.
+
+`NativeWhisperEngine` revalidates the selected Whisper artifact at the native
+boundary before using the whisper.cpp bridge. Parakeet production composition
+prepares the canonical source store, obtains a descriptor-backed
+`VerifiedParakeetSourceSnapshot`, and constructs CoreML assets from verified
+owned bytes through `VerifiedParakeetModelLoader`. The consumer handle retains
+the complete snapshot and assets for its exact manager generation. Production
+contains no compiled/path-based Parakeet loading fallback.
+
+After a source manager is successfully published,
+`ParakeetLegacyCompiledCleaner` best-effort retires an exactly validated legacy
+compiled generation under exclusive store ownership. Cleanup failure is
+retryable and does not discard the ready source manager or authorize legacy
+loading. The detailed trust and solo-maintainer governance boundaries are
+recorded in the provenance document.
 
 The model, provider, and revision are carried together through
 `EngineSelection`; UI must not display Whisper state for a Parakeet selection or
-vice versa. A missing model produces a download requirement/effect. A stale or
-cancelled load cannot replace a newer selection.
+vice versa. A missing model produces a download requirement/effect. Generation
+ownership prevents a stale or cancelled load from replacing a newer selection.
+A real model is never implicit in deterministic unit tests.
 
 ## Privacy and output
 

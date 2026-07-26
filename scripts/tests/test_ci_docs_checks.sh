@@ -10,6 +10,15 @@ trap 'rm -rf "$fixture"' EXIT
 tar -C "$ROOT" --exclude=.git --exclude=build -cf - . | tar -C "$fixture" -xf -
 MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null
 
+# The current provenance document must describe the active verified-source
+# loader. Reintroducing the retired inactive/future-loader claim must fail.
+printf '\nThe Parakeet source loader is inactive and reserved for a future loader.\n' >> "$fixture/docs/security/MODEL_PROVENANCE.md"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted retired Parakeet loader documentation" >&2
+    exit 1
+fi
+cp "$ROOT/docs/security/MODEL_PROVENANCE.md" "$fixture/docs/security/MODEL_PROVENANCE.md"
+
 rm "$fixture/LICENSE"
 if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
     echo "docs checker accepted a missing LICENSE" >&2

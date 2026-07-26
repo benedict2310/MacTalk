@@ -17,6 +17,14 @@ with code signing disabled, and applies the explicit selection from
 ASR engines, clocks, schedulers, downloaders, and network traps. The lane does
 not use TCC, audio hardware, provider networks, or a real model.
 
+The explicit selection includes bounded transport, provenance/integrity,
+Parakeet source preparation/materialization/snapshot, verified byte loading,
+bootstrap generation ownership, source-only availability, and legacy compiled
+cleanup suites. `scripts/ci-security-checks.sh` also runs offline provenance
+negative fixtures and `scripts/tests/test_model_security_source_guard.sh`, which
+mutates a temporary source copy to prove that path-loading, unverified loading,
+and unbounded production-transport regressions are rejected.
+
 The 2026-07-18 run executed **203 tests, 0 failures, 0 skips**. This number is
 a command result from that checkout, not a permanent contract; rerun the command
 and read the XCTest summary for a new result.

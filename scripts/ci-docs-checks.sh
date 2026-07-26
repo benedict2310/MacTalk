@@ -26,7 +26,7 @@ def exact(pattern, text, label):
 required = [
     "LICENSE", "README.md", "project.yml", "scripts/release-version.env",
     "MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
-    "docs/STATUS.md", "docs/development/ARCHITECTURE.md",
+    "docs/STATUS.md", "docs/security/MODEL_PROVENANCE.md", "docs/development/ARCHITECTURE.md",
     "docs/development/SETUP.md", "docs/development/adr/ADR-001-timestamp-aligned-audio-composition.md",
     "docs/development/adr/ADR-002-settings-and-state-ownership.md",
     "docs/development/adr/ADR-003-privacy-logging.md",
@@ -111,6 +111,19 @@ for rel in ("docs/development/ARCHITECTURE.md", "docs/development/SETUP.md", "do
     text = read(rel)
     if re.search(r"macOS 14\.0|Xcode 15\.0|RingBufferTests|WhisperEngineTests|85\.2%|100% coverage", text, re.I):
         fail(f"{rel} contains a historical API/version/coverage claim")
+
+provenance = read("docs/security/MODEL_PROVENANCE.md")
+if re.search(r"source loader is inactive|source `?\.mlpackage`? metadata is \*\*inactive\*\*|future (?:source )?loader|not referenced by active composition", provenance, re.I):
+    fail("MODEL_PROVENANCE describes retired inactive/future Parakeet loading")
+for fact in (
+    "BoundedModelDownloadTransport",
+    "VerifiedParakeetSourceSnapshotProvider",
+    "VerifiedParakeetModelLoader",
+    "ParakeetLegacyCompiledCleaner",
+    "solo-maintainer",
+):
+    if fact not in provenance:
+        fail(f"MODEL_PROVENANCE is missing active model-security boundary: {fact}")
 
 docs_hub = read("docs/README.md")
 for filename in ("development/SETUP.md", "development/ARCHITECTURE.md", "STATUS.md"):

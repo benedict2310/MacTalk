@@ -1,78 +1,114 @@
-# MacTalk model provenance
+# MacTalk model provenance and loading boundary
 
-This commit adds local, deterministic provenance mechanics only. The generated
-source `.mlpackage` metadata is **inactive**: the current downloader and
-Parakeet bootstrap continue to use the existing 21-file compiled manifest.
-Changing the active store/layout or loader is a later security task.
+**Implementation evidence:** `d6eab1041efc024976502099c157907274ff3154`,
+2026-07-26. This document describes the active production boundary at that
+commit. Later documentation-only commits do not change the canonical lock.
 
-## Evidence and lock
+## Evidence and canonical lock
 
 `Config/ModelProvenance/model-provenance.v1.json` is the canonical lock for:
 
 - five Whisper catalog artifacts at immutable revision
   `5359861c739e955e79d9a303bcbc70fb988958b1`;
-- all 21 existing compiled Parakeet entries at immutable revision
+- the 21-entry legacy compiled Parakeet generation at immutable revision
   `aed02740059203c4a87495924f685de3722ae9ce`; and
-- nine future source `.mlpackage`/vocabulary entries at that same Parakeet
+- the nine active source `.mlpackage`/vocabulary entries at that same Parakeet
   revision.
 
-The immutable revision, repository, path, byte-count, and digest tuple fields
-in that lock are authoritative. `docs/security/model-provenance/` contains
-raw HF API captures stored byte-for-byte at collection. Those captures can
-contain mutable `securityFileStatus` scan/message fields; they are not expected
-to byte-match a later refetch. `evidence-index.v1.json` is an integrity
-inventory of the captured repository response bytes: it locks the local files'
-size, SHA-256, URL, and expected raw-response set. It is not a claim that a
-provider will return byte-identical scan metadata in the future. The exact
-151,122-byte vocabulary response is committed separately and is checked both
-by SHA-256 (`7ec60e05…198735`) and its Git blob ID (`c684822e…9bb0`).
+Repository, immutable revision, path, byte count, and SHA-256 tuple fields are
+authoritative. `docs/security/model-provenance/` contains raw Hugging Face API
+captures stored byte-for-byte at collection. Captures may contain mutable scan
+or message fields and are not expected to byte-match a later provider response.
+`evidence-index.v1.json` locks the local evidence files' size, SHA-256, URL, and
+expected response set; it is not a claim that the provider will reproduce
+mutable metadata bytes.
 
-HF tree metadata exposes LFS OIDs and sizes for model payloads. For the eight
-compiled non-LFS `metadata.json` and `model.mil` files, the exact fetched bytes
-are committed under
+The exact 151,122-byte vocabulary response is committed separately and checked
+by SHA-256 (`7ec60e05…198735`) and Git blob ID (`c684822e…9bb0`). For eight
+compiled non-LFS `metadata.json` and `model.mil` files, exact fetched bytes live
+under
 `parakeet-compiled-regular-files-aed02740059203c4a87495924f685de3722ae9ce/`.
-The generator independently verifies each file's exact tree size, Git blob OID,
-and runtime SHA-256 before deriving canonical tuples; no locally authored
-sidecar is authoritative. The eight newly fetched files total **1,025,477
-bytes**. Their immutable raw URLs are the revision-pinned `resolve` URLs for
-each path under:
-`https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/aed02740059203c4a87495924f685de3722ae9ce/`.
-The future source entries derive their model and weight tuples directly from
-LFS OIDs and sizes in the captured response.
+The generator validates tree size, Git blob OID, and runtime SHA-256 before
+deriving canonical tuples. Those eight files total 1,025,477 bytes. Model and
+weight tuples are derived from captured LFS OIDs and sizes.
 
 FluidAudio is pinned independently to version `0.15.5`, revision
 `19600a485baa4998812e4654b70d2bab8f2c9949`.
 
-## Generated representation
+## Generated production representation
 
 Run:
 
 ```sh
 python3 scripts/generate-model-provenance.py --check
+bash scripts/tests/test_model_provenance_generation.sh
 ```
 
 The generator rejects mutable revisions, malformed or uppercase digests,
 duplicate/unknown/missing paths, mismatched evidence sizes/OIDs, vocabulary
 identity drift, and canonical tuple drift. It emits
-`MacTalk/MacTalk/Whisper/GeneratedModelProvenance.swift`, which is the sole
-production representation consumed by `ModelCatalog` and the active compiled
-`ParakeetModelDownloader.manifest`. `parakeetSource` is generated for the
-future loader but is not referenced by active composition code.
+`MacTalk/MacTalk/Whisper/GeneratedModelProvenance.swift`; production code does
+not maintain a second hand-authored artifact table. `ModelCatalog` consumes the
+Whisper entries. Active Parakeet source preparation consumes `parakeetSource`;
+`parakeetCompiled` remains only for verified migration reuse and retirement of
+the legacy generation.
 
-The negative fixture suite is:
+Both commands are offline and do not access a provider or user model store.
 
-```sh
-bash scripts/tests/test_model_provenance_generation.sh
-```
+## Active transport, snapshot, and loading boundary
 
-Both commands are offline and do not access a provider or model store. The
-blocking local security checks run the generator check as well.
+All production Whisper and Parakeet transfer composition delegates byte
+transport to `BoundedModelDownloadTransport`. Production policy uses an
+ephemeral session, identity encoding, HTTPS-only URLs, at most 16 unique
+mirrors, and an artifact limit of 671,088,640 bytes. Loopback HTTP is injectable
+for tests only. Download managers still own operation identity, cancellation,
+verification, staging, and publication; they do not own a separate URLSession.
 
-## Approval boundary
+`ParakeetBootstrap` actively performs this sequence:
 
-These mechanics prove that the checked-in canonical tuples agree with the
-captured revision-pinned metadata, exact regular-file bytes, and vocabulary
-bytes. They do **not** claim external human approval, GitHub branch protection,
-CODEOWNERS enforcement, or the integrity of a future release review. This
-commit records byte collection and local integrity checks only; it creates no
-fake approval record and invents no external approver identity.
+1. `ParakeetSourcePreparer` materializes the canonical source store from the
+   generated source manifest, optionally copying independently verified legacy
+   weights.
+2. `VerifiedParakeetSourceSnapshotProvider` holds a shared store lease,
+   validates ownership, mode, marker, identity, and exact manifest tree, then
+   reads the verified artifacts through descriptors into owned bytes.
+3. `VerifiedParakeetModelLoader` validates source identity and vocabulary,
+   creates CoreML byte assets, and returns a load result retaining the complete
+   snapshot and assets.
+4. `ParakeetBootstrapLoadedManager` retains that load result for the exact
+   manager generation. Stale or cancelled generations cannot publish over a
+   newer generation.
+
+The production binary does not call `AsrModels.load(from:)`,
+`ModelHub.loadModels`, `MLModel(contentsOf:)`, or `MLModelAsset(url:)`.
+`scripts/model-security-source-guard.sh` and its negative fixtures enforce this
+source boundary. The design avoids mutable-path loading; it does not claim a
+numeric peak-memory bound.
+
+## Legacy compiled-generation retirement
+
+Only after a verified source manager is published does
+`ParakeetLegacyCompiledCleaner` attempt retirement. It acquires exclusive store
+ownership, validates the exact compiled manifest, atomically moves the tree to
+a fixed private quarantine with exclusive rename semantics, revalidates it,
+removes entries descriptor-relatively, and synchronizes parent-directory
+mutations. Interrupted valid quarantine cleanup is recoverable.
+
+Cleanup failure is non-fatal and retryable: it preserves the ready source
+manager but never authorizes compiled-path fallback. Unexpected or mutated
+quarantine content is preserved for diagnosis rather than deleted.
+
+## Governance boundary
+
+MacTalk is a **solo-maintainer** repository. Repository owner Benedict Evert
+(`benedict2310`) explicitly approved the canonical lock and source cutover at
+commit `d6eab1041efc024976502099c157907274ff3154`; the lock SHA-256 was
+`9707fb09598e23902d5a3847e84acae468ca85b357d6c100b199f35a7312e3b2`.
+For this project, explicit owner review and risk acceptance is the provenance
+governance gate. Changes to the canonical lock require a newly recorded owner
+approval binding the changed lock digest and reviewed commit.
+
+This is a manual solo-project policy, not a claim of independent attestation,
+CODEOWNERS review, required GitHub approvals, or branch-protection enforcement.
+If another maintainer joins the project, this policy should be revisited rather
+than retroactively inventing independent evidence.
