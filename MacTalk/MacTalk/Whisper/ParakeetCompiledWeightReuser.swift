@@ -123,9 +123,26 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
                                           compiledDirectoryName: compiledDirectoryName)
     }
 
+    /// Reuses into a generic staging tree. Hard links are permitted only for
+    /// this legacy compiled-generation boundary; source generations must use
+    /// `reuseForSourceGeneration` so their bytes cannot be mutated through a
+    /// separately writable compiled pathname after verification.
     func reuse(sourceEntry: GeneratedParakeetManifestEntry,
                holding lease: ParakeetStoreFileLock.Lease,
                stagingRootFD: Int32) throws -> ParakeetCompiledWeightReuseResult {
+        try reuse(sourceEntry: sourceEntry, holding: lease, stagingRootFD: stagingRootFD, requireCopy: false)
+    }
+
+    func reuseForSourceGeneration(sourceEntry: GeneratedParakeetManifestEntry,
+                                  holding lease: ParakeetStoreFileLock.Lease,
+                                  stagingRootFD: Int32) throws -> ParakeetCompiledWeightReuseResult {
+        try reuse(sourceEntry: sourceEntry, holding: lease, stagingRootFD: stagingRootFD, requireCopy: true)
+    }
+
+    private func reuse(sourceEntry: GeneratedParakeetManifestEntry,
+                       holding lease: ParakeetStoreFileLock.Lease,
+                       stagingRootFD: Int32,
+                       requireCopy: Bool) throws -> ParakeetCompiledWeightReuseResult {
         guard let mapping = mappings.first(where: { $0.component.rawValue == sourceEntry.component }) else {
             throw ParakeetCompiledWeightReuseError.sourceEntryMismatch
         }
@@ -147,14 +164,14 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         }
 
         let outcome: ParakeetCompiledWeightReuseResult? = try lease.withStoreParentDescriptorIfAvailable { parentFD in
-            try self.reuse(relativeTo: parentFD, mapping: mapping, stagingRootFD: stagingRootFD)
+            try self.reuse(relativeTo: parentFD, mapping: mapping, stagingRootFD: stagingRootFD, requireCopy: requireCopy)
         }
         guard let outcome else { throw ParakeetCompiledWeightReuseError.leaseUnavailable }
         return outcome
     }
 
     private func reuse(relativeTo parentFD: Int32, mapping: ParakeetCompiledWeightReuseMapping,
-                       stagingRootFD: Int32) throws -> ParakeetCompiledWeightReuseResult {
+                       stagingRootFD: Int32, requireCopy: Bool) throws -> ParakeetCompiledWeightReuseResult {
         let source: OpenedSource
         do {
             source = try openCompiledSource(parentFD: parentFD, path: mapping.compiledPath)
@@ -183,7 +200,7 @@ final class ParakeetCompiledWeightReuser: @unchecked Sendable {
         try checkCancellation()
 
         var method = ParakeetCompiledWeightReuseMethod.copy
-        if !hooks.forceCopy && source.info.st_uid == getuid() && (source.info.st_mode & 0o777) == 0o600 {
+        if !requireCopy && !hooks.forceCopy && source.info.st_uid == getuid() && (source.info.st_mode & 0o777) == 0o600 {
             var linked: Bool
             let linkError: Int32
             if hooks.forceLinkFailure {

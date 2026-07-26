@@ -165,6 +165,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     /// a backup leaves a recoverable, fully validated generation.
     private let beforeBackupPromotion: (@Sendable () -> Void)?
     private let beforeCommitReservation: (@Sendable () async -> Void)?
+    private let beforeRecoveryCommitReservation: (@Sendable () async -> Void)?
     private let afterOperationRegistration: (@Sendable (UUID) -> Void)?
 
     init(store: ParakeetSourceStore, materializer: any ParakeetSourceArtifactMaterializing,
@@ -176,6 +177,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
          beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil,
          beforeBackupPromotion: (@Sendable () -> Void)? = nil,
          beforeCommitReservation: (@Sendable () async -> Void)? = nil,
+         beforeRecoveryCommitReservation: (@Sendable () async -> Void)? = nil,
          afterOperationRegistration: (@Sendable (UUID) -> Void)? = nil) {
         self.store = store
         self.materializer = materializer
@@ -187,6 +189,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         self.beforeStagingValidationCompletion = beforeStagingValidationCompletion
         self.beforeBackupPromotion = beforeBackupPromotion
         self.beforeCommitReservation = beforeCommitReservation
+        self.beforeRecoveryCommitReservation = beforeRecoveryCommitReservation
         self.afterOperationRegistration = afterOperationRegistration
     }
 
@@ -403,7 +406,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 continue
             }
             do {
-                switch try weightReuser.reuse(sourceEntry: entry, holding: lease, stagingRootFD: stagingRootFD) {
+                switch try weightReuser.reuseForSourceGeneration(sourceEntry: entry, holding: lease, stagingRootFD: stagingRootFD) {
                 case .reused:
                     continue
                 case .unavailable:
@@ -627,6 +630,11 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 _ = try await VerifiedParakeetSourceSnapshotProvider(store: backupStore)
                     .makeVerifiedSnapshot(holding: lease)
                 try checkOperation(operationID)
+                await beforeRecoveryCommitReservation?()
+                try checkOperation(operationID)
+                // Recovery is publication too: reserve the same terminal
+                // commit authority immediately before its exclusive rename.
+                guard beginCommit(operationID) else { throw ParakeetSourcePreparationError.cancelled }
                 try renameExclusively(from: backupName, to: store.sourceDirectoryName, relativeTo: parentFD)
                 try syncDirectory(parentFD)
                 // Any remaining owned backups are stale after recovery.

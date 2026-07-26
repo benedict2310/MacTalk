@@ -369,6 +369,12 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         for entry in fixture.entries where entry.role == "weights" {
             XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent(entry.path)), fixture.bytes[entry.path]!)
         }
+        // Source reuse deliberately copies: later writes through the separately
+        // addressable compiled generation cannot change validated source bytes.
+        let compiledWeight = compiled.appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try Data("changed-compiled".utf8).write(to: compiledWeight)
+        let sourceWeight = activated.appendingPathComponent("mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
+        XCTAssertEqual(try Data(contentsOf: sourceWeight), fixture.bytes["mlpackages/Encoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin"]!)
         XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
         XCTAssertEqual(try Data(contentsOf: compiled.appendingPathComponent("sentinel")), Data("compiled-sentinel".utf8))
     }
@@ -456,6 +462,48 @@ final class ParakeetSourcePreparerTests: XCTestCase {
 
         XCTAssertEqual(activated, fixture.sourceURL)
         XCTAssertEqual(materializer.cancelledIDs, [materializer.begunIDs[0]])
+    }
+
+    func test_supersessionBeforeRecoveryPromotionPreventsOldPublication() async throws {
+        let fixture = try SourcePreparationFixture()
+        _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
+        let backupName = ParakeetSourceStore.backupPrefix + UUID().uuidString
+        try FileManager.default.moveItem(at: fixture.sourceURL, to: fixture.parent.appendingPathComponent(backupName))
+
+        let reachedRecoveryCommit = AsyncTestEvent()
+        let secondRegistered = AsyncTestEvent()
+        let registrationCount = OSAllocatedUnfairLock(initialState: 0)
+        let gate = AsyncTestGate()
+        let preparer = ParakeetSourcePreparer(
+            store: fixture.store,
+            materializer: fixture.materializer,
+            beforeRecoveryCommitReservation: {
+                await reachedRecoveryCommit.signal()
+                await gate.wait()
+            },
+            afterOperationRegistration: { _ in
+                let count = registrationCount.withLock { value -> Int in
+                    value += 1
+                    return value
+                }
+                if count == 2 { Task { await secondRegistered.signal() } }
+            }
+        )
+        let first = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        await reachedRecoveryCommit.wait()
+        let second = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        await secondRegistered.wait()
+        await gate.release()
+
+        let recovered = try await second.value
+        do {
+            _ = try await first.value
+            XCTFail("superseded recovery unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        XCTAssertEqual(recovered, fixture.sourceURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.parent.appendingPathComponent(backupName).path))
     }
 
     func test_recoversValidatedOwnedBackupOnlyWhenActiveSourceIsAbsent() async throws {
