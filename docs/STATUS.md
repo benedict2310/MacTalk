@@ -31,6 +31,22 @@ Coverage is the `xccov` result for the app target and test bundle in the named
 artifact; it is not a claim that every source file or UI path is covered.
 There is no target percentage goal in this baseline.
 
+## Model-security closure evidence — 2026-07-26
+
+At checkout `72762ed`, `scripts/test-lanes.sh unit` executed **470 tests with
+0 failures and 0 skips**. `scripts/test-lanes.sh repeat` completed three relaunch
+iterations of the same 470-test selection with no failures. The complete
+unsigned `MacTalk` XCTest scheme executed **495 tests with 0 failures and
+1 skipped external-prerequisite test**. All **25** `scripts/tests/test_*.sh`
+files passed, followed by the blocking static, security, and documentation
+checks. `xcodegen generate` produced no project drift and `git diff --check`
+passed. These results used fakes, an isolated deterministic-lane HOME, and no
+provider network, TCC, capture hardware, or real transcription model.
+
+A signed `./build.sh run` also built and relaunched the Release app on this host.
+That result is local signing/build evidence only; it is not notarization,
+hardware/TCC validation, real-model inference, or release publication evidence.
+
 ## Manual and external gaps
 
 - **Hardware/TCC:** mic-only and Mic + App Audio need manual validation on a

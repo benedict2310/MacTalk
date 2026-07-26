@@ -25,9 +25,12 @@ negative fixtures and `scripts/tests/test_model_security_source_guard.sh`, which
 mutates a temporary source copy to prove that path-loading, unverified loading,
 and unbounded production-transport regressions are rejected.
 
-The 2026-07-18 run executed **203 tests, 0 failures, 0 skips**. This number is
-a command result from that checkout, not a permanent contract; rerun the command
-and read the XCTest summary for a new result.
+The 2026-07-18 run executed **203 tests, 0 failures, 0 skips**. At model-security
+closure checkout `72762ed` on 2026-07-26, the expanded selection executed
+**470 tests, 0 failures, 0 skips**; the repeat lane completed three relaunch
+iterations of that selection without failure. These numbers are command results
+from their named checkouts, not a permanent contract; rerun the command and read
+the XCTest summary for a new result.
 
 Useful deterministic variants:
 
