@@ -160,6 +160,34 @@ final class ParakeetBootstrapTests: XCTestCase {
         XCTAssertEqual(events.snapshot().filter { $0 == "cleanup" }.count, 1)
     }
 
+    func test_cancellationWinningBeforeGenerationClaimPreservesActiveLoad() async throws {
+        let events = LockedBootstrapEvents()
+        let activeGate = AsyncBootstrapGate()
+        let claimGate = BlockingBootstrapClaimGate()
+        let activeManager = AsrManager()
+        let bootstrap = ParakeetBootstrap(
+            preparer: FakeBootstrapPreparer(events: events),
+            loader: FakeBootstrapLoader(events: events, results: [
+                .blocked(.init(manager: activeManager, retained: BootstrapRetentionProbe()), activeGate)
+            ]),
+            cleaner: FakeLegacyCleaner(events: events),
+            beforeDownloadClaim: { claimGate.enterAndBlock() }
+        )
+
+        let active = Task { try await bootstrap.ensureReady() }
+        await activeGate.waitUntilEntered()
+        let cancelled = Task { try await bootstrap.downloadModels() }
+        await Task.detached { claimGate.waitUntilEntered() }.value
+        cancelled.cancel()
+        claimGate.release()
+        _ = try? await cancelled.value
+        await activeGate.release()
+        let loaded = try await active.value
+
+        XCTAssertTrue(loaded.manager === activeManager)
+        XCTAssertEqual(events.snapshot().filter { $0 == "prepare" }.count, 0)
+    }
+
     func test_cancellingDownloadInvalidatesBlockedLoadAndSkipsCleanup() async {
         let events = LockedBootstrapEvents()
         let gate = AsyncBootstrapGate()
@@ -289,6 +317,17 @@ private final class FakeLegacyCleaner: ParakeetBootstrapLegacyCleaning, @uncheck
         }
         if shouldFail { throw BootstrapTestError.failed }
     }
+}
+
+private final class BlockingBootstrapClaimGate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+    func enterAndBlock() {
+        entered.signal()
+        released.wait()
+    }
+    func waitUntilEntered() { entered.wait() }
+    func release() { released.signal() }
 }
 
 private actor AsyncBootstrapGate {

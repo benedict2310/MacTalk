@@ -48,13 +48,17 @@ private final class ParakeetDownloadCancellationOwner: @unchecked Sendable {
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    func install(_ cancellation: @escaping @Sendable () -> Void) {
-        let runNow = state.withLock { current -> Bool in
-            if current.cancelled { return true }
-            current.cancellation = cancellation
-            return false
+    func claim<T: Sendable>(
+        _ create: @Sendable () -> (value: T, cancellation: @Sendable () -> Void)
+    ) throws -> T {
+        try state.withLock { current in
+            guard !current.cancelled, !Task.isCancelled else { throw CancellationError() }
+            // Cancellation waits on this same gate. Once creation begins, the
+            // exact generation and its cancellation become one atomic claim.
+            let claimed = create()
+            current.cancellation = claimed.cancellation
+            return claimed.value
         }
-        if runNow { cancellation() }
     }
 
     func cancel() {
@@ -164,17 +168,20 @@ final class ParakeetBootstrap: @unchecked Sendable {
     private let loader: any ParakeetBootstrapVerifiedLoading
     private let cleaner: any ParakeetBootstrapLegacyCleaning
     private let availability: any ParakeetBootstrapSourceAvailability
+    private let beforeDownloadClaim: (@Sendable () -> Void)?
 
     init(
         preparer: any ParakeetBootstrapSourcePreparing,
         loader: any ParakeetBootstrapVerifiedLoading,
         cleaner: any ParakeetBootstrapLegacyCleaning,
-        availability: any ParakeetBootstrapSourceAvailability = UnavailableParakeetSource()
+        availability: any ParakeetBootstrapSourceAvailability = UnavailableParakeetSource(),
+        beforeDownloadClaim: (@Sendable () -> Void)? = nil
     ) {
         self.preparer = preparer
         self.loader = loader
         self.cleaner = cleaner
         self.availability = availability
+        self.beforeDownloadClaim = beforeDownloadClaim
         ModelHub.offlineMode = true
     }
 
@@ -211,8 +218,11 @@ final class ParakeetBootstrap: @unchecked Sendable {
             // This check runs with the handler installed, so an already-
             // cancelled caller cannot claim a replacement generation.
             try Task.checkCancellation()
-            let operation = startOperation(preparesSource: true, forceReplacement: true)
-            owner.install { [weak self] in self?.cancelOperation(generation: operation.generation) }
+            beforeDownloadClaim?()
+            let operation = try owner.claim { [self] in
+                let operation = startOperation(preparesSource: true, forceReplacement: true)
+                return (operation, { [weak self] in self?.cancelOperation(generation: operation.generation) })
+            }
             try Task.checkCancellation()
             let outcome = try await awaitOperation(operation)
             guard let sourceURL = outcome.sourceURL else { throw BootstrapError.modelsNotAvailable }

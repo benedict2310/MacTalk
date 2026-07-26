@@ -17,6 +17,15 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         let files: [ParakeetManifestEntry]
     }
 
+    private struct ValidatedTree {
+        let info: stat
+        let expectedFiles: [String: ParakeetManifestEntry]
+        let expectedDirectories: Set<String>
+        let expectedManifest: ManifestIdentity
+    }
+
+    private static let quarantineName = ".mactalk-legacy-compiled-retired"
+
     private let parent: URL
     private let entries: [ParakeetManifestEntry]
     private let repository: String
@@ -49,15 +58,44 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         defer { lease.release() }
         try lease.withStoreParentDescriptor { parentFD in
             try checkCancellation()
-            try validateAndRemoveTreeIfPresent(named: ParakeetModelDownloader.folderName, relativeTo: parentFD)
+            try validateConfiguration()
+
+            // Recover a prior interruption only through the one fixed private
+            // quarantine name. It must still validate exactly before removal.
+            if let quarantined = try validateTreeIfPresent(named: Self.quarantineName, relativeTo: parentFD) {
+                try removeValidatedTree(named: Self.quarantineName, relativeTo: parentFD, validated: quarantined)
+            }
+
+            let activeName = ParakeetModelDownloader.folderName
+            guard let initiallyValidated = try validateTreeIfPresent(named: activeName, relativeTo: parentFD) else { return }
+            beforeRemoval?()
+            // Catch cooperative/test mutation before the atomic ownership move.
+            guard let finalValidated = try validateTreeIfPresent(named: activeName, relativeTo: parentFD),
+                  sameIdentity(initiallyValidated.info, finalValidated.info) else {
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+            let renamed = activeName.withCString { source in
+                Self.quarantineName.withCString { destination in
+                    renameatx_np(parentFD, source, parentFD, destination, UInt32(RENAME_EXCL))
+                }
+            }
+            guard renamed == 0, fsync(parentFD) == 0 else {
+                throw ParakeetLegacyCompiledCleanupError.io(errno)
+            }
+            guard let quarantined = try validateTreeIfPresent(named: Self.quarantineName, relativeTo: parentFD),
+                  sameIdentity(finalValidated.info, quarantined.info) else {
+                throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+            }
+            try removeValidatedTree(named: Self.quarantineName, relativeTo: parentFD, validated: quarantined)
+            guard fsync(parentFD) == 0 else { throw ParakeetLegacyCompiledCleanupError.io(errno) }
         }
     }
 
-    private func validateAndRemoveTreeIfPresent(named name: String, relativeTo parentFD: Int32) throws {
+    private func validateTreeIfPresent(named name: String, relativeTo parentFD: Int32) throws -> ValidatedTree? {
         var pathInfo = stat()
         let status = name.withCString { fstatat(parentFD, $0, &pathInfo, AT_SYMLINK_NOFOLLOW) }
         if status != 0 {
-            if errno == ENOENT { return }
+            if errno == ENOENT { return nil }
             throw ParakeetLegacyCompiledCleanupError.io(errno)
         }
         guard (pathInfo.st_mode & S_IFMT) == S_IFDIR, pathInfo.st_uid == getuid() else {
@@ -65,37 +103,21 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         }
         let directoryFD = try openValidatedDirectory(named: name, relativeTo: parentFD, expected: pathInfo)
         defer { _ = Darwin.close(directoryFD) }
-
-        try validateConfiguration()
         let expectedFiles = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
         let expectedDirectories = Set(entries.flatMap { entry -> [String] in
             let components = entry.path.split(separator: "/").dropLast()
             return components.indices.map { index in components[...index].joined(separator: "/") }
         })
         var seen = Set<String>()
-        let marker = try validateTree(
-            directoryFD: directoryFD,
-            prefix: "",
-            expectedFiles: expectedFiles,
-            expectedDirectories: expectedDirectories,
-            seen: &seen
-        )
+        let marker = try validateTree(directoryFD: directoryFD, prefix: "", expectedFiles: expectedFiles,
+                                      expectedDirectories: expectedDirectories, seen: &seen)
         let expectedManifest = ManifestIdentity(repository: repository, revision: revision, files: entries)
         guard marker == expectedManifest,
               seen == Set(expectedFiles.keys).union([".mactalk-manifest.json"]) else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
-        try checkCancellation()
-        beforeRemoval?()
-        try removeValidatedTree(
-            named: name,
-            relativeTo: parentFD,
-            expected: pathInfo,
-            prefix: "",
-            expectedFiles: expectedFiles,
-            expectedDirectories: expectedDirectories,
-            expectedManifest: expectedManifest
-        )
+        return ValidatedTree(info: pathInfo, expectedFiles: expectedFiles,
+                             expectedDirectories: expectedDirectories, expectedManifest: expectedManifest)
     }
 
     private func validateConfiguration() throws {
@@ -216,6 +238,12 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
               hasher.finalize().map({ String(format: "%02x", $0) }).joined() == entry.sha256 else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
+    }
+
+    private func removeValidatedTree(named name: String, relativeTo parentFD: Int32, validated: ValidatedTree) throws {
+        try removeValidatedTree(named: name, relativeTo: parentFD, expected: validated.info, prefix: "",
+                                expectedFiles: validated.expectedFiles, expectedDirectories: validated.expectedDirectories,
+                                expectedManifest: validated.expectedManifest)
     }
 
     private func removeValidatedTree(
