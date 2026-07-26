@@ -74,6 +74,51 @@ final class ParakeetLegacyCompiledCleanerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: injected), Data("do-not-delete".utf8))
     }
 
+    func test_postQuarantineMutationIsRejectedBeforeDeletion() async throws {
+        let parent = temporaryParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let compiled = parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        let artifact = Data("weight".utf8)
+        let entry = ParakeetManifestEntry(path: "weight.bin", size: Int64(artifact.count), sha256: digest(artifact))
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try artifact.write(to: compiled.appendingPathComponent("weight.bin"))
+        try writeMarker(entries: [entry], to: compiled)
+        let quarantine = parent.appendingPathComponent(".mactalk-legacy-compiled-retired")
+        let injected = quarantine.appendingPathComponent("injected.bin")
+        let cleaner = ParakeetLegacyCompiledCleaner(
+            parent: parent,
+            entries: [entry],
+            repository: "repo",
+            revision: "revision",
+            afterQuarantine: { try! Data("preserve".utf8).write(to: injected) }
+        )
+
+        do {
+            try await cleaner.removeCompiledGeneration()
+            XCTFail("mutated quarantine was deleted")
+        } catch let error as ParakeetLegacyCompiledCleanupError {
+            XCTAssertEqual(error, .invalidCompiledTree)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: injected), Data("preserve".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: compiled.path))
+    }
+
+    func test_validInterruptedQuarantineIsRemovedOnRetry() async throws {
+        let parent = temporaryParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let quarantine = parent.appendingPathComponent(".mactalk-legacy-compiled-retired")
+        let artifact = Data("weight".utf8)
+        let entry = ParakeetManifestEntry(path: "weight.bin", size: Int64(artifact.count), sha256: digest(artifact))
+        try FileManager.default.createDirectory(at: quarantine, withIntermediateDirectories: true)
+        try artifact.write(to: quarantine.appendingPathComponent("weight.bin"))
+        try writeMarker(entries: [entry], to: quarantine)
+
+        try await ParakeetLegacyCompiledCleaner(parent: parent, entries: [entry], repository: "repo", revision: "revision").removeCompiledGeneration()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quarantine.path))
+    }
+
     func test_absentCompiledGenerationIsIdempotent() async throws {
         let parent = temporaryParent()
         defer { try? FileManager.default.removeItem(at: parent) }

@@ -31,19 +31,22 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
     private let repository: String
     private let revision: String
     private let beforeRemoval: (@Sendable () -> Void)?
+    private let afterQuarantine: (@Sendable () -> Void)?
 
     init(
         parent: URL,
         entries: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
         repository: String = ParakeetModelDownloader.repository,
         revision: String = ParakeetModelDownloader.revision,
-        beforeRemoval: (@Sendable () -> Void)? = nil
+        beforeRemoval: (@Sendable () -> Void)? = nil,
+        afterQuarantine: (@Sendable () -> Void)? = nil
     ) {
         self.parent = parent
         self.entries = entries
         self.repository = repository
         self.revision = revision
         self.beforeRemoval = beforeRemoval
+        self.afterQuarantine = afterQuarantine
     }
 
     func removeCompiledGeneration() async throws {
@@ -64,6 +67,7 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
             // quarantine name. It must still validate exactly before removal.
             if let quarantined = try validateTreeIfPresent(named: Self.quarantineName, relativeTo: parentFD) {
                 try removeValidatedTree(named: Self.quarantineName, relativeTo: parentFD, validated: quarantined)
+                guard fsync(parentFD) == 0 else { throw ParakeetLegacyCompiledCleanupError.io(errno) }
             }
 
             let activeName = ParakeetModelDownloader.folderName
@@ -82,6 +86,7 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
             guard renamed == 0, fsync(parentFD) == 0 else {
                 throw ParakeetLegacyCompiledCleanupError.io(errno)
             }
+            afterQuarantine?()
             guard let quarantined = try validateTreeIfPresent(named: Self.quarantineName, relativeTo: parentFD),
                   sameIdentity(finalValidated.info, quarantined.info) else {
                 throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
