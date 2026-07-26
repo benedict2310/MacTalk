@@ -21,17 +21,20 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
     private let entries: [ParakeetManifestEntry]
     private let repository: String
     private let revision: String
+    private let beforeRemoval: (@Sendable () -> Void)?
 
     init(
         parent: URL,
         entries: [ParakeetManifestEntry] = ParakeetModelDownloader.manifest,
         repository: String = ParakeetModelDownloader.repository,
-        revision: String = ParakeetModelDownloader.revision
+        revision: String = ParakeetModelDownloader.revision,
+        beforeRemoval: (@Sendable () -> Void)? = nil
     ) {
         self.parent = parent
         self.entries = entries
         self.repository = repository
         self.revision = revision
+        self.beforeRemoval = beforeRemoval
     }
 
     func removeCompiledGeneration() async throws {
@@ -77,12 +80,22 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
             expectedDirectories: expectedDirectories,
             seen: &seen
         )
-        guard marker == ManifestIdentity(repository: repository, revision: revision, files: entries),
+        let expectedManifest = ManifestIdentity(repository: repository, revision: revision, files: entries)
+        guard marker == expectedManifest,
               seen == Set(expectedFiles.keys).union([".mactalk-manifest.json"]) else {
             throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
         }
         try checkCancellation()
-        try removeValidatedTree(named: name, relativeTo: parentFD, expected: pathInfo)
+        beforeRemoval?()
+        try removeValidatedTree(
+            named: name,
+            relativeTo: parentFD,
+            expected: pathInfo,
+            prefix: "",
+            expectedFiles: expectedFiles,
+            expectedDirectories: expectedDirectories,
+            expectedManifest: expectedManifest
+        )
     }
 
     private func validateConfiguration() throws {
@@ -205,7 +218,15 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
         }
     }
 
-    private func removeValidatedTree(named name: String, relativeTo parentFD: Int32, expected: stat) throws {
+    private func removeValidatedTree(
+        named name: String,
+        relativeTo parentFD: Int32,
+        expected: stat,
+        prefix: String,
+        expectedFiles: [String: ParakeetManifestEntry],
+        expectedDirectories: Set<String>,
+        expectedManifest: ManifestIdentity
+    ) throws {
         let directoryFD = try openValidatedDirectory(named: name, relativeTo: parentFD, expected: expected)
         defer { _ = Darwin.close(directoryFD) }
         let listingFD = dup(directoryFD)
@@ -220,15 +241,34 @@ final class ParakeetLegacyCompiledCleaner: ParakeetBootstrapLegacyCleaning, @unc
                 String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
             }
             guard child != ".", child != ".." else { continue }
+            let path = prefix.isEmpty ? child : "\(prefix)/\(child)"
             var info = stat()
             guard child.withCString({ fstatat(directoryFD, $0, &info, AT_SYMLINK_NOFOLLOW) == 0 }), info.st_uid == getuid() else {
                 throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
             }
             if (info.st_mode & S_IFMT) == S_IFDIR {
-                try removeValidatedTree(named: child, relativeTo: directoryFD, expected: info)
+                guard expectedDirectories.contains(path) else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                try removeValidatedTree(
+                    named: child,
+                    relativeTo: directoryFD,
+                    expected: info,
+                    prefix: path,
+                    expectedFiles: expectedFiles,
+                    expectedDirectories: expectedDirectories,
+                    expectedManifest: expectedManifest
+                )
             } else {
                 guard (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1 else {
                     throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                }
+                if path == ".mactalk-manifest.json" {
+                    let data = try readValidatedFile(named: child, relativeTo: directoryFD, expected: info, maximumSize: 64 * 1024)
+                    guard (try? JSONDecoder().decode(ManifestIdentity.self, from: data)) == expectedManifest else {
+                        throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree
+                    }
+                } else {
+                    guard let entry = expectedFiles[path] else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }
+                    try validateArtifactFile(named: child, relativeTo: directoryFD, expected: info, entry: entry)
                 }
                 let fd = child.withCString { openat(directoryFD, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) }
                 guard fd >= 0 else { throw ParakeetLegacyCompiledCleanupError.invalidCompiledTree }

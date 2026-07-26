@@ -128,6 +128,38 @@ final class ParakeetBootstrapTests: XCTestCase {
         XCTAssertEqual(events.snapshot().filter { $0 == "cleanup" }.count, 1)
     }
 
+    func test_preCancelledDownloadDoesNotSupersedeActiveLoad() async throws {
+        let events = LockedBootstrapEvents()
+        let activeGate = AsyncBootstrapGate()
+        let cancelledEntryGate = AsyncBootstrapGate()
+        let activeManager = AsrManager()
+        let bootstrap = ParakeetBootstrap(
+            preparer: FakeBootstrapPreparer(events: events),
+            loader: FakeBootstrapLoader(events: events, results: [
+                .blocked(.init(manager: activeManager, retained: BootstrapRetentionProbe()), activeGate),
+                .failure(BootstrapTestError.failed)
+            ]),
+            cleaner: FakeLegacyCleaner(events: events)
+        )
+
+        let active = Task { try await bootstrap.ensureReady() }
+        await activeGate.waitUntilEntered()
+        let cancelled = Task {
+            await cancelledEntryGate.enterAndWait()
+            return try await bootstrap.downloadModels()
+        }
+        cancelled.cancel()
+        await cancelledEntryGate.release()
+        _ = try? await cancelled.value
+        await activeGate.release()
+        let loaded = try await active.value
+
+        XCTAssertTrue(loaded.manager === activeManager)
+        XCTAssertTrue(bootstrap.currentLoadedManager()?.manager === activeManager)
+        XCTAssertEqual(events.snapshot().filter { $0 == "prepare" }.count, 0)
+        XCTAssertEqual(events.snapshot().filter { $0 == "cleanup" }.count, 1)
+    }
+
     func test_cancellingDownloadInvalidatesBlockedLoadAndSkipsCleanup() async {
         let events = LockedBootstrapEvents()
         let gate = AsyncBootstrapGate()

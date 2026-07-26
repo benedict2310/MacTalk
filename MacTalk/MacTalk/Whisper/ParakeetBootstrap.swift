@@ -41,6 +41,31 @@ private struct UnavailableParakeetSource: ParakeetBootstrapSourceAvailability {
     func isAvailable() -> Bool { false }
 }
 
+private final class ParakeetDownloadCancellationOwner: @unchecked Sendable {
+    private struct State {
+        var cancelled = false
+        var cancellation: (@Sendable () -> Void)?
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func install(_ cancellation: @escaping @Sendable () -> Void) {
+        let runNow = state.withLock { current -> Bool in
+            if current.cancelled { return true }
+            current.cancellation = cancellation
+            return false
+        }
+        if runNow { cancellation() }
+    }
+
+    func cancel() {
+        let cancellation = state.withLock { current -> (@Sendable () -> Void)? in
+            current.cancelled = true
+            return current.cancellation
+        }
+        cancellation?()
+    }
+}
+
 private struct ProductionParakeetSourcePreparer: ParakeetBootstrapSourcePreparing {
     let parent: URL
 
@@ -181,13 +206,19 @@ final class ParakeetBootstrap: @unchecked Sendable {
 
     @discardableResult
     func downloadModels() async throws -> URL {
-        let operation = startOperation(preparesSource: true, forceReplacement: true)
+        let owner = ParakeetDownloadCancellationOwner()
         return try await withTaskCancellationHandler(operation: {
+            // This check runs with the handler installed, so an already-
+            // cancelled caller cannot claim a replacement generation.
+            try Task.checkCancellation()
+            let operation = startOperation(preparesSource: true, forceReplacement: true)
+            owner.install { [weak self] in self?.cancelOperation(generation: operation.generation) }
+            try Task.checkCancellation()
             let outcome = try await awaitOperation(operation)
             guard let sourceURL = outcome.sourceURL else { throw BootstrapError.modelsNotAvailable }
             return sourceURL
-        }, onCancel: { [weak self] in
-            self?.cancelOperation(generation: operation.generation)
+        }, onCancel: {
+            owner.cancel()
         })
     }
 
@@ -254,7 +285,7 @@ final class ParakeetBootstrap: @unchecked Sendable {
     private func cancelOperation(generation: UInt64) {
         transitionLock.lock()
         let cancelled: Task<OperationOutcome, Error>? = stateLock.withLock { state in
-            guard state.generation == generation else { return nil }
+            guard state.generation == generation, state.operation?.generation == generation else { return nil }
             let task = state.operation?.task
             state.generation &+= 1
             state.operation = nil

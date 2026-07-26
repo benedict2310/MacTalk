@@ -46,6 +46,34 @@ final class ParakeetLegacyCompiledCleanerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: compiled.appendingPathComponent("other.bin").path))
     }
 
+    func test_entryInjectedAfterValidationIsRejectedWithoutDeletingInjectedContent() async throws {
+        let parent = temporaryParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let compiled = parent.appendingPathComponent(ParakeetModelDownloader.folderName)
+        let artifact = Data("weight".utf8)
+        let entry = ParakeetManifestEntry(path: "weight.bin", size: Int64(artifact.count), sha256: digest(artifact))
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try artifact.write(to: compiled.appendingPathComponent("weight.bin"))
+        try writeMarker(entries: [entry], to: compiled)
+        let injected = compiled.appendingPathComponent("injected.bin")
+        let cleaner = ParakeetLegacyCompiledCleaner(
+            parent: parent,
+            entries: [entry],
+            repository: "repo",
+            revision: "revision",
+            beforeRemoval: { try! Data("do-not-delete".utf8).write(to: injected) }
+        )
+
+        do {
+            try await cleaner.removeCompiledGeneration()
+            XCTFail("mutated tree was removed")
+        } catch let error as ParakeetLegacyCompiledCleanupError {
+            XCTAssertEqual(error, .invalidCompiledTree)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: injected), Data("do-not-delete".utf8))
+    }
+
     func test_absentCompiledGenerationIsIdempotent() async throws {
         let parent = temporaryParent()
         defer { try? FileManager.default.removeItem(at: parent) }
