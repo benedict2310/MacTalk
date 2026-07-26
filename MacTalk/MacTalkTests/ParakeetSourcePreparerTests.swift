@@ -394,6 +394,70 @@ final class ParakeetSourcePreparerTests: XCTestCase {
         XCTAssertEqual(recording.beginCalls[0].count, 6)
     }
 
+    func test_supersedingStartCancelsOnlyPriorTransportAndPreventsOldPublication() async throws {
+        let fixture = try SourcePreparationFixture()
+        let materializer = SupersedingSourceMaterializer(bytes: fixture.bytes, blockFirstMaterialization: true)
+        let preparer = ParakeetSourcePreparer(store: fixture.store, materializer: materializer)
+        let first = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        XCTAssertEqual(materializer.firstMaterialization.wait(timeout: .now() + 2), .success)
+
+        let second = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        let activated = try await second.value
+        do {
+            _ = try await first.value
+            XCTFail("superseded operation unexpectedly succeeded")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+
+        XCTAssertEqual(activated, fixture.sourceURL)
+        XCTAssertEqual(materializer.cancelledIDs.count, 1)
+        XCTAssertEqual(materializer.cancelledIDs[0], materializer.begunIDs[0])
+        XCTAssertEqual(try Data(contentsOf: activated.appendingPathComponent("parakeet_vocab.json")), Data("vocabulary".utf8))
+        XCTAssertFalse((try FileManager.default.contentsOfDirectory(atPath: fixture.parent.path)).contains { $0.hasPrefix(ParakeetSourceStore.stagingPrefix) })
+    }
+
+    func test_supersessionAtActivationBoundaryPreventsOldCommit() async throws {
+        let fixture = try SourcePreparationFixture()
+        let materializer = SupersedingSourceMaterializer(bytes: fixture.bytes, blockFirstMaterialization: false)
+        let reachedCommit = AsyncTestEvent()
+        let secondRegistered = AsyncTestEvent()
+        let registrationCount = OSAllocatedUnfairLock(initialState: 0)
+        let gate = AsyncTestGate()
+        let preparer = ParakeetSourcePreparer(
+            store: fixture.store,
+            materializer: materializer,
+            beforeCommitReservation: {
+                await reachedCommit.signal()
+                await gate.wait()
+            },
+            afterOperationRegistration: { _ in
+                let count = registrationCount.withLock { value -> Int in
+                    value += 1
+                    return value
+                }
+                if count == 2 {
+                    Task { await secondRegistered.signal() }
+                }
+            }
+        )
+        let first = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        await reachedCommit.wait()
+        let second = Task.detached(priority: .high) { try await preparer.prepareIfNeeded() }
+        await secondRegistered.wait()
+        await gate.release()
+        let activated = try await second.value
+        do {
+            _ = try await first.value
+            XCTFail("superseded activation unexpectedly committed")
+        } catch let error as ParakeetSourcePreparationError {
+            XCTAssertEqual(error, .cancelled)
+        }
+
+        XCTAssertEqual(activated, fixture.sourceURL)
+        XCTAssertEqual(materializer.cancelledIDs, [materializer.begunIDs[0]])
+    }
+
     func test_recoversValidatedOwnedBackupOnlyWhenActiveSourceIsAbsent() async throws {
         let fixture = try SourcePreparationFixture()
         _ = try await ParakeetSourcePreparer(store: fixture.store, materializer: fixture.materializer).prepareIfNeeded()
@@ -531,6 +595,85 @@ private final class SourcePreparationFixture: @unchecked Sendable {
     }
 
     deinit { try? FileManager.default.removeItem(at: parent) }
+}
+
+private actor AsyncTestEvent {
+    private var signaled = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        if signaled { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func signal() {
+        signaled = true
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
+}
+
+private actor AsyncTestGate {
+    private let event = AsyncTestEvent()
+
+    func wait() async { await event.wait() }
+    func release() async { await event.signal() }
+}
+
+private final class SupersedingSourceMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {
+    private struct State {
+        var begunIDs: [UUID] = []
+        var cancelledIDs: [UUID] = []
+        var materializations = 0
+        var firstMaterializationContinuation: CheckedContinuation<Void, Never>?
+    }
+
+    let bytes: [String: Data]
+    let blockFirstMaterialization: Bool
+    let firstMaterialization = DispatchSemaphore(value: 0)
+    let cancellationObserved = DispatchSemaphore(value: 0)
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(bytes: [String: Data], blockFirstMaterialization: Bool) {
+        self.bytes = bytes
+        self.blockFirstMaterialization = blockFirstMaterialization
+    }
+
+    var begunIDs: [UUID] { state.withLock { $0.begunIDs } }
+    var cancelledIDs: [UUID] { state.withLock { $0.cancelledIDs } }
+
+    func beginPreparation(operationID: UUID, remainingEntries: [GeneratedParakeetManifestEntry]) throws {
+        state.withLock { $0.begunIDs.append(operationID) }
+    }
+
+    func cancelPreparation(operationID: UUID) {
+        let continuation = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            state.cancelledIDs.append(operationID)
+            let continuation = state.firstMaterializationContinuation
+            state.firstMaterializationContinuation = nil
+            return continuation
+        }
+        cancellationObserved.signal()
+        continuation?.resume()
+    }
+
+    func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws {
+        let ordinal = state.withLock { state -> Int in
+            state.materializations += 1
+            return state.materializations
+        }
+        if blockFirstMaterialization && ordinal == 1 {
+            await withCheckedContinuation { continuation in
+                state.withLock { $0.firstMaterializationContinuation = continuation }
+                firstMaterialization.signal()
+            }
+            throw CancellationError()
+        }
+        try sink.write(bytes[entry.path]!)
+    }
 }
 
 private final class RecordingSourceMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {

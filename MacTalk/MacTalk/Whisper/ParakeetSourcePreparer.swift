@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 
 protocol ParakeetSourceArtifactMaterializing: Sendable {
     func materialize(entry: GeneratedParakeetManifestEntry, sink: ParakeetSourceArtifactSink) async throws
@@ -147,6 +148,11 @@ enum ParakeetSourcePreparationError: Error, Equatable, Sendable {
 /// No production caller is installed in Task 10a; materializers are an
 /// internal seam for the future source artifact acquisition work.
 final class ParakeetSourcePreparer: @unchecked Sendable {
+    private struct OperationState {
+        var current: UUID?
+    }
+
+    private let operations = OSAllocatedUnfairLock(initialState: OperationState())
     private let store: ParakeetSourceStore
     private let materializer: any ParakeetSourceArtifactMaterializing
     private let weightReuser: ParakeetCompiledWeightReuser?
@@ -158,6 +164,8 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     /// Test-only seam for proving that an interruption after staging becomes
     /// a backup leaves a recoverable, fully validated generation.
     private let beforeBackupPromotion: (@Sendable () -> Void)?
+    private let beforeCommitReservation: (@Sendable () async -> Void)?
+    private let afterOperationRegistration: (@Sendable (UUID) -> Void)?
 
     init(store: ParakeetSourceStore, materializer: any ParakeetSourceArtifactMaterializing,
          weightReuser: ParakeetCompiledWeightReuser? = nil,
@@ -166,7 +174,9 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
          afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
          beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
          beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil,
-         beforeBackupPromotion: (@Sendable () -> Void)? = nil) {
+         beforeBackupPromotion: (@Sendable () -> Void)? = nil,
+         beforeCommitReservation: (@Sendable () async -> Void)? = nil,
+         afterOperationRegistration: (@Sendable (UUID) -> Void)? = nil) {
         self.store = store
         self.materializer = materializer
         self.weightReuser = weightReuser
@@ -176,6 +186,8 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         self.beforeExistingValidationCompletion = beforeExistingValidationCompletion
         self.beforeStagingValidationCompletion = beforeStagingValidationCompletion
         self.beforeBackupPromotion = beforeBackupPromotion
+        self.beforeCommitReservation = beforeCommitReservation
+        self.afterOperationRegistration = afterOperationRegistration
     }
 
     convenience init(parent: URL, materializer: any ParakeetSourceArtifactMaterializing,
@@ -185,20 +197,51 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                      afterStagingDirectoryCreated: (@Sendable () -> Void)? = nil,
                      beforeExistingValidationCompletion: (@Sendable () -> Void)? = nil,
                      beforeStagingValidationCompletion: (@Sendable () -> Void)? = nil,
-                     beforeBackupPromotion: (@Sendable () -> Void)? = nil) {
+                     beforeBackupPromotion: (@Sendable () -> Void)? = nil,
+                     beforeCommitReservation: (@Sendable () async -> Void)? = nil,
+                     afterOperationRegistration: (@Sendable (UUID) -> Void)? = nil) {
         self.init(store: .canonical(parent: parent), materializer: materializer,
                   weightReuser: weightReuser,
                   beforeValidation: beforeValidation, beforeActivation: beforeActivation,
                   afterStagingDirectoryCreated: afterStagingDirectoryCreated,
                   beforeExistingValidationCompletion: beforeExistingValidationCompletion,
                   beforeStagingValidationCompletion: beforeStagingValidationCompletion,
-                  beforeBackupPromotion: beforeBackupPromotion)
+                  beforeBackupPromotion: beforeBackupPromotion,
+                  beforeCommitReservation: beforeCommitReservation,
+                  afterOperationRegistration: afterOperationRegistration)
     }
 
     func prepareIfNeeded() async throws -> URL {
+        // Registration precedes every await (including the exclusive lock), so
+        // a caller that is already cancelled and a newer caller both have one
+        // exact operation ID to revoke.
+        let operationID = UUID()
+        let superseded = operations.withLock { state -> UUID? in
+            let previous = state.current
+            state.current = operationID
+            return previous
+        }
+        if let superseded { materializer.cancelPreparation(operationID: superseded) }
+        // The registration callback runs after the state transition and never
+        // beneath the operation lock.
+        afterOperationRegistration?(operationID)
+        if Task.isCancelled {
+            cancelOperation(operationID)
+            throw ParakeetSourcePreparationError.cancelled
+        }
+        return try await withTaskCancellationHandler(operation: {
+            try await self.prepareRegisteredOperation(operationID: operationID)
+        }, onCancel: { [weak self] in
+            self?.cancelOperation(operationID)
+        })
+    }
+
+    private func prepareRegisteredOperation(operationID: UUID) async throws -> URL {
+        defer { completeOperation(operationID) }
         // This validation is deliberately pure: no lock acquisition (which may
         // create the parent) or other filesystem mutation precedes it.
         try validateConfiguration()
+        try checkOperation(operationID)
         let lock = ParakeetStoreFileLock(storeParent: store.parent)
         let lease: ParakeetStoreFileLock.Lease
         do {
@@ -210,7 +253,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
 
         do {
             return try await lease.withStoreParentDescriptor { parentFD in
-                try checkCancellation()
+                try checkOperation(operationID)
                 // Only these exact UUID namespaces are owned by source
                 // preparation. Compiled generations and unexpected names are
                 // never enumerated as cleanup targets.
@@ -218,7 +261,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 let provider = VerifiedParakeetSourceSnapshotProvider(store: store, beforeCompletion: beforeExistingValidationCompletion)
                 do {
                     _ = try await provider.makeVerifiedSnapshot(holding: lease)
-                    try checkCancellation()
+                    try checkOperation(operationID)
                     try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: true)
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
                 } catch let error as ParakeetSourceSnapshotError {
@@ -226,13 +269,13 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 } catch is CancellationError {
                     throw ParakeetSourcePreparationError.cancelled
                 }
-                try checkCancellation()
+                try checkOperation(operationID)
                 // An existing but invalid source is not ours to replace.
                 // Recovery is allowed only when it is absent.
                 if entryExists(named: store.sourceDirectoryName, relativeTo: parentFD) {
                     throw ParakeetSourcePreparationError.collision(store.sourceDirectoryName)
                 }
-                if try await recoverValidatedBackup(holding: lease, parentFD: parentFD) {
+                if try await recoverValidatedBackup(holding: lease, parentFD: parentFD, operationID: operationID) {
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
                 }
                 try removeOwnedArtifacts(relativeTo: parentFD, includeBackups: true)
@@ -250,30 +293,30 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                 do {
                     let stagingFD = try openDirectory(named: stagingName, relativeTo: parentFD)
                     defer { _ = Darwin.close(stagingFD) }
-                    let operationID = UUID()
                     let downloadEntries = try entriesRequiringDownload(
                         holding: lease,
-                        stagingRootFD: stagingFD
+                        stagingRootFD: stagingFD,
+                        operationID: operationID
                     )
                     try materializer.beginPreparation(operationID: operationID, remainingEntries: downloadEntries)
                     for entry in downloadEntries {
-                        try checkCancellation()
+                        try checkOperation(operationID)
                         let sinkFD = try openArtifactSink(entry: entry, rootFD: stagingFD)
                         let sink = ParakeetSourceArtifactSink(descriptor: sinkFD, entry: entry)
                         do {
                             try await materializer.materialize(entry: entry, sink: sink)
-                            try checkCancellation()
+                            try checkOperation(operationID)
                             try sink.finish()
                         } catch {
                             sink.close()
                             throw map(error)
                         }
                     }
-                    try checkCancellation()
+                    try checkOperation(operationID)
                     try writeMarker(rootFD: stagingFD)
-                    try checkCancellation()
+                    try checkOperation(operationID)
                     beforeValidation?()
-                    try checkCancellation()
+                    try checkOperation(operationID)
                     do {
                         let stagingStore = ParakeetSourceStore(parent: store.parent, sourceDirectoryName: stagingName,
                                                                entries: store.entries, identity: store.identity)
@@ -287,9 +330,17 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
                     } catch {
                         throw ParakeetSourcePreparationError.validationFailed
                     }
-                    try checkCancellation()
+                    try checkOperation(operationID)
                     beforeActivation?()
-                    try checkCancellation()
+                    // Permit a just-started replacement to register before
+                    // reserving the synchronous commit boundary.
+                    await Task.yield()
+                    await beforeCommitReservation?()
+                    try checkOperation(operationID)
+                    // Reserving commit is the linearization point: a newer
+                    // start before it cancels us; one after it observes a
+                    // completed-or-recoverable source state instead.
+                    guard beginCommit(operationID) else { throw ParakeetSourcePreparationError.cancelled }
                     try activate(stagingName: stagingName, sourceName: store.sourceDirectoryName, parentFD: parentFD)
                     stagingExists = false
                     return store.parent.appendingPathComponent(store.sourceDirectoryName, isDirectory: true)
@@ -306,8 +357,33 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         }
     }
 
-    private func checkCancellation() throws {
-        guard !Task.isCancelled else { throw ParakeetSourcePreparationError.cancelled }
+    private func checkOperation(_ operationID: UUID) throws {
+        guard !Task.isCancelled, operations.withLock({ $0.current == operationID }) else {
+            throw ParakeetSourcePreparationError.cancelled
+        }
+    }
+
+    private func cancelOperation(_ operationID: UUID) {
+        let shouldCancel = operations.withLock { state -> Bool in
+            guard state.current == operationID else { return false }
+            state.current = nil
+            return true
+        }
+        if shouldCancel { materializer.cancelPreparation(operationID: operationID) }
+    }
+
+    private func completeOperation(_ operationID: UUID) {
+        operations.withLock { state in
+            if state.current == operationID { state.current = nil }
+        }
+    }
+
+    private func beginCommit(_ operationID: UUID) -> Bool {
+        operations.withLock { state in
+            guard state.current == operationID else { return false }
+            state.current = nil
+            return true
+        }
     }
 
     /// Attempts verified compiled-weight reuse first. Successfully reused
@@ -315,12 +391,13 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
     /// the download set. Unavailable weights fall through to bounded fetch.
     private func entriesRequiringDownload(
         holding lease: ParakeetStoreFileLock.Lease,
-        stagingRootFD: Int32
+        stagingRootFD: Int32,
+        operationID: UUID
     ) throws -> [GeneratedParakeetManifestEntry] {
         guard let weightReuser else { return store.entries }
         var downloads: [GeneratedParakeetManifestEntry] = []
         for entry in store.entries {
-            try checkCancellation()
+            try checkOperation(operationID)
             guard entry.role == "weights" else {
                 downloads.append(entry)
                 continue
@@ -527,18 +604,19 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
         let backupName = try uniqueName(prefix: ParakeetSourceStore.backupPrefix)
         try renameExclusively(from: stagingName, to: backupName, relativeTo: parentFD)
         try syncDirectory(parentFD)
+        // No operation-state lock is held while invoking the hook or fsync.
         beforeBackupPromotion?()
-        try checkCancellation()
         try renameExclusively(from: backupName, to: sourceName, relativeTo: parentFD)
         try syncDirectory(parentFD)
     }
 
     private func recoverValidatedBackup(
         holding lease: ParakeetStoreFileLock.Lease,
-        parentFD: Int32
+        parentFD: Int32,
+        operationID: UUID
     ) async throws -> Bool {
         for backupName in try ownedArtifactNames(relativeTo: parentFD, prefix: ParakeetSourceStore.backupPrefix) {
-            try checkCancellation()
+            try checkOperation(operationID)
             let backupStore = ParakeetSourceStore(
                 parent: store.parent,
                 sourceDirectoryName: backupName,
@@ -548,7 +626,7 @@ final class ParakeetSourcePreparer: @unchecked Sendable {
             do {
                 _ = try await VerifiedParakeetSourceSnapshotProvider(store: backupStore)
                     .makeVerifiedSnapshot(holding: lease)
-                try checkCancellation()
+                try checkOperation(operationID)
                 try renameExclusively(from: backupName, to: store.sourceDirectoryName, relativeTo: parentFD)
                 try syncDirectory(parentFD)
                 // Any remaining owned backups are stale after recovery.
