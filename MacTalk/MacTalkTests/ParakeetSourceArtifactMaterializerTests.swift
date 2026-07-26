@@ -58,8 +58,8 @@ final class ParakeetSourceArtifactMaterializerTests: XCTestCase {
         XCTAssertEqual(requests[0].operationID, operationID)
         XCTAssertEqual(requests[0].workspaceRoot.standardizedFileURL, root.standardizedFileURL)
         XCTAssertEqual(requests[0].credentialToken, "test-token")
-        XCTAssertEqual(requests[0].aggregateDiskBytesStillRequired, Int64(2 * (bytesA.count + bytesB.count)))
-        XCTAssertEqual(requests[1].aggregateDiskBytesStillRequired, Int64(2 * bytesB.count))
+        XCTAssertEqual(requests[0].aggregateDiskBytesStillRequired, Int64(3 * (bytesA.count + bytesB.count)))
+        XCTAssertEqual(requests[1].aggregateDiskBytesStillRequired, Int64(2 * bytesA.count + 3 * bytesB.count))
         XCTAssertEqual(requests[1].identity.artifactPath, entryB.path)
         XCTAssertTrue(expectedMirrorA.absoluteString.hasPrefix("https://huggingface.co/"))
     }

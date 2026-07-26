@@ -19,17 +19,26 @@ enum ParakeetSourceDownloadRequestFactory {
         try ParakeetModelDownloader.mirrorURL(for: manifestEntry(for: entry))
     }
 
-    /// Reserves one bounded-download payload plus one same-volume unlinked
-    /// spool for each pending source artifact. The final source sink is owned
-    /// by the preparer's separately validated store parent.
+    /// Reserves every simultaneously live allocation: the complete staged
+    /// source tree, completed transport payloads, and a payload plus spool for
+    /// each pending download. This remains safe as completed artifacts stay in
+    /// the bounded transport workspace between source entries.
+    static func remainingBytes(
+        operationEntries: [GeneratedParakeetManifestEntry],
+        pendingEntries: [GeneratedParakeetManifestEntry]
+    ) throws -> Int64 {
+        let total = try ParakeetModelDownloader.remainingBytes(from: 0, entries: operationEntries.map(manifestEntry(for:)))
+        let pending = try ParakeetModelDownloader.remainingBytes(from: 0, entries: pendingEntries.map(manifestEntry(for:)))
+        let doubledTotal = total.multipliedReportingOverflow(by: 2)
+        let reservation = doubledTotal.partialValue.addingReportingOverflow(pending)
+        guard !doubledTotal.overflow, !reservation.overflow else {
+            throw ParakeetSourcePreparationError.invalidManifest
+        }
+        return reservation.partialValue
+    }
+
     static func remainingBytes(_ entries: [GeneratedParakeetManifestEntry]) throws -> Int64 {
-        let downloads = try ParakeetModelDownloader.remainingBytes(
-            from: 0,
-            entries: entries.map(manifestEntry(for:))
-        )
-        let doubled = downloads.multipliedReportingOverflow(by: 2)
-        guard !doubled.overflow else { throw ParakeetSourcePreparationError.invalidManifest }
-        return doubled.partialValue
+        try remainingBytes(operationEntries: entries, pendingEntries: entries)
     }
 
     static func makeRequest(
@@ -37,13 +46,14 @@ enum ParakeetSourceDownloadRequestFactory {
         operationID: UUID,
         workspaceRoot: URL,
         remainingEntries: [GeneratedParakeetManifestEntry],
+        operationEntries: [GeneratedParakeetManifestEntry],
         credentialToken: String?
     ) throws -> BoundedModelDownloadRequest {
         guard let index = remainingEntries.firstIndex(where: { $0.path == entry.path && $0.sha256 == entry.sha256 && $0.size == entry.size }) else {
             throw ParakeetSourcePreparationError.invalidManifest
         }
         let trailing = Array(remainingEntries[index...])
-        let aggregate = try remainingBytes(trailing)
+        let aggregate = try remainingBytes(operationEntries: operationEntries, pendingEntries: trailing)
         return BoundedModelDownloadRequest(
             identity: try downloadIdentity(for: entry),
             mirrors: [try mirrorURL(for: entry)],
@@ -60,6 +70,7 @@ enum ParakeetSourceDownloadRequestFactory {
 final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMaterializing, @unchecked Sendable {
     private struct State {
         var operationID: UUID?
+        var operationEntries: [GeneratedParakeetManifestEntry] = []
         var remainingEntries: [GeneratedParakeetManifestEntry] = []
     }
 
@@ -91,6 +102,7 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
         }
         state.withLock {
             $0.operationID = operationID
+            $0.operationEntries = remainingEntries
             $0.remainingEntries = remainingEntries
         }
     }
@@ -113,6 +125,7 @@ final class BoundedParakeetSourceArtifactMaterializer: ParakeetSourceArtifactMat
                 operationID: operationID,
                 workspaceRoot: workspaceRoot,
                 remainingEntries: current.remainingEntries,
+                operationEntries: current.operationEntries,
                 credentialToken: credentialToken
             )
         }
