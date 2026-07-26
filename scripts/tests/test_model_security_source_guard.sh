@@ -20,7 +20,8 @@ for path_loader in \
     'ModelHub . loadModels (legacyURL)' \
     'let escapedLoader = ModelHub.loadModels' \
     'let interpolatedLoader = "\(ModelHub.loadModels(legacyURL))"' \
-    'let regex = #/https?://example/#; let regexEscapedLoader = ModelHub.loadModels'; do
+    'let regex = #/https?://example/#; let regexEscapedLoader = ModelHub.loadModels' \
+    'let commentDelimiterInString = "/*"; let stringEscapedLoader = ModelHub.loadModels'; do
     printf '\n%s\n' "$path_loader" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
     if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
         echo "model-security source guard accepted path loader: $path_loader" >&2

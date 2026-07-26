@@ -16,39 +16,22 @@ from pathlib import Path
 import re
 import sys
 
-def without_block_comments(text: str) -> str:
-    # Preserve strings, regex literals, line comments, and interpolation so the
-    # guard fails closed if a forbidden API is mentioned there. Remove only
-    # nested block comments, which Swift permits between lexical tokens.
-    output = []
-    index = 0
-    depth = 0
-    while index < len(text):
-        if text.startswith("/*", index):
-            depth += 1
-            index += 2
-            continue
-        if depth and text.startswith("*/", index):
-            depth -= 1
-            index += 2
-            continue
-        if depth == 0:
-            output.append(text[index])
-        index += 1
-    return "".join(output)
-
+# Fail closed across code, comments, strings, regex literals, and interpolation.
+# SEP permits whitespace/punctuation and block comments between Swift tokens,
+# but not another identifier or statement body.
+sep = r"(?:(?:/\*.*\*/)|[^A-Za-z0-9_])*?"
+forbidden_patterns = (
+    (rf"AsrModels{sep}\.{sep}load{sep}\({sep}from{sep}:", "AsrModels.load(from:)"),
+    (rf"ModelHub{sep}\.{sep}loadModels", "ModelHub.loadModels"),
+    (rf"MLModel{sep}\({sep}contentsOf{sep}:", "MLModel(contentsOf:)"),
+    (rf"MLModelAsset{sep}\({sep}url{sep}:", "MLModelAsset(url:)"),
+)
 source = Path(sys.argv[1])
 for path in source.rglob("*.swift"):
-    code = without_block_comments(path.read_text(encoding="utf-8"))
-    normalized = re.sub(r"\s+", "", code)
-    for forbidden in (
-        "AsrModels.load(from:",
-        "ModelHub.loadModels",
-        "MLModel(contentsOf:",
-        "MLModelAsset(url:",
-    ):
-        if forbidden in normalized:
-            raise SystemExit(f"{path}: production source contains forbidden path-based model loading: {forbidden}")
+    text = path.read_text(encoding="utf-8")
+    for pattern, label in forbidden_patterns:
+        if re.search(pattern, text, re.DOTALL):
+            raise SystemExit(f"{path}: production source contains forbidden path-based model loading: {label}")
 PY
 
 if grep -REin --include='*.swift' \
