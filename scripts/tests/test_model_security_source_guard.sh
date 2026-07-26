@@ -14,8 +14,12 @@ for path_loader in \
     'AsrModels.load(from: legacyURL)' \
     'MLModel (contentsOf: legacyURL)' \
     $'MLModelAsset\n    (url: legacyURL)' \
-    'ModelHub . loadModels (legacyURL)'; do
-    printf '\n// %s\n' "$path_loader" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+    'MLModel /* separator */ (contentsOf: legacyURL)' \
+    'MLModelAsset/* separator */(url: legacyURL)' \
+    'AsrModels/**/.load/* separator */(from: legacyURL)' \
+    'ModelHub . loadModels (legacyURL)' \
+    'let escapedLoader = ModelHub.loadModels'; do
+    printf '\n%s\n' "$path_loader" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
     if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
         echo "model-security source guard accepted path loader: $path_loader" >&2
         exit 1

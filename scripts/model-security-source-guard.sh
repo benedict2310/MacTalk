@@ -16,12 +16,69 @@ from pathlib import Path
 import re
 import sys
 
+def code_without_comments_or_strings(text: str) -> str:
+    output = []
+    index = 0
+    block_depth = 0
+    line_comment = False
+    while index < len(text):
+        if line_comment:
+            if text[index] == "\n":
+                line_comment = False
+                output.append("\n")
+            index += 1
+            continue
+        if block_depth:
+            if text.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif text.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if text.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if text.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+
+        raw_hashes = 0
+        quote_index = index
+        if text[index] == "#":
+            while quote_index < len(text) and text[quote_index] == "#":
+                raw_hashes += 1
+                quote_index += 1
+        if quote_index < len(text) and text[quote_index] == '"':
+            quote_count = 3 if text.startswith('"""', quote_index) else 1
+            delimiter = ('"' * quote_count) + ('#' * raw_hashes)
+            index = quote_index + quote_count
+            while index < len(text):
+                if raw_hashes == 0 and text[index] == "\\":
+                    index += 2
+                    continue
+                if text.startswith(delimiter, index):
+                    index += len(delimiter)
+                    break
+                index += 1
+            output.append('""')
+            continue
+
+        output.append(text[index])
+        index += 1
+    return "".join(output)
+
 source = Path(sys.argv[1])
 for path in source.rglob("*.swift"):
-    normalized = re.sub(r"\s+", "", path.read_text(encoding="utf-8"))
+    code = code_without_comments_or_strings(path.read_text(encoding="utf-8"))
+    normalized = re.sub(r"\s+", "", code)
     for forbidden in (
         "AsrModels.load(from:",
-        "ModelHub.loadModels(",
+        "ModelHub.loadModels",
         "MLModel(contentsOf:",
         "MLModelAsset(url:",
     ):
