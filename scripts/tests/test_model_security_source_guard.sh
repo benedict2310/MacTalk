@@ -10,12 +10,18 @@ trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/MacTalk/MacTalk/Utilities"
 cp -R "$ROOT/MacTalk/MacTalk/Whisper" "$fixture/MacTalk/MacTalk/Whisper"
 
-printf '\n// AsrModels.load(from: legacyURL)\n' >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
-if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
-    echo 'model-security source guard accepted path-based Parakeet loading' >&2
-    exit 1
-fi
-cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+for path_loader in \
+    'AsrModels.load(from: legacyURL)' \
+    'MLModel (contentsOf: legacyURL)' \
+    $'MLModelAsset\n    (url: legacyURL)' \
+    'ModelHub . loadModels (legacyURL)'; do
+    printf '\n// %s\n' "$path_loader" >> "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+    if MACTALK_SOURCE_ROOT="$fixture" "$GUARD" >/dev/null 2>&1; then
+        echo "model-security source guard accepted path loader: $path_loader" >&2
+        exit 1
+    fi
+    cp "$ROOT/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift" "$fixture/MacTalk/MacTalk/Whisper/ParakeetBootstrap.swift"
+done
 
 for stale_claim in \
     'The source loader is inactive and reserved for a future loader.' \

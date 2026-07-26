@@ -11,11 +11,23 @@ for path in "$BOOTSTRAP" "$WHISPER_DOWNLOADER" "$PARAKEET_DOWNLOADER"; do
     [[ -f "$path" ]] || { echo "model-security source guard missing $path" >&2; exit 1; }
 done
 
-if grep -RFn --include='*.swift' -e 'AsrModels.load(from:' -e 'ModelHub.loadModels' \
-    -e 'MLModel(contentsOf:' -e 'MLModelAsset(url:' "$SOURCE"; then
-    echo 'production source contains forbidden path-based model loading' >&2
-    exit 1
-fi
+python3 - "$SOURCE" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source = Path(sys.argv[1])
+for path in source.rglob("*.swift"):
+    normalized = re.sub(r"\s+", "", path.read_text(encoding="utf-8"))
+    for forbidden in (
+        "AsrModels.load(from:",
+        "ModelHub.loadModels(",
+        "MLModel(contentsOf:",
+        "MLModelAsset(url:",
+    ):
+        if forbidden in normalized:
+            raise SystemExit(f"{path}: production source contains forbidden path-based model loading: {forbidden}")
+PY
 
 if grep -REin --include='*.swift' \
     '(inactive|future|dormant|pending activation|deferred|reserved for later|disabled).*(source|loader|Parakeet)|(source|loader|Parakeet).*(inactive|future|dormant|pending activation|deferred|reserved for later|disabled)|not referenced by active composition' \
