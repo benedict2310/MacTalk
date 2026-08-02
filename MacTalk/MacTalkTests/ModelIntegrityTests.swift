@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import MacTalk
 
@@ -31,6 +32,18 @@ final class ModelIntegrityTests: XCTestCase {
             try SHA256Streamer.hashFile(at: source),
             "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
         )
+    }
+
+    func test_openValidatedReturnsDescriptorPositionedAtBeginning() throws {
+        let payload = Data("ggml fixture".utf8)
+        let source = try write(payload, named: "model.bin")
+        let spec = makeSpec(sha256: try SHA256Streamer.hashFile(at: source), size: Int64(payload.count))
+        let descriptor = try ModelIntegrityVerifier.openValidated(source: source, spec: spec)
+        defer { _ = close(descriptor) }
+        var firstByte: UInt8 = 0
+
+        XCTAssertEqual(Darwin.read(descriptor, &firstByte, 1), 1)
+        XCTAssertEqual(firstByte, payload.first)
     }
 
     func test_validChecksumAndExpectedSizeAreAccepted() throws {

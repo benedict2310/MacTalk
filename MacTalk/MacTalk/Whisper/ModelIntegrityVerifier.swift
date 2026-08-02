@@ -24,6 +24,9 @@ enum ModelIntegrityVerifier {
             guard try hashFileDescriptor(fd) == spec.sha256 else {
                 throw ModelDownloader.ErrorType.badChecksum
             }
+            guard lseek(fd, 0, SEEK_SET) == 0 else {
+                throw ModelDownloader.ErrorType.badChecksum
+            }
             return fd
         } catch {
             close(fd)
