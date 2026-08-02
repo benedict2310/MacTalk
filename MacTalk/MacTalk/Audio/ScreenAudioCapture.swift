@@ -27,6 +27,11 @@ extension AudioHostTimestamp {
     }
 }
 
+struct ScreenAudioCaptureSession<Stream: AnyObject, Output: AnyObject> {
+    let stream: Stream
+    let output: Output
+}
+
 /// App/System audio capture via ScreenCaptureKit.
 ///
 /// Every SCStream gets an immutable output adapter. This avoids callback
@@ -34,8 +39,10 @@ extension AudioHostTimestamp {
 /// originating session token and are rejected by the controller gate when
 /// they arrive after stop/restart.
 final class ScreenAudioCapture: NSObject, @unchecked Sendable {
+    private typealias ActiveSession = ScreenAudioCaptureSession<SCStream, OutputAdapter>
+
     private let streamLock = NSLock()
-    private var stream: SCStream?
+    private var activeSession: ActiveSession?
     /// ScreenCaptureKit callbacks for one source must stay ordered because its
     /// resampler is stateful. The adapter still carries its immutable session
     /// token, so queued callbacks remain safe across replacement.
@@ -144,12 +151,13 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
             onStreamError: onStreamError
         )
         let stream = SCStream(filter: filter, configuration: config, delegate: adapter)
-        let previousStream = streamLock.withLock {
-            let previousStream = self.stream
-            self.stream = stream
-            return previousStream
+        let session = ActiveSession(stream: stream, output: adapter)
+        let previousSession = streamLock.withLock {
+            let previousSession = self.activeSession
+            self.activeSession = session
+            return previousSession
         }
-        stopCapture(previousStream)
+        stopCapture(previousSession?.stream)
 
         do {
             try stream.addStreamOutput(
@@ -158,7 +166,7 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
                 sampleHandlerQueue: sampleHandlerQueue
             )
 
-            let stillCurrent = streamLock.withLock { self.stream === stream }
+            let stillCurrent = streamLock.withLock { self.activeSession?.stream === stream }
             guard stillCurrent else {
                 stopCapture(stream)
                 return
@@ -167,8 +175,8 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
             try await stream.startCapture()
         } catch {
             let shouldStop = streamLock.withLock { () -> Bool in
-                guard self.stream === stream else { return false }
-                self.stream = nil
+                guard self.activeSession?.stream === stream else { return false }
+                self.activeSession = nil
                 return true
             }
             if shouldStop { stopCapture(stream) }
@@ -176,18 +184,18 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
         }
 
         // A stop or replacement may have happened while startCapture awaited.
-        if !streamLock.withLock({ self.stream === stream }) {
+        if !streamLock.withLock({ self.activeSession?.stream === stream }) {
             stopCapture(stream)
         }
     }
 
     func stop() {
-        let stream = streamLock.withLock {
-            let stream = self.stream
-            self.stream = nil
-            return stream
+        let session = streamLock.withLock {
+            let session = self.activeSession
+            self.activeSession = nil
+            return session
         }
-        stopCapture(stream)
+        stopCapture(session?.stream)
     }
 
     private func stopCapture(_ stream: SCStream?) {

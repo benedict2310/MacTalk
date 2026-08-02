@@ -98,6 +98,20 @@ final class ConcurrencyStressTests: XCTestCase {
         XCTAssertEqual(AudioCapture.defaultMaxFramesPerBuffer, 8_192)
     }
 
+    func test_screenAudioCaptureSessionRetainsOutputUntilSessionReleased() {
+        var output: LifetimeProbe? = LifetimeProbe()
+        weak var weakOutput = output
+        var session: ScreenAudioCaptureSession<NSObject, LifetimeProbe>? =
+            ScreenAudioCaptureSession(stream: NSObject(), output: output!)
+        output = nil
+
+        XCTAssertNotNil(session?.output)
+        XCTAssertNotNil(weakOutput)
+
+        session = nil
+        XCTAssertNil(weakOutput)
+    }
+
     func test_audioCaptureCoalescesScheduledDrainsAndDropsNewestWhenDeliveryIsBlocked() {
         let scheduler = ManualDrainScheduler()
         let delivered = LockedValue<[Float]>([])
@@ -233,6 +247,8 @@ final class ConcurrencyStressTests: XCTestCase {
         XCTAssertEqual(appCount, 50)
     }
 }
+
+private final class LifetimeProbe {}
 
 private final class SendableAudioBuffer: @unchecked Sendable {
     let value: AVAudioPCMBuffer
