@@ -94,6 +94,10 @@ final class ConcurrencyStressTests: XCTestCase {
         XCTAssertEqual(consumedCount, acceptedCount)
     }
 
+    func test_defaultAudioCaptureUsesAppleSafeTapBufferCapacity() {
+        XCTAssertEqual(AudioCapture.defaultMaxFramesPerBuffer, 8_192)
+    }
+
     func test_audioCaptureCoalescesScheduledDrainsAndDropsNewestWhenDeliveryIsBlocked() {
         let scheduler = ManualDrainScheduler()
         let delivered = LockedValue<[Float]>([])

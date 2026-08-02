@@ -128,6 +128,7 @@ final class AudioCapture: NSObject, @unchecked Sendable {
     private static let defaultDeliveryQueue = DispatchQueue(
         label: "com.mactalk.audio-capture.delivery", qos: .userInitiated
     )
+    static let defaultMaxFramesPerBuffer = 8_192
     private let slotCount: Int
     private let maxFramesPerBuffer: Int
     private var deliveryCoordinator: AudioCaptureDeliveryCoordinator?
@@ -135,7 +136,7 @@ final class AudioCapture: NSObject, @unchecked Sendable {
 
     init(
         slotCount: Int = 8,
-        maxFramesPerBuffer: Int = 2048,
+        maxFramesPerBuffer: Int = AudioCapture.defaultMaxFramesPerBuffer,
         schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { work in
             AudioCapture.defaultDeliveryQueue.async(execute: work)
         }
