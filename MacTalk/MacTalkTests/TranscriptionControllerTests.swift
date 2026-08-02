@@ -90,6 +90,70 @@ final class TranscriptionControllerTests: XCTestCase {
         }, ["prepare", "reset", "process", "finalize"])
     }
 
+    func test_finalTranscriptPreservesEarlierPartialsWithoutDuplicatingOverlap() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            partials: [
+                ASRPartial(text: "Application audio validation.", words: []),
+                ASRPartial(text: "Microphone channel confirmed.", words: [])
+            ],
+            finals: [ASRFinalSegment(text: "Microphone channel confirmed. Thank you.", words: [])]
+        ))
+        let processStarted = expectation(description: "both incremental requests started")
+        processStarted.expectedFulfillmentCount = 2
+        engine.onEvent = { event in
+            if case .process = event { processStarted.fulfill() }
+        }
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let finalExpectation = expectation(description: "reconciled final callback")
+        let finalText = DeterministicValueBox("")
+        controller.onFinal = { text in
+            finalText.set(text)
+            finalExpectation.fulfill()
+        }
+
+        try await controller.start(mode: .micOnly)
+        for frameIndex in 0..<12 {
+            capture.emitMicrophone(AudioCaptureFrame(
+                samples: [Float](repeating: 0.25, count: 8_000),
+                sampleRate: 16_000,
+                firstSampleHostTime: DeterministicAudioFixtures.hostTime(
+                    nanoseconds: 1_000_000_000 + UInt64(frameIndex) * 500_000_000
+                )
+            ))
+        }
+        await fulfillment(of: [processStarted], timeout: 1)
+
+        await stopAndAdvance(controller)
+        await fulfillment(of: [finalExpectation], timeout: 2)
+
+        XCTAssertEqual(engine.processCalls.map { $0.samples.count }, [24_000, 48_000])
+        XCTAssertEqual(
+            finalText.get(),
+            "Application audio validation. Microphone channel confirmed. Thank you."
+        )
+    }
+
+    func test_finalTranscriptPreservesBoundaryPunctuationBeforeNewTail() {
+        XCTAssertEqual(
+            TranscriptFinalReconciler.reconcile(
+                incrementalSegments: ["I agree"],
+                finalText: "agree, however this changes."
+            ),
+            "I agree, however this changes."
+        )
+    }
+
+    func test_finalTranscriptPreservesBoundaryPunctuationWithoutNewTailWords() {
+        XCTAssertEqual(
+            TranscriptFinalReconciler.reconcile(
+                incrementalSegments: ["I agree"],
+                finalText: "agree,"
+            ),
+            "I agree,"
+        )
+    }
+
     func test_microphoneCaptureStartFailureCleansUpBeforeSurfacing() async throws {
         let capture = DeterministicCaptureSession()
         capture.microphoneStartError = DeterministicCaptureSession.Error.microphoneStart

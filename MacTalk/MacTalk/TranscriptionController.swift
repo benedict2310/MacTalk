@@ -128,6 +128,62 @@ enum TranscriptCleaner {
     }
 }
 
+enum TranscriptFinalReconciler {
+    private struct Word {
+        let canonical: String
+        let range: Range<String.Index>
+    }
+
+    static func reconcile(incrementalSegments: [String], finalText: String) -> String {
+        let incrementalText = incrementalSegments.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !incrementalText.isEmpty else { return finalText }
+
+        let incrementalWords = words(in: incrementalText)
+        let finalWords = words(in: finalText)
+        guard !incrementalWords.isEmpty, !finalWords.isEmpty else { return finalText }
+
+        let incrementalCanonical = incrementalWords.map(\.canonical)
+        let finalCanonical = finalWords.map(\.canonical)
+        if finalCanonical.count >= incrementalCanonical.count,
+           Array(finalCanonical.prefix(incrementalCanonical.count)) == incrementalCanonical {
+            return finalText
+        }
+
+        let maximumOverlap = min(incrementalCanonical.count, finalCanonical.count)
+        let overlap = stride(from: maximumOverlap, through: 1, by: -1).first { count in
+            Array(incrementalCanonical.suffix(count)) == Array(finalCanonical.prefix(count))
+        }
+        guard let overlap else { return finalText }
+        guard let incrementalLastWord = incrementalWords.last else { return finalText }
+        let incrementalPrefix = incrementalText[..<incrementalLastWord.range.upperBound]
+        let finalTail = finalText[finalWords[overlap - 1].range.upperBound...]
+        return String(incrementalPrefix) + String(finalTail)
+    }
+
+    private static func words(in text: String) -> [Word] {
+        var result: [Word] = []
+        var wordStart: String.Index?
+
+        for index in text.indices {
+            let character = text[index]
+            if character.isLetter || character.isNumber {
+                if wordStart == nil { wordStart = index }
+            } else if let start = wordStart {
+                let range = start..<index
+                result.append(Word(canonical: text[range].lowercased(), range: range))
+                wordStart = nil
+            }
+        }
+
+        if let start = wordStart {
+            let range = start..<text.endIndex
+            result.append(Word(canonical: text[range].lowercased(), range: range))
+        }
+        return result
+    }
+}
+
 /// Capture boundary used by the transcription controller.
 ///
 /// Keeping capture lifecycle and callbacks behind this dependency lets callers
@@ -877,7 +933,10 @@ final class TranscriptionController: @unchecked Sendable {
         if let finalText {
             audioState.withLock { state in
                 guard state.sessionID == sessionID else { return }
-                state.fullTranscript = [finalText]
+                state.fullTranscript = [TranscriptFinalReconciler.reconcile(
+                    incrementalSegments: state.fullTranscript,
+                    finalText: finalText
+                )]
             }
         }
         await emitFinalTranscript(sessionID: sessionID)
