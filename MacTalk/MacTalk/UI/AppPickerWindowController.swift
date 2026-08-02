@@ -76,14 +76,10 @@ final class AppPickerWindowController: NSWindowController {
                 rootView: PickerContentView(
                     state: state,
                     onSelect: { [weak self] source in
-                        self?.selectionInProgress = true
-                        self?.onSelection?(source)
-                        self?.close()
+                        self?.completeSelection(source)
                     },
                     onCancel: { [weak self] in
-                        self?.selectionInProgress = true
-                        self?.onCancel?()
-                        self?.close()
+                        self?.completeCancellation()
                     }
                 )
             )
@@ -96,14 +92,10 @@ final class AppPickerWindowController: NSWindowController {
                 rootView: LegacyPickerContentView(
                     state: state,
                     onSelect: { [weak self] source in
-                        self?.selectionInProgress = true
-                        self?.onSelection?(source)
-                        self?.close()
+                        self?.completeSelection(source)
                     },
                     onCancel: { [weak self] in
-                        self?.selectionInProgress = true
-                        self?.onCancel?()
-                        self?.close()
+                        self?.completeCancellation()
                     }
                 )
             )
@@ -114,6 +106,18 @@ final class AppPickerWindowController: NSWindowController {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func completeSelection(_ source: AudioSource) {
+        selectionInProgress = true
+        close()
+        onSelection?(source)
+    }
+
+    func completeCancellation() {
+        selectionInProgress = true
+        close()
+        onCancel?()
+    }
 }
 
 extension AppPickerWindowController: NSWindowDelegate {

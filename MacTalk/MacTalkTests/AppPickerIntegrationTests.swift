@@ -48,6 +48,36 @@ final class AppPickerIntegrationTests: XCTestCase {
         XCTAssertEqual(controller.window?.isVisible, false)
     }
 
+    func test_selectionClosesWindowBeforeCallbackReleasesController() throws {
+        var controller: AppPickerWindowController? = AppPickerWindowController(sources: [])
+        let window = try XCTUnwrap(controller?.window)
+        let source = AppPickerWindowController.AudioSource(
+            app: nil,
+            display: nil,
+            name: "Test Source",
+            icon: nil
+        )
+        controller?.onSelection = { _ in controller = nil }
+        controller?.showWindow(nil)
+
+        controller?.completeSelection(source)
+
+        XCTAssertFalse(window.isVisible)
+        XCTAssertNil(controller)
+    }
+
+    func test_cancellationClosesWindowBeforeCallbackReleasesController() throws {
+        var controller: AppPickerWindowController? = AppPickerWindowController(sources: [])
+        let window = try XCTUnwrap(controller?.window)
+        controller?.onCancel = { controller = nil }
+        controller?.showWindow(nil)
+
+        controller?.completeCancellation()
+
+        XCTAssertFalse(window.isVisible)
+        XCTAssertNil(controller)
+    }
+
     func test_controllerDeallocatesWhenReleased() {
         weak var weakController: AppPickerWindowController?
 
