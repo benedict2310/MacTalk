@@ -107,6 +107,12 @@ if re.search(unsupported_readme, readme, re.I):
     fail("README contains an unsupported offline or Parakeet performance/streaming claim")
 if re.search(r"100%\s+(local|local processing)|macOS 14\.0|Xcode 15", readme, re.I):
     fail("README contains a stale platform/privacy claim")
+setup = read("docs/development/SETUP.md")
+setup_version = exact(r'`build\.sh` sources `scripts/release-version\.env` \(`([^`]+)`, build `([^`]+)`', setup, "SETUP release version")
+setup_build_match = re.search(r'`build\.sh` sources `scripts/release-version\.env` \(`[^`]+`, build `([^`]+)`', setup)
+if setup_version != version or not setup_build_match or setup_build_match.group(1) != build:
+    fail("SETUP release version/build does not match source")
+
 for rel in ("docs/development/ARCHITECTURE.md", "docs/development/SETUP.md", "docs/testing/TESTING.md"):
     text = read(rel)
     if re.search(r"macOS 14\.0|Xcode 15\.0|RingBufferTests|WhisperEngineTests|85\.2%|100% coverage", text, re.I):

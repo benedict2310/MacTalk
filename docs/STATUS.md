@@ -13,7 +13,7 @@ downloaded or used while collecting this baseline.
 ## Machine-readable baseline
 
 <!-- STATUS-DATA-BEGIN
-{"date":"2026-07-18","release_version":"1.1.3","build_number":"4","deployment_target":"26.0","swift_version":"6.0","xcodegen_version":"2.44.1","fluidaudio_version":"0.15.5","unit_tests":{"command":"scripts/test-lanes.sh unit","result":"passed","executed":203,"failures":0,"skips":0},"coverage":{"command":"scripts/coverage.sh","result":"passed","artifact":"build/coverage/MacTalk.xcresult","report":"build/coverage/coverage-by-file.txt","mactalk_app_line_coverage":"39.19% (4320/11022)","test_bundle_line_coverage":"88.20% (5896/6685)"},"build":{"command":"./build.sh build","result":"passed","configuration":"Release","signing":"Developer ID Application: Benedict Evert (9SXL4GJ4TZ)"},"tsan":{"command":"scripts/test-lanes.sh tsan","result":"blocked","blocker":"standalone clang ThreadSanitizer runtime segfaulted (TSAN/UNAVAILABLE) before XCTest"},"hardware_tcc":{"result":"not_run","reason":"requires supported microphone/app-audio hardware and manual microphone, Screen Recording, and Accessibility/TCC approval"},"real_model":{"result":"not_run","reason":"one pre-provisioned local model is required; no model download or provider network is permitted in deterministic lanes"},"release":{"result":"blocked","blockers":["Apple Developer membership","Developer ID Application certificate and private key","notarization credentials","GitHub release environment/reviewers/secrets/contents:write"]}}
+{"date":"2026-07-18","release_version":"1.1.4","build_number":"5","deployment_target":"26.0","swift_version":"6.0","xcodegen_version":"2.44.1","fluidaudio_version":"0.15.5","unit_tests":{"command":"scripts/test-lanes.sh unit","result":"passed","executed":203,"failures":0,"skips":0},"coverage":{"command":"scripts/coverage.sh","result":"passed","artifact":"build/coverage/MacTalk.xcresult","report":"build/coverage/coverage-by-file.txt","mactalk_app_line_coverage":"39.19% (4320/11022)","test_bundle_line_coverage":"88.20% (5896/6685)"},"build":{"command":"./build.sh build","result":"passed","configuration":"Release","signing":"Developer ID Application: Benedict Evert (9SXL4GJ4TZ)"},"tsan":{"command":"scripts/test-lanes.sh tsan","result":"blocked","blocker":"standalone clang ThreadSanitizer runtime segfaulted (TSAN/UNAVAILABLE) before XCTest"},"hardware_tcc":{"result":"not_run","reason":"requires supported microphone/app-audio hardware and manual microphone, Screen Recording, and Accessibility/TCC approval"},"real_model":{"result":"not_run","reason":"one pre-provisioned local model is required; no model download or provider network is permitted in deterministic lanes"},"release":{"result":"blocked","blockers":["Apple Developer membership","Developer ID Application certificate and private key","notarization credentials","GitHub release environment/reviewers/secrets/contents:write"]}}
 STATUS-DATA-END -->
 
 ## Reproducible commands and observed results
@@ -80,7 +80,7 @@ the project metadata supplies the year.
 concurrency `complete`, and FluidAudio exact version `0.15.5`. The committed
 SwiftPM resolution pins revision
 `19600a485baa4998812e4654b70d2bab8f2c9949`. Release metadata in
-`scripts/release-version.env` is marketing version `1.1.3`, build `4`.
+`scripts/release-version.env` is marketing version `1.1.4`, build `5`.
 
 The app has Whisper and Parakeet providers. Captured audio is processed locally
 by the selected engine after models are present, but model download code has

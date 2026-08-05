@@ -34,7 +34,7 @@ for arg in "$@"; do
 done
 mkdir -p "$archive/Products/Applications/MacTalk.app/Contents/Frameworks"
 cat > "$archive/Products/Applications/MacTalk.app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.1.3</string><key>CFBundleVersion</key><string>4</string></dict></plist>
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.1.4</string><key>CFBundleVersion</key><string>5</string></dict></plist>
 PLIST
 touch "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
 chmod 0751 "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
@@ -109,11 +109,11 @@ rm -rf "$fixture/work/Vendor/whisper.cpp/build"
 mkdir -p "$fixture/work/Vendor/whisper.cpp"
 ( cd "$fixture/work/Vendor/whisper.cpp" && git init -q && git config user.email fixture@example.test && git config user.name Fixture && touch README && printf 'build/\n' > .gitignore && git add README .gitignore && git commit -qm whisper )
 # Move the fixture to a new, exact-version release tag in detached state.
-sed -i.bak 's/MACTALK_MARKETING_VERSION=1.1.3/MACTALK_MARKETING_VERSION=1.1.4/' "$fixture/work/scripts/release-version.env"
-rm -f "$fixture/work/scripts/release-version.env.bak"
+cat > "$fixture/work/scripts/release-version.env" <<'VERSION'
+MACTALK_MARKETING_VERSION=1.1.4
+MACTALK_BUILD_NUMBER=5
+VERSION
 mkdir -p "$fixture/work/release"
-sed -i.bak 's/>1.1.3</>1.1.4</' "$fixture/bin/xcodebuild"
-rm -f "$fixture/bin/xcodebuild.bak"
 ( cd "$fixture/work" && git init -q && git config user.email fixture@example.test && git config user.name Fixture && git add . && git commit -qm fixture && git tag v1.1.4 && git checkout --detach -q v1.1.4 )
 export PATH="$fixture/bin:$PATH"
 export FAKE_LOG="$log"
@@ -122,31 +122,33 @@ export MACTALK_CODE_SIGN_IDENTITY='Developer ID Application: Fixture (TEAM123)'
 export MACTALK_DEVELOPMENT_TEAM=TEAM123
 export MACTALK_NOTARY_KEYCHAIN_PROFILE=FixtureNotary
 
-# Wrong ref/tag and dirty source fail before any external tool runs.
-if RELEASE_TAG=v1.1.3 bash scripts/release-preflight.sh >/dev/null 2>&1; then
-  echo 'preflight accepted immutable v1.1.3' >&2; exit 1
-fi
-if RELEASE_TAG=v1.1.5 bash scripts/release-preflight.sh >/dev/null 2>&1; then
-  echo 'preflight accepted a tag different from source version' >&2; exit 1
-fi
-printf 'dirty source\n' >> scripts/release-version.env
-if bash scripts/release-preflight.sh >/dev/null 2>&1; then
-  echo 'preflight accepted dirty source' >&2; exit 1
-fi
-git show HEAD:scripts/release-version.env > scripts/release-version.env
+# Wrong ref/tag, dirty source, missing inputs, and phase violations are all
+# exercised inside the fixture repository; this test must never mutate its source checkout.
+(
+  cd "$fixture/work"
+  if RELEASE_TAG=v1.1.3 bash scripts/release-preflight.sh >/dev/null 2>&1; then
+    echo 'preflight accepted immutable v1.1.3' >&2; exit 1
+  fi
+  if RELEASE_TAG=v1.1.5 bash scripts/release-preflight.sh >/dev/null 2>&1; then
+    echo 'preflight accepted a tag different from source version' >&2; exit 1
+  fi
+  printf 'dirty source\n' >> scripts/release-version.env
+  if bash scripts/release-preflight.sh >/dev/null 2>&1; then
+    echo 'preflight accepted dirty source' >&2; exit 1
+  fi
+  git show HEAD:scripts/release-version.env > scripts/release-version.env
 
-# Missing signing and notarization inputs fail before any external tool runs.
-if env -u MACTALK_CODE_SIGN_IDENTITY -u MACTALK_DEVELOPMENT_TEAM bash scripts/archive-release.sh --output-dir "$fixture/work/release/missing" >/dev/null 2>&1; then
-  echo 'archive accepted missing signing environment' >&2; exit 1
-fi
-if env -u MACTALK_NOTARY_KEYCHAIN_PROFILE bash scripts/notarize-release.sh --output-dir "$fixture/work/release/missing" >/dev/null 2>&1; then
-  echo 'notarize accepted missing credential environment' >&2; exit 1
-fi
+  if env -u MACTALK_CODE_SIGN_IDENTITY -u MACTALK_DEVELOPMENT_TEAM bash scripts/archive-release.sh --output-dir "$fixture/work/release/missing" >/dev/null 2>&1; then
+    echo 'archive accepted missing signing environment' >&2; exit 1
+  fi
+  if env -u MACTALK_NOTARY_KEYCHAIN_PROFILE bash scripts/notarize-release.sh --output-dir "$fixture/work/release/missing" >/dev/null 2>&1; then
+    echo 'notarize accepted missing credential environment' >&2; exit 1
+  fi
 
-# The phase marker prevents DMG/notary work before archive verification.
-if bash scripts/notarize-release.sh --output-dir "$fixture/work/release/out" >/dev/null 2>&1; then
-  echo 'notarize accepted an unverified archive' >&2; exit 1
-fi
+  if bash scripts/notarize-release.sh --output-dir "$fixture/work/release/out" >/dev/null 2>&1; then
+    echo 'notarize accepted an unverified archive' >&2; exit 1
+  fi
+)
 
 ( cd "$fixture/work" && xcodegen generate )
 ( cd "$fixture/work" && mkdir -p Vendor/whisper.cpp/build && touch Vendor/whisper.cpp/build/stale-native-input )
@@ -221,7 +223,7 @@ if any(line.startswith('gh ') for line in log):
     raise SystemExit('local release scripts must not invoke gh or create a release')
 manifest = Path(sys.argv[2]) / 'MacTalk-1.1.4-manifest.txt'
 text = manifest.read_text()
-for key in ('version=1.1.4', 'build=4', 'commit=', 'sha256='):
+for key in ('version=1.1.4', 'build=5', 'commit=', 'sha256='):
     if key not in text: raise SystemExit(f'manifest missing {key}')
 print('python assertions passed')
 PY

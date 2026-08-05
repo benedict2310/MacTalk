@@ -64,7 +64,7 @@ catalog entry is SHA-256 checked before installation.
 
 ## Build and launch
 
-`build.sh` sources `scripts/release-version.env` (`1.1.3`, build `4` in this
+`build.sh` sources `scripts/release-version.env` (`1.1.4`, build `5` in this
 baseline), targets arm64 Release, and requires the configured Developer ID
 identity for its normal signed path:
 
