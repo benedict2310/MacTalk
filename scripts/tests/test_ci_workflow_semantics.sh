@@ -4,11 +4,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/tests.yml"
-exec ruby - "$WORKFLOW" <<'RUBY'
+RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
+exec ruby - "$WORKFLOW" "$RELEASE_WORKFLOW" <<'RUBY'
 require 'yaml'
 require 'set'
 
 path = ARGV.fetch(0)
+release_path = ARGV.fetch(1)
 workflow = YAML.load_file(path)
 raise 'workflow must be a mapping' unless workflow.is_a?(Hash)
 jobs = workflow.fetch('jobs')
@@ -42,6 +44,37 @@ xcode_jobs.each do |job|
   raise "#{job} job does not enforce the pinned Xcode major-minor" unless toolchain_runs.include?('grep -F "Xcode ${MACTALK_XCODE_VERSION}"')
   raise "#{job} job must not mutate the selected Xcode" if toolchain_runs.include?('xcode-select') || toolchain_runs.include?('sudo ')
 end
+
+release_workflow = YAML.load_file(release_path)
+release_jobs = release_workflow.fetch('jobs')
+release_build = release_jobs.fetch('build')
+release_preflight = release_jobs.fetch('preflight')
+raise 'release build job must run on macos-26' unless release_build['runs-on'] == 'macos-26'
+raise 'release preflight must remain on ubuntu-24.04' unless release_preflight['runs-on'] == 'ubuntu-24.04'
+release_global_env = release_workflow['env'] || {}
+raise 'release workflow must not globally export the Xcode developer directory' if release_global_env.key?('DEVELOPER_DIR')
+release_preflight_env = release_preflight['env'] || {}
+raise 'release preflight must not set the Xcode developer directory' if release_preflight_env.key?('DEVELOPER_DIR')
+release_env = release_build.fetch('env')
+raise 'release build must set MACTALK_XCODE_VERSION to the exact string 26.0.1' unless release_env['MACTALK_XCODE_VERSION'].is_a?(String) && release_env['MACTALK_XCODE_VERSION'] == '26.0.1'
+raise 'release build must select the concrete Xcode 26.0.1 developer directory' unless release_env['DEVELOPER_DIR'] == expected_developer_dir
+release_steps = Array(release_build.fetch('steps'))
+release_step_names = release_steps.map { |step| step['name'] if step.is_a?(Hash) }
+toolchain_step_index = release_step_names.index('Verify pinned Xcode toolchain')
+signing_step_index = release_step_names.index('Import signing certificate')
+raise 'release build must verify Xcode before importing signing secrets' unless toolchain_step_index && signing_step_index && toolchain_step_index < signing_step_index
+toolchain_step = release_steps.fetch(toolchain_step_index)
+signing_step = release_steps.fetch(signing_step_index)
+toolchain_run = toolchain_step['run'].to_s
+signing_run = signing_step['run'].to_s
+signing_env = signing_step['env'] || {}
+raise 'release signing step must consume the certificate password secret' unless signing_env['CERTIFICATE_PASSWORD'].to_s.include?('secrets.MACTALK_CERTIFICATE_PASSWORD')
+raise 'release signing step must import the certificate' unless signing_run.include?('security import')
+raise 'release Xcode verification step does not fail closed when the pinned Xcode is absent' unless toolchain_run.include?('test -d "$DEVELOPER_DIR"')
+raise 'release Xcode verification step does not verify xcodebuild version' unless toolchain_run.include?('xcodebuild -version')
+raise 'release Xcode verification step does not enforce the exact pinned Xcode version' unless toolchain_run.include?('test "$(xcodebuild -version | sed -n \'1p\')" = "Xcode ${MACTALK_XCODE_VERSION}"')
+release_runs = release_steps.map { |step| step['run'] if step.is_a?(Hash) }.compact.join("\n")
+raise 'release build must not mutate the selected Xcode' if release_runs.include?('xcode-select') || release_runs.include?('sudo ')
 
 %w[unit coverage tsan].each do |job|
   install_runs = step_runs.call(job).join("\n")

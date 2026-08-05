@@ -52,12 +52,14 @@ jobs:
   build:
     name: Fresh archive and verify
     needs: preflight
-    runs-on: macos-15
+    runs-on: macos-26
     environment: release
     timeout-minutes: 45
     permissions:
       contents: read
     env:
+      MACTALK_XCODE_VERSION: '26.0.1'
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
       RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
       RELEASE_EXPECTED_TAG: ${{ needs.preflight.outputs.release_tag }}
       RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
@@ -78,6 +80,12 @@ jobs:
           RELEASE_TAG="$RELEASE_TAG" RELEASE_EXPECTED_TAG="${{ needs.preflight.outputs.release_tag }}" RELEASE_EXPECTED_COMMIT="${{ needs.preflight.outputs.source_commit }}" bash scripts/release-preflight.sh
           test "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_commit }}"
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "${{ needs.preflight.outputs.source_commit }}"
+      - name: Verify pinned Xcode toolchain
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          test "$(xcodebuild -version | sed -n '1p')" = "Xcode ${MACTALK_XCODE_VERSION}"
       - name: Install XcodeGen
         run: |
           XCODEGEN_INSTALL_DIR="$RUNNER_TOOL_CACHE/xcodegen/2.44.1" bash scripts/install_xcodegen.sh
