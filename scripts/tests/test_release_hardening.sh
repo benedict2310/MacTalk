@@ -15,7 +15,8 @@ fixture = Path('scripts/tests/test_release_workflow.sh').read_text()
 assert '^[0-9]+\\.[0-9]+\\.[0-9]+$' in common, 'version grammar is not exact X.Y.Z'
 for needle in ('release_preflight', 'persist-credentials: false', 'fetch-depth: 0', 'rm -rf "$WHISPER_ROOT/build"', '--timestamp', 'release_verify_metadata', 'ditto -c -k --sequesterRsrc', 'release_verify_handoff', 'release_write_state', 'RELEASE_EXPECTED_COMMIT'):
     assert needle in (common + archive + notarize + postbuild + workflow), f'missing hardening gate: {needle}'
-assert 'v1.1.3 is immutable' in common
+assert '"$tag" == v1.1.3 || "$tag" == v1.1.4' in common, 'reserved release tags are not both blocked'
+assert 'is immutable and reserved' in common, 'reserved-tag failure is not explicit'
 assert 'permissions: {}' in workflow and 'contents: write' in workflow
 assert workflow.count('environment: release') >= 4, 'privileged jobs are not bound to release environment'
 assert 'needs.preflight.outputs.source_commit' in workflow, 'preflight commit is not propagated'

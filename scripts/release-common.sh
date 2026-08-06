@@ -95,8 +95,8 @@ release_verify_remote_tag() {
 release_preflight() {
     local tag expected_commit head submodule_commit gitlink_commit
     tag="$(release_source_tag)"
-    if [[ "$tag" == v1.1.3 ]]; then
-        echo "v1.1.3 is immutable; bump release-version.env and create a new tag" >&2
+    if [[ "$tag" == v1.1.3 || "$tag" == v1.1.4 ]]; then
+        echo "$tag is immutable and reserved; bump release-version.env and create a new tag" >&2
         return 64
     fi
     if [[ -n "$(git -C "$RELEASE_ROOT" status --porcelain --untracked-files=all)" ]]; then

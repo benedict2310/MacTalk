@@ -34,7 +34,7 @@ for arg in "$@"; do
 done
 mkdir -p "$archive/Products/Applications/MacTalk.app/Contents/Frameworks"
 cat > "$archive/Products/Applications/MacTalk.app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.1.4</string><key>CFBundleVersion</key><string>5</string></dict></plist>
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.1.5</string><key>CFBundleVersion</key><string>6</string></dict></plist>
 PLIST
 touch "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
 chmod 0751 "$archive/Products/Applications/MacTalk.app/Contents/Frameworks/libwhisper.1.dylib"
@@ -110,14 +110,28 @@ mkdir -p "$fixture/work/Vendor/whisper.cpp"
 ( cd "$fixture/work/Vendor/whisper.cpp" && git init -q && git config user.email fixture@example.test && git config user.name Fixture && touch README && printf 'build/\n' > .gitignore && git add README .gitignore && git commit -qm whisper )
 # Move the fixture to a new, exact-version release tag in detached state.
 cat > "$fixture/work/scripts/release-version.env" <<'VERSION'
-MACTALK_MARKETING_VERSION=1.1.4
-MACTALK_BUILD_NUMBER=5
+MACTALK_MARKETING_VERSION=1.1.5
+MACTALK_BUILD_NUMBER=6
 VERSION
 mkdir -p "$fixture/work/release"
-( cd "$fixture/work" && git init -q && git config user.email fixture@example.test && git config user.name Fixture && git add . && git commit -qm fixture && git tag v1.1.4 && git checkout --detach -q v1.1.4 )
+( cd "$fixture/work" && git init -q && git config user.email fixture@example.test && git config user.name Fixture && git add . && git commit -qm fixture && git tag v1.1.5 && git checkout --detach -q v1.1.5 )
+(
+  cd "$fixture/work"
+  git switch -q -c reserved-v1.1.4
+  sed -i '' -e 's/MACTALK_MARKETING_VERSION=1.1.5/MACTALK_MARKETING_VERSION=1.1.4/' \
+    -e 's/MACTALK_BUILD_NUMBER=6/MACTALK_BUILD_NUMBER=5/' scripts/release-version.env
+  git add scripts/release-version.env
+  git commit -qm 'reserved v1.1.4 fixture'
+  git tag v1.1.4
+  git checkout --detach -q v1.1.4
+  if RELEASE_TAG=v1.1.4 bash scripts/release-preflight.sh >/dev/null 2>&1; then
+    echo 'preflight accepted reserved v1.1.4' >&2; exit 1
+  fi
+  git checkout --detach -q v1.1.5
+)
 export PATH="$fixture/bin:$PATH"
 export FAKE_LOG="$log"
-export RELEASE_TAG=v1.1.4
+export RELEASE_TAG=v1.1.5
 export MACTALK_CODE_SIGN_IDENTITY='Developer ID Application: Fixture (TEAM123)'
 export MACTALK_DEVELOPMENT_TEAM=TEAM123
 export MACTALK_NOTARY_KEYCHAIN_PROFILE=FixtureNotary
@@ -129,7 +143,7 @@ export MACTALK_NOTARY_KEYCHAIN_PROFILE=FixtureNotary
   if RELEASE_TAG=v1.1.3 bash scripts/release-preflight.sh >/dev/null 2>&1; then
     echo 'preflight accepted immutable v1.1.3' >&2; exit 1
   fi
-  if RELEASE_TAG=v1.1.5 bash scripts/release-preflight.sh >/dev/null 2>&1; then
+  if RELEASE_TAG=v1.1.6 bash scripts/release-preflight.sh >/dev/null 2>&1; then
     echo 'preflight accepted a tag different from source version' >&2; exit 1
   fi
   printf 'dirty source\n' >> scripts/release-version.env
@@ -221,9 +235,9 @@ if positions != sorted(positions):
     raise SystemExit(f'phase order is not monotonic: {positions}')
 if any(line.startswith('gh ') for line in log):
     raise SystemExit('local release scripts must not invoke gh or create a release')
-manifest = Path(sys.argv[2]) / 'MacTalk-1.1.4-manifest.txt'
+manifest = Path(sys.argv[2]) / 'MacTalk-1.1.5-manifest.txt'
 text = manifest.read_text()
-for key in ('version=1.1.4', 'build=5', 'commit=', 'sha256='):
+for key in ('version=1.1.5', 'build=6', 'commit=', 'sha256='):
     if key not in text: raise SystemExit(f'manifest missing {key}')
 print('python assertions passed')
 PY
