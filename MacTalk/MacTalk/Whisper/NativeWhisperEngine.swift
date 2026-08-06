@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Darwin
 @preconcurrency import AVFoundation
 
 /// Swift wrapper around whisper.cpp C API for audio transcription.
@@ -22,8 +23,6 @@ import Foundation
 final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
     private var ctx: OpaquePointer?
     private let queue = DispatchQueue(label: "com.mactalk.whisper.engine", qos: .userInitiated)
-    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
-
     let provider: ASRProvider = .whisper
 
     /// Transcription result containing text and timing information.
@@ -32,20 +31,27 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         let processingTime: TimeInterval
     }
 
-    init?(modelURL: URL) {
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            print("Model file does not exist at path: \(modelURL.path)")
+    /// The catalog specification is mandatory at the native boundary. The
+    /// verifier hashes the same O_NOFOLLOW descriptor that is passed to
+    /// whisper.cpp through /dev/fd, rather than re-opening a mutable path.
+    init?(modelSpec: ModelSpec, modelURL: URL) {
+        let fd: Int32
+        do {
+            fd = try ModelIntegrityVerifier.openValidated(source: modelURL, spec: modelSpec)
+        } catch {
+            DLOG("Whisper model failed native-boundary validation")
             return nil
         }
+        defer { close(fd) }
 
-        let cPath = (modelURL.path as NSString).utf8String
-        guard let path = cPath, let context = wt_whisper_init(path) else {
-            print("Failed to initialize Whisper context")
+        let fdPath = "/dev/fd/\(fd)"
+        guard let context = wt_whisper_init(fdPath) else {
+            DLOG("Whisper context initialization failed")
             return nil
         }
 
         self.ctx = OpaquePointer(context)
-        print("Whisper engine initialized with model: \(modelURL.lastPathComponent)")
+        DLOG("Whisper engine initialized")
     }
 
     deinit {
@@ -58,10 +64,6 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
 
     func reset() async {}
 
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
-        partialHandler = handler
-    }
-
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
         guard let samples = samples(from: buffer) else {
             return nil
@@ -70,9 +72,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             return nil
         }
 
-        let partial = ASRPartial(text: result.text, words: [])
-        partialHandler?(partial)
-        return partial
+        return ASRPartial(text: result.text, words: [])
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
@@ -93,12 +93,12 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         noContext: Bool = false
     ) -> Result? {
         guard let ctx = ctx else {
-            print("Whisper context is nil")
+            DLOG("Whisper context is unavailable")
             return nil
         }
 
         guard !samples.isEmpty else {
-            print("No samples to transcribe")
+            DLOG("Whisper received no samples")
             return nil
         }
 
@@ -120,7 +120,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             }
 
             guard let textPointer = textPtr else {
-                print("Transcription returned nil")
+                DLOG("Whisper transcription returned no result")
                 return nil
             }
 
@@ -129,7 +129,7 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             let text = String(cString: textPointer)
             let processingTime = Date().timeIntervalSince(startTime)
 
-            print("Transcribed \(samples.count) samples in \(processingTime)s: \(text.prefix(50))...")
+            DebugLogger.shared.log(.transcriptCompleted(characterCount: text.count))
 
             return Result(text: text, processingTime: processingTime)
         }

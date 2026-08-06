@@ -1,0 +1,10 @@
+{
+  "devicesAndConfigurations": [
+    {
+      "passedTests": "147",
+      "failedTests": false,
+      "skippedTests": -1
+    }
+  ],
+  "result": "Failed"
+}

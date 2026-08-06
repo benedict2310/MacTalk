@@ -1,5 +1,9 @@
 # MacTalk Development Roadmap
 
+> **Historical planning material:** This roadmap is retained for context and
+> does not define current support, APIs, or completion status. Verify current
+> facts against source and [`docs/STATUS.md`](../STATUS.md).
+
 **Version:** 1.0
 **Last Updated:** 2025-10-21
 **Status:** Planning Phase

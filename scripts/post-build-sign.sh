@@ -1,39 +1,40 @@
 #!/bin/bash
-#
-# Post-build script to re-sign all whisper.cpp dylibs and the app bundle
-# This fixes the Team ID mismatch issue on macOS 26
-#
-# Usage: Called automatically by Xcode after build
-#
+# Re-sign nested whisper.cpp dylibs and the app after Xcode has copied them.
+# This script is also useful for validating the post-build signing contract in
+# isolation; release signing failures must never be hidden.
+set -euo pipefail
 
-set -e
+APP_PATH="${APP_PATH:?APP_PATH must point to the app bundle}"
+FRAMEWORKS_PATH="$APP_PATH/Contents/Frameworks"
+SIGNING_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 
-echo "🔐 [Post-Build] Starting code signing..."
-
-# Get paths from Xcode environment variables
-APP_PATH="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app"
-FRAMEWORKS_PATH="${APP_PATH}/Contents/Frameworks"
-
-# Check if Frameworks directory exists
-if [ ! -d "$FRAMEWORKS_PATH" ]; then
-    echo "⚠️  [Post-Build] Frameworks directory not found at: $FRAMEWORKS_PATH"
+if [[ "${CODE_SIGNING_ALLOWED:-YES}" != YES ]]; then
+    echo "⏭️  [Post-Build] Code signing disabled by build settings"
     exit 0
 fi
+if [[ -z "$SIGNING_IDENTITY" || "$SIGNING_IDENTITY" == "-" ]]; then
+    echo "❌ [Post-Build] No signing identity is available" >&2
+    exit 1
+fi
+if [[ ! -d "$FRAMEWORKS_PATH" ]]; then
+    echo "❌ [Post-Build] Frameworks directory not found: $FRAMEWORKS_PATH" >&2
+    exit 1
+fi
 
-# Re-sign all dylibs
-echo "🔐 [Post-Build] Re-signing dylibs in Frameworks..."
-cd "$FRAMEWORKS_PATH"
-for lib in *.dylib; do
-    if [ -f "$lib" ]; then
-        echo "   → Signing: $lib"
-        codesign --force --sign - "$lib" 2>&1 | grep -v "replacing existing signature" || true
+found_library=false
+for lib in "$FRAMEWORKS_PATH"/*.dylib; do
+    if [[ -f "$lib" ]]; then
+        found_library=true
+        echo "🔐 [Post-Build] Signing $(basename "$lib")"
+        codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$lib"
     fi
 done
+if [[ "$found_library" != true ]]; then
+    echo "❌ [Post-Build] No nested dylibs were found to sign" >&2
+    exit 1
+fi
 
-# Re-sign the app bundle while preserving entitlements
-# so runtime/TCC-sensitive permissions survive the re-sign step.
-echo "🔐 [Post-Build] Re-signing app bundle..."
-cd - > /dev/null
-codesign --force --deep --sign - --preserve-metadata=entitlements "$APP_PATH" 2>&1 | grep -v "replacing existing signature" || true
-
-echo "✅ [Post-Build] Code signing complete!"
+echo "🔐 [Post-Build] Signing app bundle"
+codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+    --preserve-metadata=entitlements,requirements,flags "$APP_PATH"
+echo "✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY"

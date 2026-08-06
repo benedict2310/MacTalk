@@ -16,10 +16,17 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
 source "$PROJECT_DIR/scripts/build_helpers.sh"
+# Keep local builds on the same authoritative release metadata as archives.
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/scripts/release-version.env"
 
 CONFIGURATION="Release"
 SCHEME="MacTalk"
 ARCH="arm64"
+# Release builds require a signing identity with a private key. Override these
+# for another team/identity without editing the script.
+CODE_SIGN_IDENTITY="${MACTALK_CODE_SIGN_IDENTITY:-Developer ID Application: Benedict Evert (9SXL4GJ4TZ)}"
+DEVELOPMENT_TEAM="${MACTALK_DEVELOPMENT_TEAM:-9SXL4GJ4TZ}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -49,14 +56,25 @@ case "${1:-build}" in
 
   build|run)
     echo -e "${BLUE}📦 Building MacTalk (${CONFIGURATION})...${NC}"
+    BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/mactalk-build.XXXXXX")"
+    set +e
     xcodebuild -project MacTalk.xcodeproj \
       -scheme "$SCHEME" \
       -configuration "$CONFIGURATION" \
       -arch "$ARCH" \
       ONLY_ACTIVE_ARCH=YES \
-      build | grep -E "(BUILD|Re-sign|Signed:|error:)" || true
-
+      CODE_SIGN_STYLE=Manual \
+      CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+      DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+      MARKETING_VERSION="$MACTALK_MARKETING_VERSION" \
+      CURRENT_PROJECT_VERSION="$MACTALK_BUILD_NUMBER" \
+      build 2>&1 | tee "$BUILD_LOG"
     BUILD_STATUS=${PIPESTATUS[0]}
+    set -e
+
+    if [ $BUILD_STATUS -ne 0 ]; then
+      echo -e "${YELLOW}❌ Build failed; log: ${BUILD_LOG}${NC}" >&2
+    fi
 
     if [ $BUILD_STATUS -eq 0 ]; then
       echo -e "${GREEN}✅ Build succeeded${NC}"

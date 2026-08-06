@@ -9,124 +9,200 @@
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 
+extension AudioHostTimestamp {
+    /// ScreenCaptureKit audio PTS is already in the host-clock timeline. Keep
+    /// it integer and reject invalid/indefinite timestamps rather than using
+    /// callback arrival time.
+    init?(presentationTimeStamp: CMTime) {
+        guard presentationTimeStamp.isNumeric else { return nil }
+        let converted = CMTimeConvertScale(
+            presentationTimeStamp,
+            timescale: 1_000_000_000,
+            method: .roundHalfAwayFromZero
+        )
+        guard converted.isNumeric, let nanos = Int64(exactly: converted.value) else {
+            return nil
+        }
+        self.init(nanoseconds: nanos)
+    }
+}
+
+struct ScreenAudioCaptureSession<Stream: AnyObject, Output: AnyObject> {
+    let stream: Stream
+    let output: Output
+}
+
 /// App/System audio capture via ScreenCaptureKit.
 ///
-/// ## Thread Safety
-/// This class is marked `@unchecked Sendable` because:
-/// - `SCStream` is documented as thread-safe by Apple
-/// - The callback closures are only set during setup, before concurrent usage
-/// - Stream output callbacks are delivered on a user-specified queue
-///
-/// ## Audio Callback
-/// The `onAudioSampleBuffer` callback is invoked from a background queue
-/// (.global(qos: .userInitiated)), not a real-time thread. It is safe to
-/// perform async operations in the handler.
-final class ScreenAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
-    private var stream: SCStream?
+/// Every SCStream gets an immutable output adapter. This avoids callback
+/// mutation and locking on delivery queues; queued callbacks carry their
+/// originating session token and are rejected by the controller gate when
+/// they arrive after stop/restart.
+final class ScreenAudioCapture: NSObject, @unchecked Sendable {
+    private typealias ActiveSession = ScreenAudioCaptureSession<SCStream, OutputAdapter>
 
-    /// Callback invoked with each audio sample buffer from the captured source.
-    ///
-    /// - Note: Called from a background queue, not a real-time thread.
-    /// - Note: `CMSampleBuffer` is not Sendable, but is safe to use within
-    ///   the callback scope as ownership is transferred.
-    var onAudioSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
+    private let streamLock = NSLock()
+    private var activeSession: ActiveSession?
+    /// ScreenCaptureKit callbacks for one source must stay ordered because its
+    /// resampler is stateful. The adapter still carries its immutable session
+    /// token, so queued callbacks remain safe across replacement.
+    private let sampleHandlerQueue = DispatchQueue(
+        label: "com.mactalk.screen-audio.samples", qos: .userInitiated
+    )
 
-    /// Callback invoked when the stream encounters an error.
-    var onStreamError: (@Sendable (Error) -> Void)?
+    private final class OutputAdapter: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
+        let sessionID: UUID
+        let onAudioSampleBuffer: @Sendable (UUID, CMSampleBuffer) -> Void
+        let onStreamError: @Sendable (UUID, Error) -> Void
 
-    func selectFirstWindow(named name: String) async throws {
-        let content = try await SCShareableContent.current
-
-        guard let app = content.applications.first(where: { $0.applicationName == name }) else {
-            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Could not find app named '\(name)'"
-            ])
+        init(
+            sessionID: UUID,
+            onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+            onStreamError: @escaping @Sendable (UUID, Error) -> Void
+        ) {
+            self.sessionID = sessionID
+            self.onAudioSampleBuffer = onAudioSampleBuffer
+            self.onStreamError = onStreamError
         }
 
-        // In macOS 15+, windows are accessed directly from content, filtered by app
-        guard let window = content.windows.first(where: { $0.owningApplication == app }) else {
-            throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "App '\(name)' has no windows"
-            ])
+        func stream(
+            _ stream: SCStream,
+            didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+            of outputType: SCStreamOutputType
+        ) {
+            guard outputType == .audio else { return }
+            onAudioSampleBuffer(sessionID, sampleBuffer)
         }
 
-        try await startCapture(filter: SCContentFilter(desktopIndependentWindow: window))
+        func stream(_ stream: SCStream, didStopWithError error: Error) {
+            onStreamError(sessionID, error)
+        }
     }
 
-    func selectApp(app: SCRunningApplication) async throws {
+    func selectApp(
+        app: SCRunningApplication,
+        sessionID: UUID,
+        onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        onStreamError: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
         let content = try await SCShareableContent.current
-
         guard let window = content.windows.first(where: { $0.owningApplication == app }) else {
             throw NSError(domain: "ScreenAudioCapture", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "App '\(app.applicationName)' has no windows"
             ])
         }
-
-        try await startCapture(filter: SCContentFilter(desktopIndependentWindow: window))
+        try await startCapture(
+            filter: SCContentFilter(desktopIndependentWindow: window),
+            sessionID: sessionID,
+            onAudioSampleBuffer: onAudioSampleBuffer,
+            onStreamError: onStreamError
+        )
     }
 
-    func selectDisplay(display: SCDisplay) async throws {
-        try await startCapture(filter: SCContentFilter(display: display, excludingWindows: []))
+    func selectDisplay(
+        display: SCDisplay,
+        sessionID: UUID,
+        onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        onStreamError: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
+        try await startCapture(
+            filter: SCContentFilter(display: display, excludingWindows: []),
+            sessionID: sessionID,
+            onAudioSampleBuffer: onAudioSampleBuffer,
+            onStreamError: onStreamError
+        )
     }
 
-    func selectDisplay() async throws {
+    func selectDisplay(
+        sessionID: UUID,
+        onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        onStreamError: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
         let content = try await SCShareableContent.current
-
         guard let display = content.displays.first else {
             throw NSError(domain: "ScreenAudioCapture", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "No displays found"
             ])
         }
-
-        try await startCapture(filter: SCContentFilter(display: display, excludingWindows: []))
+        try await startCapture(
+            filter: SCContentFilter(display: display, excludingWindows: []),
+            sessionID: sessionID,
+            onAudioSampleBuffer: onAudioSampleBuffer,
+            onStreamError: onStreamError
+        )
     }
 
-    private func startCapture(filter: SCContentFilter) async throws {
+    private func startCapture(
+        filter: SCContentFilter,
+        sessionID: UUID,
+        onAudioSampleBuffer: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        onStreamError: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
-        config.sampleRate = 48000
+        config.sampleRate = 48_000
         config.channelCount = 2
         config.queueDepth = 8
 
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        self.stream = stream
-
-        try stream.addStreamOutput(
-            self,
-            type: .audio,
-            sampleHandlerQueue: .global(qos: .userInitiated)
+        let adapter = OutputAdapter(
+            sessionID: sessionID,
+            onAudioSampleBuffer: onAudioSampleBuffer,
+            onStreamError: onStreamError
         )
+        let stream = SCStream(filter: filter, configuration: config, delegate: adapter)
+        let session = ActiveSession(stream: stream, output: adapter)
+        let previousSession = streamLock.withLock {
+            let previousSession = self.activeSession
+            self.activeSession = session
+            return previousSession
+        }
+        stopCapture(previousSession?.stream)
 
-        try await stream.startCapture()
-    }
+        do {
+            try stream.addStreamOutput(
+                adapter,
+                type: .audio,
+                sampleHandlerQueue: sampleHandlerQueue
+            )
 
-    func stop() {
-        // Capture stream locally to avoid retaining self in async task
-        guard let stream = stream else { return }
-        self.stream = nil
+            let stillCurrent = streamLock.withLock { self.activeSession?.stream === stream }
+            guard stillCurrent else {
+                stopCapture(stream)
+                return
+            }
 
-        Task {
-            try? await stream.stopCapture()
+            try await stream.startCapture()
+        } catch {
+            let shouldStop = streamLock.withLock { () -> Bool in
+                guard self.activeSession?.stream === stream else { return false }
+                self.activeSession = nil
+                return true
+            }
+            if shouldStop { stopCapture(stream) }
+            throw error
+        }
+
+        // A stop or replacement may have happened while startCapture awaited.
+        if !streamLock.withLock({ self.activeSession?.stream === stream }) {
+            stopCapture(stream)
         }
     }
 
-    // MARK: - SCStreamOutput
-
-    func stream(
-        _ stream: SCStream,
-        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-        of outputType: SCStreamOutputType
-    ) {
-        guard outputType == .audio else { return }
-        onAudioSampleBuffer?(sampleBuffer)
+    func stop() {
+        let session = streamLock.withLock {
+            let session = self.activeSession
+            self.activeSession = nil
+            return session
+        }
+        stopCapture(session?.stream)
     }
 
-    // MARK: - SCStreamDelegate
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("ScreenCaptureKit stream stopped with error: \(error)")
-        onStreamError?(error)
+    private func stopCapture(_ stream: SCStream?) {
+        guard let stream else { return }
+        Task {
+            try? await stream.stopCapture()
+        }
     }
 
     deinit {

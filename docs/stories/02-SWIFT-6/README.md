@@ -1,5 +1,9 @@
 # Epic 02: Swift 6 Migration
 
+> **Historical planning material:** This epic records an earlier migration
+> plan. Verify APIs and status against current source and `docs/STATUS.md`; it
+> is not a current implementation checklist.
+
 > **Status:** Pending
 > **Priority:** High
 > **Estimated Effort:** 2-3 weeks

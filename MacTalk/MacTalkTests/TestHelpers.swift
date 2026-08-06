@@ -5,7 +5,10 @@
 //  Small deterministic helpers shared by behavior-focused tests.
 //
 
+import Foundation
 @preconcurrency import AVFoundation
+@preconcurrency import CoreMedia
+import os
 
 func makeConstantPCMBuffer(
     sampleRate: Double,

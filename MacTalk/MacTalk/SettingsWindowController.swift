@@ -65,12 +65,20 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private nonisolated(unsafe) var tokens: [NSObjectProtocol] = []
+    private let settingsStore: AppSettings
+    private let notificationManager: NotificationManager
 
-    init() {
+    init(
+        settingsStore: AppSettings = .shared,
+        notificationManager: NotificationManager = .shared
+    ) {
+        self.settingsStore = settingsStore
+        self.notificationManager = notificationManager
         let d = UserDefaults.standard
         showInDock = d.bool(forKey: "showInDock")
-        showNotifications = d.bool(forKey: "showNotifications")
-        let storedAutoPaste = d.bool(forKey: "autoPaste")
+        let settingsSnapshot = settingsStore.snapshot
+        showNotifications = settingsSnapshot.showNotifications
+        let storedAutoPaste = settingsSnapshot.autoPaste
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
         if storedAutoPaste && !accessibilityTrusted {
             DLOG("[Settings] Stored auto-paste preference is on, but current process is not Accessibility-trusted; showing toggle off")
@@ -79,13 +87,11 @@ final class SettingsViewModel: ObservableObject {
             storedPreference: storedAutoPaste,
             accessibilityTrusted: accessibilityTrusted
         )
-        defaultModeIndex = d.integer(forKey: "defaultMode")
-        let provider = AppSettings.shared.provider
-        providerIndex = ASRProvider.allCases.firstIndex(of: provider) ?? 0
-        let savedModel = d.integer(forKey: "modelIndex")
-        modelIndex = savedModel == 0 ? 4 : savedModel
-        let savedLang = d.integer(forKey: "languageIndex")
-        languageIndex = savedLang == 0 ? 1 : savedLang
+        let snapshot = settingsSnapshot
+        defaultModeIndex = snapshot.captureMode == .micPlusAppAudio ? 1 : 0
+        providerIndex = ASRProvider.allCases.firstIndex(of: snapshot.provider) ?? 0
+        modelIndex = ModelCatalog.bundled().firstIndex { $0.id == snapshot.whisperModelID } ?? 4
+        languageIndex = AppSettings.languageOptions.firstIndex(where: { $0 == snapshot.language }) ?? 1
 
         startMicOnlyShortcut = Self.loadShortcut(forKey: "startMicOnlyShortcut")
         startMicPlusAppShortcut = Self.loadShortcut(forKey: "startMicPlusAppShortcut")
@@ -105,12 +111,24 @@ final class SettingsViewModel: ObservableObject {
     func save() {
         let d = UserDefaults.standard
         d.set(showInDock, forKey: "showInDock")
-        d.set(showNotifications, forKey: "showNotifications")
-        d.set(autoPaste, forKey: "autoPaste")
-        d.set(defaultModeIndex, forKey: "defaultMode")
-        d.set(modelIndex, forKey: "modelIndex")
-        d.set(languageIndex, forKey: "languageIndex")
-        NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+        settingsStore.setAutoPaste(autoPaste)
+        settingsStore.setShowNotifications(showNotifications)
+        settingsStore.setCaptureMode(defaultModeIndex == 1 ? .micPlusAppAudio : .micOnly)
+        let models = ModelCatalog.bundled()
+        if models.indices.contains(modelIndex) {
+            settingsStore.setWhisperModelID(models[modelIndex].id)
+        }
+        if AppSettings.languageOptions.indices.contains(languageIndex) {
+            settingsStore.setLanguage(AppSettings.languageOptions[languageIndex])
+        }
+    }
+
+    /// Persists a user-driven notification preference change and, when enabling,
+    /// starts the system authorization flow. Ordinary saves never authorize.
+    func setShowNotificationsEnabled(_ enabled: Bool) {
+        showNotifications = enabled
+        save()
+        notificationManager.userChangedNotificationsPreference(to: enabled)
     }
 
     func setAutoPasteEnabled(_ enabled: Bool) {
@@ -157,9 +175,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func setProvider(_ idx: Int) {
+        guard ASRProvider.allCases.indices.contains(idx) else { return }
         providerIndex = idx
-        let provider = ASRProvider.allCases[idx]
-        AppSettings.shared.provider = provider
+        settingsStore.provider = ASRProvider.allCases[idx]
         save()
     }
 
@@ -178,7 +196,7 @@ final class SettingsViewModel: ObservableObject {
         let accessibilityTrusted = Permissions.isAccessibilityTrusted()
         accessibilityStatus = accessibilityTrusted ? .granted : .notGranted
 
-        let storedAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        let storedAutoPaste = settingsStore.snapshot.autoPaste
         if storedAutoPaste && !accessibilityTrusted && autoPaste {
             DLOG("[Settings] Refresh noticed stored auto-paste on but Accessibility untrusted; showing toggle off")
             autoPaste = false
@@ -255,7 +273,7 @@ private struct GeneralTab: View {
             Toggle("Show in Dock", isOn: $vm.showInDock)
                 .onChange(of: vm.showInDock) { vm.save(); vm.applyDockPolicy() }
             Toggle("Show Notifications", isOn: $vm.showNotifications)
-                .onChange(of: vm.showNotifications) { vm.save() }
+                .onChange(of: vm.showNotifications) { vm.setShowNotificationsEnabled(vm.showNotifications) }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -360,10 +378,7 @@ private struct AdvancedTab: View {
         "medium (1.4 GB, accurate)",
         "large-v3-turbo (2.8 GB, best)"
     ]
-    let languages = [
-        "Auto-detect", "English", "Spanish", "French", "German",
-        "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"
-    ]
+    let languages = AppSettings.languageDisplayNames
 
     var isParakeet: Bool { ASRProvider.allCases[vm.providerIndex] == .parakeet }
 
@@ -485,10 +500,7 @@ private struct LegacySettingsContentView: View {
         "medium (1.4 GB, accurate)",
         "large-v3-turbo (2.8 GB, best)"
     ]
-    private let languages = [
-        "Auto-detect", "English", "Spanish", "French", "German",
-        "Italian", "Portuguese", "Dutch", "Japanese", "Chinese"
-    ]
+    private let languages = AppSettings.languageDisplayNames
 
     var body: some View {
         TabView {
@@ -499,7 +511,7 @@ private struct LegacySettingsContentView: View {
                         vm.save()
                     }
                 Toggle("Show notifications", isOn: $vm.showNotifications)
-                    .onChange(of: vm.showNotifications) { vm.save() }
+                    .onChange(of: vm.showNotifications) { vm.setShowNotificationsEnabled(vm.showNotifications) }
                 Toggle("Auto-paste on Stop", isOn: Binding(
                     get: { vm.autoPaste },
                     set: { vm.setAutoPasteEnabled($0) }

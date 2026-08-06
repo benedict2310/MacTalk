@@ -6,57 +6,189 @@
 //
 
 @preconcurrency import AVFoundation
+import AudioToolbox
+import Synchronization
 import os
+
+/// Owned microphone audio handed off after the tap returns.
+///
+/// `samples` is copied from the tap's memory into a bounded SPSC queue before
+/// the render callback returns. Consumers therefore never retain or inspect
+/// AVAudioPCMBuffer/AVAudioTime owned by AVAudioEngine. If the queue is full,
+/// the newest buffer is dropped (and `droppedBufferCount` is incremented).
+struct AudioCaptureFrame: Sendable, Equatable {
+    let samples: [Float]
+    let sampleRate: Double
+    /// Host time of the first frame in `samples`. Zero means invalid and is
+    /// rejected by the delivery worker; it is never replaced with wall time.
+    let firstSampleHostTime: UInt64
+
+    init(samples: [Float], sampleRate: Double, firstSampleHostTime: UInt64 = 1) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.firstSampleHostTime = firstSampleHostTime
+    }
+}
+
+/// Coalesces delivery scheduling for a bounded audio handoff.
+///
+/// `scheduled` means one drain closure is queued, while `draining` means that
+/// closure is currently consuming the ring. Producers never schedule another
+/// closure while either state is active. The final empty check after the state
+/// transition closes the race where a producer enqueues between the last pop
+/// and clearing `draining`.
+final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
+    private static let scheduled = 1
+    private static let draining = 2
+
+    private let queue: OwnedAudioRing
+    private let schedule: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private let delivery: @Sendable (UUID, AudioCaptureFrame) -> Void
+    private let state = Atomic<Int>(0)
+
+    init(
+        slotCount: Int,
+        maxFramesPerBuffer: Int,
+        schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
+        delivery: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+    ) {
+        queue = OwnedAudioRing(slotCount: slotCount, maxFrames: maxFramesPerBuffer)
+        self.schedule = schedule
+        self.delivery = delivery
+    }
+
+    @discardableResult
+    func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID, firstSampleHostTime: UInt64 = 1) -> Bool {
+        guard firstSampleHostTime != 0 else {
+            queue.recordDrop()
+            return false
+        }
+        guard queue.push(
+            buffer: buffer,
+            sampleRate: sampleRate,
+            sessionID: sessionID,
+            firstSampleHostTime: firstSampleHostTime
+        ) else {
+            return false
+        }
+        requestDrain()
+        return true
+    }
+
+    var droppedBufferCount: UInt64 { queue.droppedCount }
+
+    func recordDroppedBuffer() {
+        queue.recordDrop()
+    }
+
+    private func requestDrain() {
+        let result = state.compareExchange(
+            expected: 0,
+            desired: Self.scheduled,
+            ordering: .acquiringAndReleasing
+        )
+        guard result.exchanged else { return }
+        schedule { [weak self] in self?.drain() }
+    }
+
+    private func drain() {
+        let result = state.compareExchange(
+            expected: Self.scheduled,
+            desired: Self.draining,
+            ordering: .acquiringAndReleasing
+        )
+        guard result.exchanged else { return }
+
+        while let item = queue.pop() {
+            delivery(item.sessionID, item.frame)
+        }
+
+        _ = state.compareExchange(
+            expected: Self.draining,
+            desired: 0,
+            ordering: .acquiringAndReleasing
+        )
+        if queue.hasItems {
+            requestDrain()
+        }
+    }
+}
 
 /// Microphone audio capture using AVAudioEngine.
 ///
-/// ## Thread Safety
-/// This class is marked `@unchecked Sendable` because:
-/// - `AVAudioEngine` is documented as thread-safe by Apple
-/// - The callback closure is only set during setup, before concurrent usage
-/// - The tap callback safely passes audio buffers to the handler
-///
-/// ## Audio Callback
-/// The `onPCMFloatBuffer` callback is invoked from the audio render thread
-/// (high-priority real-time thread). Handlers must complete quickly and
-/// avoid blocking operations.
+/// The render callback performs only a bounded slot check and a copy into
+/// preallocated storage. It never locks, allocates, or invokes client code.
+/// A serial worker drains owned frames through the injectable `schedule`
+/// seam. The default scheduler is a serial user-initiated queue.
 final class AudioCapture: NSObject, @unchecked Sendable {
-    private struct CallbackState {
-        var callback: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
-    }
-
     private let engine = AVAudioEngine()
     private let bus = 0
-    private let callbackState = OSAllocatedUnfairLock(initialState: CallbackState())
     private let lifecycleLock = NSLock()
+    private let schedule: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private static let defaultDeliveryQueue = DispatchQueue(
+        label: "com.mactalk.audio-capture.delivery", qos: .userInitiated
+    )
+    static let defaultMaxFramesPerBuffer = 8_192
+    private let slotCount: Int
+    private let maxFramesPerBuffer: Int
+    private var deliveryCoordinator: AudioCaptureDeliveryCoordinator?
     private var isRunning = false
 
-    /// Callback invoked with each audio buffer from the microphone.
-    ///
-    /// - Note: Called from the audio render thread. Must complete quickly.
-    /// - Note: `AVAudioPCMBuffer` and `AVAudioTime` are not Sendable, but are
-    ///   safe to use within the callback scope as ownership is transferred.
-    var onPCMFloatBuffer: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)? {
-        get { callbackState.withLock { $0.callback } }
-        set { callbackState.withLock { $0.callback = newValue } }
+    init(
+        slotCount: Int = 8,
+        maxFramesPerBuffer: Int = AudioCapture.defaultMaxFramesPerBuffer,
+        schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { work in
+            AudioCapture.defaultDeliveryQueue.async(execute: work)
+        }
+    ) {
+        self.slotCount = slotCount
+        self.maxFramesPerBuffer = maxFramesPerBuffer
+        self.schedule = schedule
+        super.init()
     }
 
-    func start() throws {
+    /// Starts a capture session with immutable callback registration.
+    /// Delivery receives only owned Swift values, never tap-owned AVFoundation
+    /// objects. Calling `start` while running is a no-op.
+    func start(
+        sessionID: UUID,
+        onPCMFloatBuffer: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+    ) throws {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         guard !isRunning else { return }
         isRunning = true
 
-        // Reset the graph left by the previous recording before reinstalling
-        // the tap. Without this, a restarted AVAudioEngine can report itself as
-        // running while delivering no input buffers.
         engine.reset()
         let input = engine.inputNode
         let format = input.inputFormat(forBus: bus)
+        let sampleRate = format.sampleRate
+        let coordinator = AudioCaptureDeliveryCoordinator(
+            slotCount: slotCount,
+            maxFramesPerBuffer: maxFramesPerBuffer,
+            schedule: schedule,
+            delivery: onPCMFloatBuffer
+        )
+        deliveryCoordinator = coordinator
 
-        input.installTap(onBus: bus, bufferSize: 2048, format: format) { [weak self] buffer, time in
-            let callback = self?.callbackState.withLock { $0.callback }
-            callback?(buffer, time)
+        input.installTap(onBus: bus, bufferSize: AVAudioFrameCount(maxFramesPerBuffer), format: format) {
+            [weak self] buffer, time in
+            guard self != nil else { return }
+            // This is the complete render-thread handoff. No AVAudio object
+            // escapes into scheduled work; the bounded queue applies drop-newest
+            // backpressure and coalesces the delivery schedule.
+            // Copying the raw host ticks is part of the bounded render-thread
+            // handoff. Conversion to nanoseconds happens on delivery.
+            guard time.isHostTimeValid else {
+                coordinator.recordDroppedBuffer()
+                return
+            }
+            _ = coordinator.push(
+                buffer: buffer,
+                sampleRate: sampleRate,
+                sessionID: sessionID,
+                firstSampleHostTime: time.hostTime
+            )
         }
         engine.prepare()
 
@@ -74,20 +206,113 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         guard isRunning else { return }
-
+        isRunning = false
         engine.inputNode.removeTap(onBus: bus)
         engine.stop()
         engine.reset()
-        isRunning = false
     }
+
+    var droppedBufferCount: UInt64 { deliveryCoordinator?.droppedBufferCount ?? 0 }
 
     func getCurrentLevel() -> Float {
-        // Simple RMS level calculation for the input
-        // This can be enhanced with a dedicated level monitor
-        return engine.inputNode.volume
+        engine.inputNode.volume
     }
 
-    deinit {
-        stop()
+    deinit { stop() }
+}
+
+/// Single-producer/single-consumer bounded handoff. The producer is the audio
+/// render callback; the consumer is the serial delivery worker. The queue's
+/// policy is drop-newest on full, preserving already queued audio and keeping
+/// render-time work bounded and nonblocking.
+final class OwnedAudioRing: @unchecked Sendable {
+    private final class Slot {
+        let samples: UnsafeMutableBufferPointer<Float>
+        var count = 0
+        var sampleRate = 0.0
+        var sessionID = UUID()
+        var firstSampleHostTime: UInt64 = 1
+
+        init(capacity: Int) {
+            samples = .allocate(capacity: capacity)
+            samples.initialize(repeating: 0)
+        }
+        deinit {
+            samples.deinitialize()
+            samples.deallocate()
+        }
     }
+
+    let maxFrames: Int
+    private let slots: [Slot]
+    private let producerIndex = Atomic<Int>(0)
+    private let consumerIndex = Atomic<Int>(0)
+    private let dropped = Atomic<UInt64>(0)
+
+    init(slotCount: Int, maxFrames: Int) {
+        precondition(slotCount > 1 && maxFrames > 0)
+        self.maxFrames = maxFrames
+        slots = (0..<slotCount).map { _ in Slot(capacity: maxFrames) }
+    }
+
+    var droppedCount: UInt64 { dropped.load(ordering: .acquiring) }
+
+    func recordDrop() {
+        dropped.wrappingAdd(1, ordering: .relaxed)
+    }
+
+    /// Called only by the render thread. AVAudioPCMBuffer is read only here.
+    func push(
+        buffer: AVAudioPCMBuffer,
+        sampleRate: Double,
+        sessionID: UUID = UUID(),
+        firstSampleHostTime: UInt64 = 1
+    ) -> Bool {
+        let count = Int(buffer.frameLength)
+        guard count > 0, count <= maxFrames, let channels = buffer.floatChannelData else {
+            dropped.wrappingAdd(1, ordering: .relaxed)
+            return false
+        }
+        let producer = producerIndex.load(ordering: .relaxed)
+        let next = (producer + 1) % slots.count
+        guard next != consumerIndex.load(ordering: .acquiring) else {
+            dropped.wrappingAdd(1, ordering: .relaxed)
+            return false
+        }
+        let slot = slots[producer]
+        let channelCount = Int(buffer.format.channelCount)
+        for frame in 0..<count {
+            var value: Float = 0
+            for channel in 0..<channelCount { value += channels[channel][frame] }
+            slot.samples[frame] = value / Float(channelCount)
+        }
+        slot.count = count
+        slot.sampleRate = sampleRate
+        slot.sessionID = sessionID
+        slot.firstSampleHostTime = firstSampleHostTime
+        producerIndex.store(next, ordering: .releasing)
+        return true
+    }
+
+    var hasItems: Bool {
+        consumerIndex.load(ordering: .relaxed) != producerIndex.load(ordering: .acquiring)
+    }
+
+    typealias Item = (sessionID: UUID, frame: AudioCaptureFrame)
+
+    /// Called only by the serial worker.
+    func pop() -> Item? {
+        let consumer = consumerIndex.load(ordering: .relaxed)
+        guard consumer != producerIndex.load(ordering: .acquiring) else { return nil }
+        let slot = slots[consumer]
+        let frame = AudioCaptureFrame(
+            samples: Array(UnsafeBufferPointer(start: slot.samples.baseAddress, count: slot.count)),
+            sampleRate: slot.sampleRate,
+            firstSampleHostTime: slot.firstSampleHostTime
+        )
+        let sessionID = slot.sessionID
+        consumerIndex.store((consumer + 1) % slots.count, ordering: .releasing)
+        return (sessionID, frame)
+    }
+
 }

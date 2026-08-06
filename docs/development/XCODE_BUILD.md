@@ -1,5 +1,10 @@
 # Xcode Project Setup & Build Instructions
 
+> **Historical setup material:** This guide predates the dual-engine and
+> coordinator architecture and contains obsolete examples (including removed
+> APIs). Use [`SETUP.md`](SETUP.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), and
+> [`docs/STATUS.md`](../STATUS.md) for current commands and facts.
+
 **MacTalk - Whisper.cpp Integration Guide**
 
 This document provides step-by-step instructions for setting up the Xcode project and integrating whisper.cpp with Metal acceleration.

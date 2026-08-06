@@ -6,10 +6,47 @@
 //
 
 import Foundation
+import AudioToolbox
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
-import QuartzCore  // FIX P0: For CACurrentMediaTime() in throttledUIUpdate
 import os
+
+/// Identifies the currently accepted audio-capture session.
+///
+/// Capture callbacks can arrive after ScreenCaptureKit has been asked to stop.
+/// The gate is checked before conversion and again before appending converted
+/// samples so a stopped or replaced session cannot mutate a new stream.
+final class AudioSessionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeSession: UUID?
+
+    func begin() -> UUID {
+        let session = UUID()
+        lock.lock()
+        activeSession = session
+        lock.unlock()
+        return session
+    }
+
+    func stop() {
+        lock.lock()
+        activeSession = nil
+        lock.unlock()
+    }
+
+    func accepts(_ session: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeSession == session
+    }
+
+}
+
+private func UInt64ToHostNanoseconds(_ hostTime: UInt64) -> Int64? {
+    guard hostTime != 0 else { return nil }
+    let nanos = AudioConvertHostTimeToNanos(hostTime)
+    return Int64(exactly: nanos)
+}
 
 enum TranscriptCleaner {
     private static let leadingArtifactCharacters = CharacterSet(charactersIn: ".,;:!?…·-–—")
@@ -91,6 +128,132 @@ enum TranscriptCleaner {
     }
 }
 
+enum TranscriptFinalReconciler {
+    private struct Word {
+        let canonical: String
+        let range: Range<String.Index>
+    }
+
+    static func reconcile(incrementalSegments: [String], finalText: String) -> String {
+        let incrementalText = incrementalSegments.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !incrementalText.isEmpty else { return finalText }
+
+        let incrementalWords = words(in: incrementalText)
+        let finalWords = words(in: finalText)
+        guard !incrementalWords.isEmpty, !finalWords.isEmpty else { return finalText }
+
+        let incrementalCanonical = incrementalWords.map(\.canonical)
+        let finalCanonical = finalWords.map(\.canonical)
+        if finalCanonical.count >= incrementalCanonical.count,
+           Array(finalCanonical.prefix(incrementalCanonical.count)) == incrementalCanonical {
+            return finalText
+        }
+
+        let maximumOverlap = min(incrementalCanonical.count, finalCanonical.count)
+        let overlap = stride(from: maximumOverlap, through: 1, by: -1).first { count in
+            Array(incrementalCanonical.suffix(count)) == Array(finalCanonical.prefix(count))
+        }
+        guard let overlap else { return finalText }
+        guard let incrementalLastWord = incrementalWords.last else { return finalText }
+        let incrementalPrefix = incrementalText[..<incrementalLastWord.range.upperBound]
+        let finalTail = finalText[finalWords[overlap - 1].range.upperBound...]
+        return String(incrementalPrefix) + String(finalTail)
+    }
+
+    private static func words(in text: String) -> [Word] {
+        var result: [Word] = []
+        var wordStart: String.Index?
+
+        for index in text.indices {
+            let character = text[index]
+            if character.isLetter || character.isNumber {
+                if wordStart == nil { wordStart = index }
+            } else if let start = wordStart {
+                let range = start..<index
+                result.append(Word(canonical: text[range].lowercased(), range: range))
+                wordStart = nil
+            }
+        }
+
+        if let start = wordStart {
+            let range = start..<text.endIndex
+            result.append(Word(canonical: text[range].lowercased(), range: range))
+        }
+        return result
+    }
+}
+
+/// Capture boundary used by the transcription controller.
+///
+/// Keeping capture lifecycle and callbacks behind this dependency lets callers
+/// provide a different capture implementation without changing session gating.
+protocol TranscriptionCaptureSession: AnyObject {
+    func startMicrophone(
+        sessionID: UUID,
+        callback: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+    ) throws
+    func startAppAudio(
+        sessionID: UUID,
+        source: AppPickerWindowController.AudioSource,
+        callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        errorCallback: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws
+    /// Stops only the app/system-audio stream, preserving microphone capture.
+    func stopAppAudio()
+    /// Stops every active capture source.
+    func stop()
+}
+
+/// Platform capture implementation used by the application.
+final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionCaptureSession {
+    private let micCapture = AudioCapture()
+    private let screenCapture = ScreenAudioCapture()
+
+    func startMicrophone(
+        sessionID: UUID,
+        callback: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+    ) throws {
+        try micCapture.start(sessionID: sessionID, onPCMFloatBuffer: callback)
+    }
+
+    func startAppAudio(
+        sessionID: UUID,
+        source: AppPickerWindowController.AudioSource,
+        callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
+        errorCallback: @escaping @Sendable (UUID, Error) -> Void
+    ) async throws {
+        if source.isSystemAudio, let display = source.display {
+            try await screenCapture.selectDisplay(
+                display: display,
+                sessionID: sessionID,
+                onAudioSampleBuffer: callback,
+                onStreamError: errorCallback
+            )
+        } else if let app = source.app {
+            try await screenCapture.selectApp(
+                app: app,
+                sessionID: sessionID,
+                onAudioSampleBuffer: callback,
+                onStreamError: errorCallback
+            )
+        } else {
+            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid audio source"
+            ])
+        }
+    }
+
+    func stopAppAudio() {
+        screenCapture.stop()
+    }
+
+    func stop() {
+        micCapture.stop()
+        stopAppAudio()
+    }
+}
+
 /// Orchestrates audio capture, mixing, and transcription.
 ///
 /// ## Thread Safety
@@ -103,6 +266,29 @@ enum TranscriptCleaner {
 /// - Audio callbacks arrive from audio render threads (high priority)
 /// - Transcription runs on background queues (userInitiated)
 /// - UI updates are dispatched to MainActor
+
+/// Timing boundary used by the controller. Tests provide a manual scheduler;
+/// production uses monotonic DispatchTime, so lifecycle tests never wait on wall
+/// clock time or poll for completion.
+protocol TranscriptionScheduler: AudioCompositionScheduler {
+    var nowNanoseconds: UInt64 { get }
+}
+
+struct DispatchTranscriptionScheduler: TranscriptionScheduler, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.mactalk.transcription-timers", qos: .userInitiated)
+
+    var nowNanoseconds: UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    func schedule(
+        deadlineNanoseconds: UInt64,
+        operation: @escaping @Sendable () -> Void
+    ) -> any AudioCompositionScheduledTask {
+        let workItem = DispatchWorkItem(block: operation)
+        queue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: deadlineNanoseconds), execute: workItem)
+        return DispatchCompositionScheduledTask(workItem: workItem)
+    }
+}
+
 final class TranscriptionController: @unchecked Sendable {
     enum Mode: Sendable {
         case micOnly
@@ -111,11 +297,33 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let micCapture = AudioCapture()
-    private let screenCapture = ScreenAudioCapture()
-    private let mixer = AudioMixer()
+    private let captureSession: any TranscriptionCaptureSession
+    private let settingsStore: AppSettings
+    private let timingScheduler: any TranscriptionScheduler
+    private var pendingStopTask: (any AudioCompositionScheduledTask)?
+    private let mixer: AudioMixer
+    private let micStream: AudioMixer.Stream
+    private let appStream: AudioMixer.Stream
     private let engine: any ASREngine
     private let levelMonitor = MultiChannelLevelMonitor()
+    private let audioSessionGate = AudioSessionGate()
+    /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
+    /// can invalidate that stream without interrupting the microphone session.
+    private let appAudioGate = AudioSessionGate()
+    /// The sole append path for both sources. Its queue is independent from
+    /// audioState, avoiding lock-order inversions at callback boundaries.
+    private lazy var compositionPipeline = SerializedAudioCompositionPipeline(
+        scheduler: timingScheduler,
+        emit: { [weak self] sessionID, samples in
+            self?.appendSamples(samples, sessionID: sessionID, allowStopping: true)
+        },
+        microphoneReady: { [weak self] sessionID in
+            guard let self, self.audioSessionGate.accepts(sessionID) else { return }
+            if let onMicrophoneReady = self.onMicrophoneReady {
+                Task { @MainActor in onMicrophoneReady() }
+            }
+        }
+    )
 
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
@@ -126,6 +334,10 @@ final class TranscriptionController: @unchecked Sendable {
     private let diagnosticsQueue = DispatchQueue(label: "com.mactalk.audio.diagnostics", qos: .utility)
     private let audioDiagnosticsEnabled = false
     private let audioDiagnosticsInterval: TimeInterval = 1.0
+    /// Inert unless MACTALK_AUDIO_HARDWARE_VALIDATION_LOG is explicitly set.
+    /// This records timestamp metadata only; samples and transcript text never
+    /// enter the validation file.
+    private let hardwareValidationRecorder: AudioHardwareValidationRecorder
 
     /// Audio buffer state protected by OSAllocatedUnfairLock.
     private struct PendingChunkTask {
@@ -162,9 +374,9 @@ final class TranscriptionController: @unchecked Sendable {
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?  // Callback when app audio is lost
+    var onMicrophoneReady: (@Sendable @MainActor () -> Void)?
     var onFallbackToMicOnly: (@Sendable @MainActor () -> Void)?  // Callback when falling back to mic-only
     var onFinalizationComplete: (@Sendable @MainActor () -> Void)?
-    var autoPasteEnabled = false
 
     // Performance optimization
     private var adaptiveQualityEnabled = true
@@ -172,8 +384,22 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    init(engine: any ASREngine) {
+    init(
+        engine: any ASREngine,
+        captureSession: any TranscriptionCaptureSession = LiveTranscriptionCaptureSession(),
+        settings: AppSettings = .shared,
+        scheduler: any TranscriptionScheduler = DispatchTranscriptionScheduler()
+    ) {
+        let mixer = AudioMixer()
+        self.captureSession = captureSession
+        self.settingsStore = settings
+        self.timingScheduler = scheduler
+        self.pendingStopTask = nil
+        self.mixer = mixer
+        self.micStream = mixer.makeStream()
+        self.appStream = mixer.makeStream()
         self.engine = engine
+        self.hardwareValidationRecorder = AudioHardwareValidationRecorder.fromEnvironment()
         self.audioState = OSAllocatedUnfairLock(
             initialState: AudioState(chunkDuration: chunkDurationMs, language: "en")
         )
@@ -191,6 +417,10 @@ final class TranscriptionController: @unchecked Sendable {
 
     var provider: ASRProvider {
         engine.provider
+    }
+
+    var audioCompositionMetrics: AudioCompositionMetrics {
+        compositionPipeline.metrics
     }
 
     func isUsingEngine(_ candidate: any ASREngine) -> Bool {
@@ -212,35 +442,74 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Control
 
-    func start(mode: Mode, audioSource: AppPickerWindowController.AudioSource? = nil) async throws {
-        DLOG("Transcription start requested: mode=\(mode)")
+    func start(
+        mode: Mode,
+        audioSource: AppPickerWindowController.AudioSource? = nil,
+        settingsSnapshot: SettingsSnapshot? = nil
+    ) async throws {
+        // A supplied snapshot is the complete recording contract. Keep the
+        // legacy mode parameter for callers that have not migrated yet, but do
+        // not let it override an immutable session snapshot.
+        let recordingSettings = settingsSnapshot ?? settingsStore.snapshotAtRecordingStart()
+        let recordingMode: Mode = settingsSnapshot.map {
+            $0.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        } ?? mode
+        DLOG("Transcription start requested: mode=\(recordingMode)")
+
+        // Invalidate callbacks from any previous capture before resetting the
+        // streams. ScreenCaptureKit may still deliver a queued callback after
+        // stopCapture has been requested. A pending deterministic stop belongs
+        // to the old session and must never flush the new one.
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        let sessionID = audioSessionGate.begin()
+        if settingsSnapshot != nil, recordingSettings.provider != engine.provider {
+            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Settings provider does not match the selected transcription engine"
+            ])
+        }
+        captureSession.stop()
+        appAudioGate.stop()
 
         // Clear previous state
+        micStream.reset()
+        appStream.reset()
         audioState.withLock { state in
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
             state.fullTranscript.removeAll()
-            state.currentMode = mode
+            state.currentMode = recordingMode
             state.isFirstChunk = true
             state.lastUIUpdateTime = 0
             state.lastDiagnosticsLogTime = 0
-            state.sessionID = UUID()
-            state.pendingTasks[state.sessionID] = []
+            state.sessionID = sessionID
+            state.language = recordingSettings.language
+            state.pendingTasks[sessionID] = []
             state.chunkProcessingTail = nil
             state.isStopping = false
         }
+        compositionPipeline.reset(
+            sessionID: sessionID,
+            mode: recordingMode == .micPlusAppAudio ? .microphoneAndApplication : .microphoneOnly
+        )
 
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
-        micCapture.onPCMFloatBuffer = { [weak self] buffer, _ in
-            self?.processAudioBuffer(buffer)
+        do {
+            try captureSession.startMicrophone(sessionID: sessionID) { [weak self] callbackSessionID, frame in
+                self?.processAudioFrame(frame, sessionID: callbackSessionID)
+            }
+        } catch {
+            // A microphone start failure must invalidate the session and stop
+            // any partially initialized capture before surfacing the error.
+            await cancelStartAndWait()
+            throw error
         }
-        try micCapture.start()
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
 
         // Set up app audio capture if needed (also starts immediately)
-        if case .micPlusAppAudio = mode {
+        if case .micPlusAppAudio = recordingMode {
             guard let source = audioSource else {
                 await cancelStartAndWait()
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
@@ -248,8 +517,27 @@ final class TranscriptionController: @unchecked Sendable {
                 ])
             }
 
+            let appGeneration = appAudioGate.begin()
             do {
-                try await startAppAudioCapture(source: source)
+                try await captureSession.startAppAudio(
+                    sessionID: sessionID,
+                    source: source,
+                    callback: { [weak self] callbackSessionID, sampleBuffer in
+                        self?.processSampleBuffer(
+                            sampleBuffer,
+                            sessionID: callbackSessionID,
+                            appGeneration: appGeneration
+                        )
+                    },
+                    errorCallback: { [weak self] callbackSessionID, error in
+                        guard let self else { return }
+                        // Validate before fallback. Capture shutdown and state
+                        // mutation must never occur under the gate lock.
+                        guard self.audioSessionGate.accepts(callbackSessionID),
+                              self.appAudioGate.accepts(appGeneration) else { return }
+                        self.handleAppAudioError(error, sessionID: callbackSessionID)
+                    }
+                )
             } catch {
                 await cancelStartAndWait()
                 throw error
@@ -267,35 +555,16 @@ final class TranscriptionController: @unchecked Sendable {
             throw error
         }
 
-        DLOG("Engine prepared/reset; transcription fully started in mode=\(mode)")
-        print("Transcription started in mode: \(mode)")
-    }
-
-    private func startAppAudioCapture(source: AppPickerWindowController.AudioSource) async throws {
-        screenCapture.onAudioSampleBuffer = { [weak self] sampleBuffer in
-            self?.processSampleBuffer(sampleBuffer)
-        }
-
-        // Install error handler
-        screenCapture.onStreamError = { [weak self] error in
-            self?.handleAppAudioError(error)
-        }
-
-        if source.isSystemAudio, let display = source.display {
-            try await screenCapture.selectDisplay(display: display)
-        } else if let app = source.app {
-            try await screenCapture.selectApp(app: app)
-        } else {
-            throw NSError(domain: "TranscriptionController", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Invalid audio source"
-            ])
-        }
+        DLOG("Engine prepared/reset; transcription fully started in mode=\(recordingMode)")
+        print("Transcription started in mode: \(recordingMode)")
     }
 
     func stop() {
         DLOG("Transcription stop requested")
-        screenCapture.stop()
-
+        // Invalidate callbacks and mark the state before capture shutdown.
+        // Queued work can then never append after final stream draining begins.
+        audioSessionGate.stop()
+        appAudioGate.stop()
         let sessionID: UUID? = audioState.withLock { state in
             guard !state.isStopping else { return nil }
             state.isStopping = true
@@ -305,23 +574,31 @@ final class TranscriptionController: @unchecked Sendable {
             DLOG("Ignoring duplicate transcription stop request")
             return
         }
-
+        captureSession.stop()
+        // The capture handoff is bounded but asynchronous. Give its delivery
+        // worker a chance to drain, then route both converter tails through the
+        // same composer before final inference.
         // Keep the controller alive through final inference and clipboard delivery.
-        Task { [self] in
-            // Capture the final in-flight microphone buffer without a noticeable delay.
-            try? await Task.sleep(nanoseconds: UInt64(tailDrainMs) * 1_000_000)
-            micCapture.stop()
+        // The scheduler is injectable so tests explicitly advance this bounded
+        // capture handoff instead of sleeping and polling.
+        let deadline = timingScheduler.nowNanoseconds
+            .addingReportingOverflow(UInt64(tailDrainMs) * 1_000_000)
+        let stopDeadline = deadline.overflow ? UInt64.max : deadline.partialValue
+        pendingStopTask = timingScheduler.schedule(deadlineNanoseconds: stopDeadline) { [weak self] in
+            guard let self else { return }
+            Task { [self] in
+                finishAudioStreams(sessionID: sessionID)
+                compositionPipeline.finish(sessionID: sessionID)
+                await flushFinalChunk(sessionID: sessionID)
 
-            await cancelPendingChunkTasks(sessionID: sessionID)
-            await flushFinalChunk(sessionID: sessionID)
-
-            audioState.withLock { state in
-                if state.sessionID == sessionID {
-                    state.isStopping = false
+                audioState.withLock { state in
+                    if state.sessionID == sessionID {
+                        state.isStopping = false
+                    }
                 }
-            }
-            if let onFinalizationComplete {
-                await onFinalizationComplete()
+                if let onFinalizationComplete {
+                    await onFinalizationComplete()
+                }
             }
         }
 
@@ -346,10 +623,13 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func cancelStartAndReturnSession() -> UUID {
-        micCapture.stop()
-        screenCapture.stop()
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        audioSessionGate.stop()
+        appAudioGate.stop()
+        captureSession.stop()
 
-        return audioState.withLock { state in
+        let sessionID = audioState.withLock { state in
             let sessionID = state.sessionID
             state.audioChunk.removeAll()
             state.allAudio.removeAll()
@@ -359,14 +639,50 @@ final class TranscriptionController: @unchecked Sendable {
             state.isStopping = false
             return sessionID
         }
+        compositionPipeline.cancel(sessionID: sessionID)
+        return sessionID
     }
 
     // MARK: - Audio Processing
 
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let samples = mixer.convert(buffer: buffer) else {
+    private func finishAudioStreams(sessionID: UUID) {
+        guard audioState.withLock({ $0.sessionID == sessionID && $0.isStopping }) else { return }
+        if let samples = micStream.finish(), !samples.isEmpty {
+            compositionPipeline.ingestTail(
+                sessionID: sessionID,
+                source: .microphone,
+                samples: samples
+            )
+        }
+        if let samples = appStream.finish(), !samples.isEmpty {
+            compositionPipeline.ingestTail(
+                sessionID: sessionID,
+                source: .application,
+                samples: samples
+            )
+        }
+    }
+
+    private func processAudioFrame(_ frame: AudioCaptureFrame, sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
+        guard let timestampNanos = UInt64ToHostNanoseconds(frame.firstSampleHostTime) else {
+            compositionPipeline.recordInvalidTimestamp(
+                sessionID: sessionID,
+                source: .microphone
+            )
             return
         }
+        let samples = micStream.convert(samples: frame.samples, sampleRate: frame.sampleRate)
+        guard audioSessionGate.accepts(sessionID) else { return }
+        guard let samples else {
+            return
+        }
+
+        hardwareValidationRecorder.recordMicrophone(
+            sessionID: sessionID,
+            hostNanoseconds: timestampNanos,
+            sampleCount: samples.count
+        )
 
         // Update microphone level
         let micLevel = levelMonitor.update(channel: .microphone, buffer: samples)
@@ -376,13 +692,53 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples)
+        compositionPipeline.ingest(
+            sessionID: sessionID,
+            chunk: TimedAudioChunk(
+                source: .microphone,
+                start: AudioHostTimestamp(nanoseconds: timestampNanos),
+                samples: samples
+            )
+        )
     }
 
-    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let samples = mixer.convertSampleBuffer(sampleBuffer) else {
-            return
+    @discardableResult
+    private func processSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        sessionID: UUID,
+        appGeneration: UUID
+    ) -> Int? {
+        // ScreenCaptureKit can deliver queued callbacks after stopAppAudio().
+        // Reject them before touching the app stream converter. Invalid PTS is
+        // a rejected callback too, but is counted for diagnostics.
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+            return nil
         }
+        let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard let timestamp = AudioHostTimestamp(
+            presentationTimeStamp: presentationTimeStamp
+        ) else {
+            compositionPipeline.recordInvalidTimestamp(
+                sessionID: sessionID,
+                source: .application
+            )
+            return nil
+        }
+        let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
+        guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
+            return nil
+        }
+        guard let samples else {
+            return nil
+        }
+
+        hardwareValidationRecorder.recordApplication(
+            sessionID: sessionID,
+            ptsValue: presentationTimeStamp.value,
+            ptsTimescale: presentationTimeStamp.timescale,
+            mappedHostNanoseconds: timestamp.nanoseconds,
+            sampleCount: samples.count
+        )
 
         // Update app audio level
         let appLevel = levelMonitor.update(channel: .application, buffer: samples)
@@ -392,14 +748,27 @@ final class TranscriptionController: @unchecked Sendable {
             }
         }
 
-        appendSamples(samples)
+        compositionPipeline.ingest(
+            sessionID: sessionID,
+            chunk: TimedAudioChunk(source: .application, start: timestamp, samples: samples)
+        )
+        return samples.count
     }
 
-    private func appendSamples(_ samples: [Float]) {
+    private func appendSamples(
+        _ samples: [Float],
+        sessionID: UUID? = nil,
+        allowStopping: Bool = false
+    ) {
         logAudioDiagnosticsIfNeeded(samples)
 
         let usesIncrementalChunks = engine.provider.usesIncrementalChunkProcessing
         let (chunkCount, threshold) = audioState.withLock { state -> (Int, Int) in
+            // Session validation uses the state snapshot while its lock is held;
+            // never acquire the session gate while holding audioState.
+            if let sessionID, state.sessionID != sessionID || (state.isStopping && !allowStopping) {
+                return (state.audioChunk.count, Int.max)
+            }
             if usesIncrementalChunks {
                 state.audioChunk.append(contentsOf: samples)
             }
@@ -485,12 +854,12 @@ final class TranscriptionController: @unchecked Sendable {
                                 return true
                             }
                             if didAppend {
-                                self.throttledUIUpdate(trimmedText)
+                                await self.throttledUIUpdate(trimmedText)
                             }
                         }
                     }
                 } catch {
-                    print("ASR chunk processing failed: \(error.localizedDescription)")
+                    DebugLogger.shared.log(.error(description: error.localizedDescription))
                 }
             }
 
@@ -530,26 +899,46 @@ final class TranscriptionController: @unchecked Sendable {
         DLOG("Processing final transcription with ALL audio: samples=\(snapshot.audio.count), RMS=\(String(format: "%.4f", rms))")
         print("🎤 Processing final transcription with ALL audio: \(snapshot.audio.count) samples (RMS: \(String(format: "%.4f", rms)))")
 
+        // Capture the in-flight partial tasks before starting final inference.
+        // Whisper permits both requests to run concurrently, but final output
+        // must not become observable until the partial has delivered its UI
+        // callback. Holding the final segment locally also prevents a late
+        // partial from being appended after final text replaces the transcript.
+        let pendingPartialTasks: [Task<Void, Never>] = audioState.withLock { state in
+            guard state.sessionID == sessionID else { return [] }
+            return state.pendingTasks[sessionID]?.map(\.task) ?? []
+        }
+        var finalText: String?
+
         // Transcribe complete audio recording
         do {
             let finalSegment = try await PerformanceMonitor.shared.measure("ASRFinalInference") {
                 try await engine.finalize(samples: snapshot.audio, language: snapshot.language)
             }
-
             if let finalSegment {
                 let trimmedText = finalSegment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedText.isEmpty {
                     DLOG("Final transcription result received: chars=\(trimmedText.count)")
-                    audioState.withLock { state in
-                        guard state.sessionID == sessionID else { return }
-                        state.fullTranscript = [trimmedText]
-                    }
+                    finalText = trimmedText
                 }
             }
         } catch {
-            print("ASR final processing failed: \(error.localizedDescription)")
+            DebugLogger.shared.log(.error(description: error.localizedDescription))
         }
 
+        for task in pendingPartialTasks {
+            await task.value
+        }
+
+        if let finalText {
+            audioState.withLock { state in
+                guard state.sessionID == sessionID else { return }
+                state.fullTranscript = [TranscriptFinalReconciler.reconcile(
+                    incrementalSegments: state.fullTranscript,
+                    finalText: finalText
+                )]
+            }
+        }
         await emitFinalTranscript(sessionID: sessionID)
     }
 
@@ -590,8 +979,13 @@ final class TranscriptionController: @unchecked Sendable {
 
     // MARK: - Edge Case Handling
 
-    private func handleAppAudioError(_ error: Error) {
-        print("⚠️ App audio error: \(error)")
+    private func handleAppAudioError(_ error: Error, sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
+        DebugLogger.shared.log(.error(description: error.localizedDescription))
+        hardwareValidationRecorder.recordApplicationLoss(
+            sessionID: sessionID,
+            error: error.localizedDescription
+        )
 
         // Notify that app audio was lost
         if let onAppAudioLost {
@@ -604,17 +998,29 @@ final class TranscriptionController: @unchecked Sendable {
         // Retrying a stopped ScreenCaptureKit stream is unreliable and complex,
         // so we gracefully degrade to mic-only to maintain recording continuity
         print("📉 Falling back to microphone-only mode due to app audio failure")
-        fallbackToMicOnly()
+        fallbackToMicOnly(sessionID: sessionID)
     }
 
-    private func fallbackToMicOnly() {
+    private func fallbackToMicOnly(sessionID: UUID) {
+        guard audioSessionGate.accepts(sessionID) else { return }
         print("Falling back to microphone-only mode")
 
-        // Stop app audio capture
-        screenCapture.stop()
+        // Invalidate queued app callbacks before asking ScreenCaptureKit to stop.
+        // The microphone remains active, preserving an uninterrupted fallback.
+        appAudioGate.stop()
+        captureSession.stopAppAudio()
+        // The application source is already being retired. Its converter tail
+        // must be drained to reset converter state, but cannot extend the
+        // fallback timeline beyond the last application frame; doing so would
+        // introduce a zero gap before the next microphone callback.
+        _ = appStream.finish()
+        compositionPipeline.deactivateApplication(sessionID: sessionID)
 
-        // Update mode
+        // Re-check after capture shutdown; callbacks may have restarted a
+        // session while ScreenCaptureKit was stopping.
+        guard audioSessionGate.accepts(sessionID) else { return }
         audioState.withLock { state in
+            guard state.sessionID == sessionID else { return }
             state.currentMode = .micOnly
         }
 
@@ -642,9 +1048,9 @@ final class TranscriptionController: @unchecked Sendable {
         }
     }
 
-    private func throttledUIUpdate(_ text: String) {
+    private func throttledUIUpdate(_ text: String) async {
         let shouldUpdate = audioState.withLock { state -> Bool in
-            let now = CACurrentMediaTime()
+            let now = TimeInterval(timingScheduler.nowNanoseconds) / 1_000_000_000
             guard now - state.lastUIUpdateTime >= uiUpdateThrottle else {
                 return false  // Throttle UI updates
             }
@@ -652,12 +1058,8 @@ final class TranscriptionController: @unchecked Sendable {
             return true
         }
 
-        if shouldUpdate {
-            if let onPartial {
-                Task { @MainActor in
-                    onPartial(text)
-                }
-            }
+        if shouldUpdate, let onPartial {
+            await onPartial(text)
         }
     }
 
@@ -665,7 +1067,7 @@ final class TranscriptionController: @unchecked Sendable {
         guard audioDiagnosticsEnabled else { return }
 
         let shouldLog = audioState.withLock { state -> Bool in
-            let now = CACurrentMediaTime()
+            let now = TimeInterval(timingScheduler.nowNanoseconds) / 1_000_000_000
             guard now - state.lastDiagnosticsLogTime >= audioDiagnosticsInterval else {
                 return false
             }

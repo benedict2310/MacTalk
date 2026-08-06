@@ -8,102 +8,115 @@
 import Foundation
 import AppKit
 
+typealias ModelDownloadOperationID = UUID
+
+/// The model-management boundary used by production download adapters.
+/// Every callback carries the operation which produced it. This is important
+/// because the shared manager can be asked to replace a transfer immediately.
+@MainActor
+protocol ModelManaging: AnyObject {
+    var onDownloadState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)? { get set }
+    func ensureAvailable(
+        _ spec: ModelSpec,
+        operationID: ModelDownloadOperationID,
+        onState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)?,
+        completion: @escaping @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void
+    )
+    func cancelDownload(operationID: ModelDownloadOperationID)
+}
+
 /// Enhanced ModelManager with automatic download capabilities.
 /// @MainActor ensures thread-safe access to download state and callbacks.
 @MainActor
-final class ModelManager {
+final class ModelManager: ModelManaging {
     static let shared = ModelManager()
-    private let downloader = ModelDownloader()
+    private let downloader: ModelDownloader
 
     /// Legacy compatibility - points to ModelStore directory
     nonisolated static let modelsDirectory: URL = ModelStore.modelsDir
 
-    /// Bind this from UI to receive progress updates
-    var onDownloadState: (@MainActor @Sendable (ModelDownloader.State) -> Void)?
+    /// Bind this from UI to receive progress updates. The operation ID is
+    /// intentionally part of the callback even for this legacy observer.
+    var onDownloadState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)?
 
-    /// Track if a download is currently in progress
-    private var isDownloading = false
+    private var activeOperationID: ModelDownloadOperationID?
     private var currentDownloadSpec: ModelSpec?
+    private var stateHandlers: [ModelDownloadOperationID: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)] = [:]
+    private var completionHandlers: [ModelDownloadOperationID: @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void] = [:]
 
-    private init() {
-        // Set up the downloader state forwarding
-        downloader.onState = { [weak self] state in
-            // Forward state updates on main actor
+    /// The downloader seam lets tests provide temporary roots and an injected
+    /// transport/task factory without touching the user's model store.
+    init(downloader: ModelDownloader = ModelDownloader()) {
+        self.downloader = downloader
+        downloader.onOperationState = { [weak self] operationID, state in
             Task { @MainActor in
-                guard let self = self else { return }
-
-                // Forward to UI callback if set
-                self.onDownloadState?(state)
-
-                // Forward to any completion handlers
-                self.completionHandler?(state)
-
-                // Update download state tracking
-                switch state {
-                case .running:
-                    self.isDownloading = true
-                case .done, .failed:
-                    self.isDownloading = false
-                    self.currentDownloadSpec = nil
-                default:
-                    break
-                }
+                self?.handle(state, operationID: operationID)
             }
         }
     }
 
-    /// Internal completion handler for ensureAvailable calls
-    private var completionHandler: ((ModelDownloader.State) -> Void)?
-
-    /// Ensure a model is available - downloads automatically if needed
-    /// - Parameters:
-    ///   - spec: The model specification to ensure is available
-    ///   - completion: Called with the model URL on success, or error on failure
-    func ensureAvailable(_ spec: ModelSpec, completion: @escaping (Result<URL, Error>) -> Void) {
-        // Check if model already exists
-        if ModelStore.exists(spec) {
-            completion(.success(ModelStore.path(for: spec)))
+    /// Ensure a model is available - downloads automatically if needed.
+    /// The caller owns the operation ID and must use it for cancellation.
+    func ensureAvailable(
+        _ spec: ModelSpec,
+        operationID: ModelDownloadOperationID,
+        onState: (@MainActor @Sendable (ModelDownloadOperationID, ModelDownloader.State) -> Void)? = nil,
+        completion: @escaping @MainActor (ModelDownloadOperationID, Result<URL, Error>) -> Void
+    ) {
+        if let activeOperationID {
+            if activeOperationID == operationID, currentDownloadSpec?.id == spec.id {
+                return
+            }
+            completion(operationID, .failure(NSError(
+                domain: "com.mactalk.modelmanager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Another model is currently downloading. Please wait."]
+            )))
             return
         }
 
-        // Prevent concurrent downloads
-        if isDownloading {
-            if currentDownloadSpec?.id == spec.id {
-                // Same model already downloading - just wait for it
-                return
-            } else {
-                // Different model downloading
-                completion(.failure(NSError(
-                    domain: "com.mactalk.modelmanager",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Another model is currently downloading. Please wait."]
-                )))
-                return
-            }
-        }
-
-        // Mark as downloading
-        isDownloading = true
+        activeOperationID = operationID
         currentDownloadSpec = spec
-
-        // Set up completion handler to forward done/failed states
-        completionHandler = { state in
-            switch state {
-            case .done(let url):
-                completion(.success(url))
-            case .failed(let error):
-                completion(.failure(error))
-            default:
-                break
-            }
-        }
-
-        downloader.start(spec: spec)
+        stateHandlers[operationID] = onState
+        completionHandlers[operationID] = completion
+        downloader.start(spec: spec, operationID: operationID)
     }
 
-    /// Cancel ongoing download
-    func cancelDownload() {
+    /// Invalidate the operation synchronously before cancelling its underlying
+    /// transfer. Any cancellation callback from the downloader is therefore
+    /// stale and cannot be delivered to a replacement operation.
+    func cancelDownload(operationID: ModelDownloadOperationID) {
+        guard activeOperationID == operationID else { return }
+        activeOperationID = nil
+        currentDownloadSpec = nil
+        stateHandlers.removeValue(forKey: operationID)
+        let completion = completionHandlers.removeValue(forKey: operationID)
+        completion?(operationID, .failure(ModelDownloader.ErrorType.cancelled))
         downloader.cancel()
+    }
+
+    private func handle(_ state: ModelDownloader.State, operationID: ModelDownloadOperationID) {
+        guard activeOperationID == operationID else { return }
+        onDownloadState?(operationID, state)
+        stateHandlers[operationID]?(operationID, state)
+
+        switch state {
+        case .done(let url):
+            finish(operationID, with: .success(url))
+        case .failed(let error):
+            finish(operationID, with: .failure(error))
+        default:
+            break
+        }
+    }
+
+    private func finish(_ operationID: ModelDownloadOperationID, with result: Result<URL, Error>) {
+        guard activeOperationID == operationID else { return }
+        activeOperationID = nil
+        currentDownloadSpec = nil
+        stateHandlers.removeValue(forKey: operationID)
+        let completion = completionHandlers.removeValue(forKey: operationID)
+        completion?(operationID, result)
     }
 
     // MARK: - Legacy Compatibility Methods
@@ -216,22 +229,20 @@ extension ModelManager {
             return
         }
 
-        // Use the shared manager to download
-        shared.onDownloadState = { state in
+        // Use an operation-scoped callback rather than the shared manager's
+        // singleton observer. A second request can replace this one at any
+        // time without redirecting A's callbacks into B's completion.
+        let operationID = UUID()
+        shared.ensureAvailable(spec, operationID: operationID, onState: { _, state in
             switch state {
             case .running(let progress):
                 progressHandler(progress)
-            case .done(let url):
-                completion(.success(url))
-            case .failed(let error):
-                completion(.failure(error))
             default:
                 break
             }
-        }
-
-        shared.ensureAvailable(spec) { result in
-            // Completion already handled by onDownloadState callback
+        }) { callbackOperationID, result in
+            guard callbackOperationID == operationID else { return }
+            completion(result)
         }
     }
 }

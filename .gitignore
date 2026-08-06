@@ -1,5 +1,9 @@
 # MacTalk .gitignore
 
+# Local agent workspaces and profiling output
+.worktrees/
+*.profraw
+
 ## macOS System Files
 .DS_Store
 .AppleDouble
@@ -46,6 +50,10 @@ xcuserdata/
 *.xcscmblueprint
 *.xcscheme
 !*.xcscheme.shared
+# Shared XcodeGen schemes are tracked reproducibility inputs.
+!MacTalk.xcodeproj/xcshareddata/
+!MacTalk.xcodeproj/xcshareddata/xcschemes/
+!MacTalk.xcodeproj/xcshareddata/xcschemes/*.xcscheme
 
 # Xcode Workspace
 *.xcworkspace
@@ -59,7 +67,13 @@ xcuserdata/
 .build/
 Packages/
 Package.pins
+# The canonical Xcode project SwiftPM resolution is tracked below.
 Package.resolved
+!MacTalk.xcodeproj/project.xcworkspace/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+!MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+MacTalk.xcodeproj/project.xcworkspace/contents.xcworkspacedata
 # Note: We track MacTalk.xcodeproj since it's our main project
 # *.xcodeproj/
 

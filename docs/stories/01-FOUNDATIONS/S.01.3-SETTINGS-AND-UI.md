@@ -12,7 +12,7 @@ Expose the Parakeet engine to the user and handle runtime switching.
 **Goal:** Users can toggle between "Whisper" and "Parakeet" in Settings, and the app seamlessly switches engines.
 
 ---
-    
+
 ## 2. Implementation Plan
 
 ### Step 1: Provider Enum

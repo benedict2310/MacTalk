@@ -1,6 +1,10 @@
 # MacTalk Documentation
 
-> **Native macOS menu bar app for local voice transcription powered by Whisper**
+> **Native macOS menu bar app for local voice transcription powered by Whisper and Parakeet**
+>
+> Current evidence is dated in [`STATUS.md`](STATUS.md). Many story, roadmap,
+> and progress files are historical planning material and are not API/support
+> claims.
 
 Welcome to the MacTalk documentation hub. All technical documentation has been organized into logical categories for easy navigation.
 
@@ -21,14 +25,14 @@ Welcome to the MacTalk documentation hub. All technical documentation has been o
 Project requirements and progress tracking
 
 - **[PRD.md](planning/PRD.md)** - Product Requirements Document (what we're building)
-- **[PROGRESS.md](planning/PROGRESS.md)** - Current development status and progress tracking
+- Historical: **[PROGRESS.md](planning/PROGRESS.md)** - Historical development status and progress tracking
 
 ### 🛠️ [Development](development/)
 Core technical documentation for developers
 
 - **[ARCHITECTURE.md](development/ARCHITECTURE.md)** - System architecture, components, and data flow
 - **[SETUP.md](development/SETUP.md)** - Development environment setup guide
-- **[XCODE_BUILD.md](development/XCODE_BUILD.md)** - Xcode project configuration and build settings
+- **Historical: [XCODE_BUILD.md](development/XCODE_BUILD.md)** - Superseded Xcode project configuration and build settings; use [SETUP.md](development/SETUP.md) for current instructions
 
 ### ✨ [Features](features/)
 Detailed feature implementation documentation
@@ -54,7 +58,8 @@ macOS permissions system (microphone, screen recording, accessibility)
 Testing strategy, coverage, and procedures
 
 - **[TESTING.md](testing/TESTING.md)** - Testing guide and how to run tests
-- **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Detailed code coverage reports and metrics
+- **[STATUS.md](STATUS.md)** - Current verified test and coverage measurements; run `scripts/coverage.sh` to regenerate coverage artifacts
+- Historical: **[TEST_COVERAGE.md](testing/TEST_COVERAGE.md)** - Historical coverage report; use [STATUS.md](STATUS.md) for current measurements
 
 ### 🚀 [Deployment](deployment/)
 Build, distribution, and release processes
@@ -79,12 +84,12 @@ Issue resolution, debugging, and known problems
 
 **Setting up the project:**
 1. Read [SETUP.md](development/SETUP.md)
-2. Follow build instructions in [XCODE_BUILD.md](development/XCODE_BUILD.md)
-3. Review [ARCHITECTURE.md](development/ARCHITECTURE.md)
+2. Review [ARCHITECTURE.md](development/ARCHITECTURE.md)
+3. Check [STATUS.md](STATUS.md) for the current verified baseline
 
 **Running tests:**
 1. See [TESTING.md](testing/TESTING.md)
-2. Check coverage in [TEST_COVERAGE.md](testing/TEST_COVERAGE.md)
+2. Run `scripts/coverage.sh` and check the current measurements in [STATUS.md](STATUS.md)
 
 **Debugging permission issues:**
 1. Start with [permissions/README.md](permissions/README.md)
@@ -97,7 +102,8 @@ Issue resolution, debugging, and known problems
 1. [PRD.md](planning/PRD.md) - Full product requirements
 2. [LIQUID_GLASS_UI.md](features/LIQUID_GLASS_UI.md) - UI design system
 3. [ACCESSIBILITY.md](features/ACCESSIBILITY.md) - Accessibility standards
-4. [PROGRESS.md](planning/PROGRESS.md) - Current status
+4. [STATUS.md](STATUS.md) - Current verified baseline
+5. Historical: [PROGRESS.md](planning/PROGRESS.md) - Earlier development status and progress tracking
 
 ### For QA/Testing
 
@@ -110,20 +116,20 @@ Issue resolution, debugging, and known problems
 
 ## Project Status
 
-**Current Phase:** Phase 5 Complete - Ready for Release Preparation
-**Last Updated:** 2025-11-14
+**Current evidence baseline:** 2026-07-18
 
-See [PROGRESS.md](planning/PROGRESS.md) for detailed milestone tracking.
+See [STATUS.md](STATUS.md) for reproducible command results and external blockers.
 
 ---
 
 ## Tech Stack
 
-- **Language:** Swift 5.9+ (macOS 14.0+)
-- **Frameworks:** AppKit, AVFoundation, ScreenCaptureKit
-- **Audio Engine:** whisper.cpp (Metal-accelerated)
-- **Build System:** XcodeGen
-- **Testing:** XCTest (85%+ coverage)
+- **Language:** Swift 6.0 with complete strict concurrency
+- **Platform:** macOS 26.0 deployment target
+- **Frameworks:** AppKit, AVFoundation, ScreenCaptureKit, Metal
+- **ASR:** Whisper via whisper.cpp and Parakeet via FluidAudio 0.15.5
+- **Build System:** XcodeGen 2.44.1
+- **Testing:** XCTest deterministic lanes; measured coverage is recorded in STATUS.md
 
 ---
 
@@ -138,19 +144,25 @@ See [PROGRESS.md](planning/PROGRESS.md) for detailed milestone tracking.
 
 ## Key Decisions
 
-See **Decisions Log** in [PROGRESS.md](planning/PROGRESS.md) for architectural decisions.
+Current accepted decisions are the ADRs in [development/adr](development/adr/):
+
+- [ADR-001](development/adr/ADR-001-timestamp-aligned-audio-composition.md) - timestamp-aligned audio composition
+- [ADR-002](development/adr/ADR-002-settings-and-state-ownership.md) - settings and recording state ownership
+- [ADR-003](development/adr/ADR-003-privacy-logging.md) - privacy-preserving diagnostics
+- [ADR-004](development/adr/ADR-004-dependency-pinning.md) - dependency/model pinning
+- [ADR-005](development/adr/ADR-005-signing-policy.md) - signing and release policy
 
 Notable choices:
-- whisper.cpp over CoreML (better performance, quantization support)
-- Menu bar app paradigm (minimal UI, quick access)
+- Provider-neutral ASREngine boundary for Whisper and Parakeet
+- Timestamp-aligned composition for microphone and app audio
 - XcodeGen for project management (declarative configuration)
-- Local-only processing (privacy-first, no cloud)
+- Local transcription after model provisioning; model downloaders remain explicit network code
 
 ---
 
 ## Getting Help
 
-**Build/Setup Issues:** [development/SETUP.md](development/SETUP.md), [development/XCODE_BUILD.md](development/XCODE_BUILD.md)
+**Build/Setup Issues:** [development/SETUP.md](development/SETUP.md), [STATUS.md](STATUS.md)
 **Permission Problems:** [permissions/README.md](permissions/README.md)
 **Performance Issues:** [troubleshooting/PROFILING.md](troubleshooting/PROFILING.md)
 **Test Failures:** [testing/TESTING.md](testing/TESTING.md)

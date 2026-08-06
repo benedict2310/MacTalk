@@ -11,7 +11,6 @@ import FluidAudio
 
 final class ParakeetEngine: @unchecked Sendable, ASREngine {
     private let bootstrap: ParakeetBootstrap
-    private var partialHandler: (@Sendable (ASRPartial) -> Void)?
     private let core: ParakeetEngineCore
 
     let provider: ASRProvider = .parakeet
@@ -29,16 +28,10 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
         await core.reset()
     }
 
-    func setPartialHandler(_ handler: (@Sendable (ASRPartial) -> Void)?) {
-        partialHandler = handler
-    }
-
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial? {
         let result = try await core.transcribe(buffer: buffer)
         let words = mapWords(from: result)
-        let partial = ASRPartial(text: result.text, words: words)
-        partialHandler?(partial)
-        return partial
+        return ASRPartial(text: result.text, words: words)
     }
 
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
@@ -62,7 +55,7 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
 
 private actor ParakeetEngineCore {
     private let bootstrap: ParakeetBootstrap
-    private var manager: AsrManager?
+    private var loadedManager: ParakeetBootstrapLoadedManager?
     private var decoderState: TdtDecoderState?
 
     init(bootstrap: ParakeetBootstrap) {
@@ -70,7 +63,7 @@ private actor ParakeetEngineCore {
     }
 
     func prepare() async throws {
-        manager = try await bootstrap.ensureReady()
+        loadedManager = try await bootstrap.ensureReady()
     }
 
     func reset() async {
@@ -79,19 +72,21 @@ private actor ParakeetEngineCore {
     }
 
     func transcribe(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
-        let manager = try await bootstrap.ensureReady()
+        let loaded = try await bootstrap.ensureReady()
+        loadedManager = loaded
         if decoderState == nil {
-            decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+            decoderState = TdtDecoderState.make(decoderLayers: await loaded.manager.decoderLayerCount)
         }
         var state = decoderState!
-        let result = try await manager.transcribe(buffer, decoderState: &state)
+        let result = try await loaded.manager.transcribe(buffer, decoderState: &state)
         decoderState = state
         return result
     }
 
     func finalize(buffer: AVAudioPCMBuffer) async throws -> ASRResult {
-        let manager = try await bootstrap.ensureReady()
-        var finalState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        return try await manager.transcribe(buffer, decoderState: &finalState)
+        let loaded = try await bootstrap.ensureReady()
+        loadedManager = loaded
+        var finalState = TdtDecoderState.make(decoderLayers: await loaded.manager.decoderLayerCount)
+        return try await loaded.manager.transcribe(buffer, decoderState: &finalState)
     }
 }

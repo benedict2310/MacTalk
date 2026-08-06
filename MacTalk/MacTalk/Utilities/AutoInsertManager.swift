@@ -45,12 +45,11 @@ enum AutoInsertManager {
 
     // MARK: - Public API
 
-    /// Insert text into the currently focused text field
-    /// - Parameter text: The text to insert
-    /// - Returns: Result indicating which method was used or failure reason
-    static func insertText(_ text: String) -> AutoInsertResult {
-        NSLog("[AutoInsertManager] insertText called with \(text.count) characters")
-        DLOG("[AutoInsert] insertText called: chars=\(text.count)")
+    /// Insert text when the caller has already copied it to the clipboard.
+    /// The Cmd-V fallback deliberately does not write the clipboard again.
+    static func insertClipboardText(_ text: String) -> AutoInsertResult {
+        NSLog("[AutoInsertManager] insertClipboardText called with \(text.count) characters")
+        DLOG("[AutoInsert] insertClipboardText called: chars=\(text.count)")
 
         // Check accessibility permission first
         let isTrusted = PermissionsActor.shared.isAccessibilityTrusted()
@@ -81,36 +80,12 @@ enum AutoInsertManager {
         NSLog("[AutoInsertManager] AX SetValue failed, falling back to Cmd+V")
         DLOG("[AutoInsert] AX SetValue path failed; scheduling Cmd+V fallback after 50ms")
 
-        // Fallback to Cmd+V using existing ClipboardManager
-        // Use async dispatch with small delay to avoid blocking main thread
-        // and to ensure clipboard write is visible to the system
-        ClipboardManager.setClipboard(text)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             DLOG("[AutoInsert] Cmd+V fallback timer fired")
             Self.sendCommandV()
         }
         DLOG("[AutoInsert] result=cmdVFallback (event scheduled, not verified)")
         return .cmdVFallback
-    }
-
-    /// Insert text and request permission if needed
-    /// - Parameters:
-    ///   - text: The text to insert
-    ///   - requestPermission: If true, will request permission if not granted
-    /// - Returns: Result indicating which method was used or failure reason
-    static func insertTextWithPermissionRequest(_ text: String, requestPermission: Bool = true) -> AutoInsertResult {
-        // Check accessibility permission
-        if !PermissionsActor.shared.isAccessibilityTrusted() {
-            if requestPermission {
-                NSLog("[AutoInsertManager] Requesting accessibility permission")
-                DLOG("[AutoInsert] insertTextWithPermissionRequest requesting Accessibility prompt")
-                _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
-            }
-            DLOG("[AutoInsert] insertTextWithPermissionRequest returning permissionDenied")
-            return .permissionDenied
-        }
-
-        return insertText(text)
     }
 
     // MARK: - AX SetValue Implementation
@@ -297,7 +272,7 @@ enum AutoInsertManager {
 
     // MARK: - Cmd+V Fallback
 
-    /// Simulate Command+V key press (same as ClipboardManager.sendCommandV)
+    /// Simulate Command+V key press.
     private static func sendCommandV() {
         let source = CGEventSource(stateID: .hidSystemState)
 

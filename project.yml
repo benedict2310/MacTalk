@@ -5,15 +5,21 @@ options:
     macOS: "26.0"
   developmentLanguage: en
 
+configs:
+  Debug: debug
+  Release: release
+  DebugTSan: debug
+
 settings:
   SWIFT_VERSION: "6.0"
   SWIFT_STRICT_CONCURRENCY: complete
   MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 packages:
+  # Pin the API-compatible release used by the verified build.
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
-    from: 0.7.11
+    exactVersion: 0.15.5
 
 targets:
   MacTalk:
@@ -28,8 +34,8 @@ targets:
       path: MacTalk/MacTalk/Info.plist
       properties:
         CFBundleIdentifier: com.mactalk.app
-        CFBundleVersion: "4"
-        CFBundleShortVersionString: "1.1.3"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
         LSUIElement: true
         NSMicrophoneUsageDescription: "MacTalk needs microphone access to transcribe your voice."
         NSAppleEventsUsageDescription: "MacTalk needs accessibility permission to auto-paste transcriptions."
@@ -37,34 +43,40 @@ targets:
         NSHumanReadableCopyright: "Copyright © 2025 MacTalk Development Team"
         NSPrincipalClass: "NSApplication"
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.mactalk.app
-      INFOPLIST_FILE: MacTalk/MacTalk/Info.plist
-      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      SWIFT_OBJC_BRIDGING_HEADER: MacTalk/MacTalk/Whisper/WhisperBridge.h
-      HEADER_SEARCH_PATHS:
-        - $(PROJECT_DIR)/Vendor/whisper.cpp
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/include
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/src
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/ggml/include
-      LIBRARY_SEARCH_PATHS:
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/build/src
-        - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src
-      OTHER_LDFLAGS:
-        - -lwhisper
-        - -framework Accelerate
-        - -framework Metal
-        - -framework Foundation
-        - -framework AVFoundation
-        - -framework AppKit
-        - -framework ScreenCaptureKit
-      LD_RUNPATH_SEARCH_PATHS:
-        - "@executable_path/../Frameworks"
-        - "@loader_path/../Frameworks"
-      ENABLE_HARDENED_RUNTIME: NO
-      CODE_SIGN_STYLE: Automatic
-      DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
-      CODE_SIGN_ENTITLEMENTS: MacTalk/MacTalk/MacTalk.entitlements
-      GENERATE_INFOPLIST_FILE: NO
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mactalk.app
+        INFOPLIST_FILE: MacTalk/MacTalk/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_OBJC_BRIDGING_HEADER: MacTalk/MacTalk/Whisper/WhisperBridge.h
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Vendor/whisper.cpp
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/include
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/src
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/ggml/include
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/src
+          - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src
+        OTHER_LDFLAGS:
+          - -lwhisper
+          - -framework Accelerate
+          - -framework Metal
+          - -framework Foundation
+          - -framework AVFoundation
+          - -framework AppKit
+          - -framework ScreenCaptureKit
+          - -framework UserNotifications
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "@loader_path/../Frameworks"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "9SXL4GJ4TZ"
+        CODE_SIGN_ENTITLEMENTS: MacTalk/MacTalk/MacTalk.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+      configs:
+        DebugTSan:
+          ENABLE_THREAD_SANITIZER: YES
     dependencies:
       - sdk: Accelerate.framework
       - sdk: Metal.framework
@@ -72,6 +84,7 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: AppKit.framework
       - sdk: ScreenCaptureKit.framework
+      - sdk: UserNotifications.framework
       - sdk: CoreML.framework
       - package: FluidAudio
     postBuildScripts:
@@ -91,36 +104,38 @@ targets:
           - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-blas.dylib
           - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libggml-metal.dylib
         script: |
+          #!/bin/bash
+          set -euo pipefail
           # Create Frameworks directory
           mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 
-          # Copy whisper.cpp libraries
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/src/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-blas/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
-          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" || true
+          # Copy whisper.cpp libraries. Missing inputs are build failures, not optional warnings.
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/src/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-blas/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+          cp -f "${PROJECT_DIR}/Vendor/whisper.cpp/build/ggml/src/ggml-metal/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
 
-          # Fix install names
-          install_name_tool -id "@rpath/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib" || true
-          install_name_tool -id "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml.dylib" || true
-          install_name_tool -id "@rpath/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-base.dylib" || true
-          install_name_tool -id "@rpath/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-cpu.dylib" || true
-          install_name_tool -id "@rpath/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-blas.dylib" || true
-          install_name_tool -id "@rpath/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-metal.dylib" || true
+          # Fix install names. Any failed rewrite invalidates the release bundle.
+          install_name_tool -id "@rpath/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib"
+          install_name_tool -id "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml.dylib"
+          install_name_tool -id "@rpath/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-base.dylib"
+          install_name_tool -id "@rpath/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-cpu.dylib"
+          install_name_tool -id "@rpath/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-blas.dylib"
+          install_name_tool -id "@rpath/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libggml-metal.dylib"
 
-          # Update dependencies in libwhisper
-          install_name_tool -change "@rpath/libggml.dylib" "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib" || true
+          # Update dependencies in libwhisper.
+          install_name_tool -change "@rpath/libggml.dylib" "@rpath/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libwhisper.1.dylib"
 
-          # Fix library references in the debug dylib (CRITICAL for macOS 26)
+          # Fix library references in the debug dylib (CRITICAL for macOS 26).
           if [ -f "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" ]; then
-            install_name_tool -change "@rpath/libwhisper.1.dylib" "@loader_path/../Frameworks/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
-            install_name_tool -change "@rpath/libggml.dylib" "@loader_path/../Frameworks/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
-            install_name_tool -change "@rpath/libggml-base.dylib" "@loader_path/../Frameworks/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
-            install_name_tool -change "@rpath/libggml-cpu.dylib" "@loader_path/../Frameworks/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
-            install_name_tool -change "@rpath/libggml-blas.dylib" "@loader_path/../Frameworks/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
-            install_name_tool -change "@rpath/libggml-metal.dylib" "@loader_path/../Frameworks/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib" || true
+            install_name_tool -change "@rpath/libwhisper.1.dylib" "@loader_path/../Frameworks/libwhisper.1.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
+            install_name_tool -change "@rpath/libggml.dylib" "@loader_path/../Frameworks/libggml.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
+            install_name_tool -change "@rpath/libggml-base.dylib" "@loader_path/../Frameworks/libggml-base.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
+            install_name_tool -change "@rpath/libggml-cpu.dylib" "@loader_path/../Frameworks/libggml-cpu.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
+            install_name_tool -change "@rpath/libggml-blas.dylib" "@loader_path/../Frameworks/libggml-blas.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
+            install_name_tool -change "@rpath/libggml-metal.dylib" "@loader_path/../Frameworks/libggml-metal.dylib" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/${PRODUCT_NAME}.debug.dylib"
             echo "Fixed library paths in ${PRODUCT_NAME}.debug.dylib"
           fi
 
@@ -130,27 +145,45 @@ targets:
         runOnlyForDeploymentPostprocessing: false
         script: |
           #!/bin/bash
+          set -euo pipefail
           # CRITICAL for macOS 26: Re-sign all dylibs to fix Team ID mismatch
           # This must run AFTER Xcode's CodeSign phase
           # IMPORTANT: Use same certificate as main app to preserve accessibility permissions across builds
 
-          # Get the code signing identity from Xcode build settings
-          SIGNING_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-Apple Development}"
+          # Unsigned CI/test builds intentionally skip this release-only phase.
+          if [ "${CODE_SIGNING_ALLOWED:-YES}" != "YES" ]; then
+            echo "⏭️  [Post-Build] Code signing disabled by build settings"
+            exit 0
+          fi
+
+          SIGNING_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
+          if [ -z "$SIGNING_IDENTITY" ] || [ "$SIGNING_IDENTITY" = "-" ]; then
+            echo "❌ [Post-Build] No signing identity is available" >&2
+            exit 1
+          fi
 
           echo "🔐 [Post-Build] Re-signing whisper.cpp libraries with: $SIGNING_IDENTITY"
 
-          # Re-sign all dylibs in Frameworks with same certificate as app
+          # Re-sign all dylibs in Frameworks with the same certificate as the app.
+          found_library=false
           for lib in "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"/*.dylib; do
             if [ -f "$lib" ]; then
-              codesign --force --sign "$SIGNING_IDENTITY" "$lib" 2>&1 | grep -v "replacing existing signature" || true
-              echo "   ✅ Signed: $(basename $lib)"
+              found_library=true
+              codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$lib"
+              echo "   ✅ Signed: $(basename "$lib")"
             fi
           done
+          if [ "$found_library" != true ]; then
+            echo "❌ [Post-Build] No nested dylibs were found to sign" >&2
+            exit 1
+          fi
 
-          # Re-sign the app bundle with deep option using same certificate
-          # Preserve entitlements so release signing can request microphone/accessibility correctly.
+          # Re-sign the app bundle with the same certificate. Preserve the
+          # entitlements generated by Xcode and keep the hardened-runtime flag.
           echo "🔐 [Post-Build] Re-signing app bundle with: $SIGNING_IDENTITY"
-          codesign --force --deep --sign "$SIGNING_IDENTITY" --preserve-metadata=entitlements "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app" 2>&1 | grep -v "replacing existing signature" || true
+          codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+            --preserve-metadata=entitlements,requirements,flags \
+            "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app"
 
           echo "✅ [Post-Build] Code signing complete with identity: $SIGNING_IDENTITY"
 
@@ -159,6 +192,34 @@ targets:
     platform: macOS
     sources:
       - path: MacTalk/MacTalkTests
+        excludes:
+          - Fixtures
+    postBuildScripts:
+      - name: Copy Verified CoreML Fixture
+        inputFiles:
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/model.mlmodel
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/weights/weight.bin
+          - $(PROJECT_DIR)/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture/fixture-manifest.json
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/model.mlmodel
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/weights/weight.bin
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/VerifiedCoreMLFixture/fixture-manifest.json
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          source_fixture="${PROJECT_DIR}/MacTalk/MacTalkTests/Fixtures/VerifiedCoreMLFixture"
+          copy_fixture() {
+            local fixture="$1"
+            mkdir -p "$fixture/weights"
+            cp -f "$source_fixture/model.mlmodel" "$fixture/model.mlmodel"
+            cp -f "$source_fixture/weights/weight.bin" "$fixture/weights/weight.bin"
+            cp -f "$source_fixture/fixture-manifest.json" "$fixture/fixture-manifest.json"
+          }
+          copy_fixture "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/VerifiedCoreMLFixture"
+          nested="${BUILT_PRODUCTS_DIR}/MacTalk.app/Contents/PlugIns/MacTalkTests.xctest/Contents/Resources/VerifiedCoreMLFixture"
+          if [ -d "$(dirname "$nested")" ]; then
+            copy_fixture "$nested"
+          fi
     settings:
       BUNDLE_LOADER: "$(TEST_HOST)"
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MacTalk.app/Contents/MacOS/MacTalk"
@@ -166,6 +227,17 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MacTalk
+      - target: ParakeetStoreLockProbe
+  ParakeetStoreLockProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Tools/ParakeetStoreLockProbe
+      - path: MacTalk/MacTalk/Whisper/ParakeetStoreFileLock.swift
+    settings:
+      SWIFT_VERSION: "6.0"
+      SWIFT_STRICT_CONCURRENCY: complete
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
 
 schemes:
   MacTalk:
@@ -194,17 +266,19 @@ schemes:
       targets:
         MacTalk: all
     run:
-      config: Debug
+      config: DebugTSan
       environmentVariables:
-        TSAN_OPTIONS: "halt_on_error=0"
+        TSAN_OPTIONS: "halt_on_error=1"
     test:
-      config: Debug
+      config: DebugTSan
       targets:
         - MacTalkTests
       diagnostics:
         threadSanitizer: true
+        # Keep sanitizer instrumentation in the generated scheme itself;
+        # callers must not rely on an uninstrumented xcodebuild override.
       environmentVariables:
-        TSAN_OPTIONS: "suppressions=$(PROJECT_DIR)/tsan_suppressions.txt:halt_on_error=0"
+        TSAN_OPTIONS: "halt_on_error=1"
     profile:
       config: Release
     analyze:

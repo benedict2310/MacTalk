@@ -1,307 +1,121 @@
-# MacTalk Testing Guide
+# Testing policy and commands
 
-## Overview
+**Evidence baseline:** [docs/STATUS.md](../STATUS.md), dated 2026-07-18.
+This page defines lanes; it does not invent a coverage target or test count.
 
-This document explains how to run the unit tests for MacTalk. All tests are written using XCTest and can be run directly in Xcode.
+## Deterministic unit lane
 
-## Test Coverage
+The blocking lane is:
 
-We have created comprehensive unit tests for the following components:
-
-### 1. RingBufferTests.swift (~200 lines, 15+ tests)
-- Basic operations (push, pop, peek, clear)
-- Overflow handling
-- Multiple operations (popMultiple, pushSamples)
-- Thread safety (concurrent push/pop, multiple writers)
-- Edge cases (empty buffer, single element, wrap-around)
-- Performance benchmarks
-
-### 2. AudioLevelMonitorTests.swift (~300+ lines, 20+ tests)
-- RMS calculation (silence, constant signal, sine wave)
-- Peak detection (positive and negative values)
-- Peak hold with decay
-- Smoothing and convergence
-- Decibel conversion utilities
-- Multi-channel monitoring
-- Edge cases (empty buffer, clipping)
-- Performance benchmarks
-
-### 3. AudioMixerTests.swift (~250 lines, 15+ tests)
-- Format conversion (16kHz, 48kHz, 44.1kHz)
-- Sample rate conversion accuracy
-- Stereo to mono downmixing
-- Multiple conversions with same/different formats
-- Sample value preservation
-- Edge cases (empty, small, large buffers)
-- Performance benchmarks
-
-### 4. ModelManagerTests.swift (~250 lines, 15+ tests)
-- Path management
-- Model existence checks
-- Model naming conventions
-- Model size calculations
-- Model deletion
-- List available models
-- Directory creation
-- Edge cases (empty names, special characters, path traversal)
-
-**Total: 60+ test methods covering all core components**
-
-## Prerequisites
-
-Before running tests, you need:
-
-1. **Xcode 15.0+** installed on macOS 14.0+
-2. **MacTalk.xcodeproj** created (✅ Done)
-3. **Test files** in MacTalkTests/ directory (✅ Done)
-
-## How to Run Tests in Xcode
-
-### Step 1: Open the Project
-
-```bash
-cd MacTalk/MacTalk
-open MacTalk.xcodeproj
+```sh
+scripts/test-lanes.sh unit
 ```
 
-This will open the project in Xcode.
+`test-lanes.sh` creates an isolated HOME, runs the generated `MacTalk` scheme
+with code signing disabled, and applies the explicit selection from
+`scripts/deterministic-test-selection.sh`. Tests use injected capture sessions,
+ASR engines, clocks, schedulers, downloaders, and network traps. The lane does
+not use TCC, audio hardware, provider networks, or a real model.
 
-### Step 2: Select the MacTalk Scheme
+The explicit selection includes bounded transport, provenance/integrity,
+Parakeet source preparation/materialization/snapshot, verified byte loading,
+bootstrap generation ownership, source-only availability, and legacy compiled
+cleanup suites. `scripts/ci-security-checks.sh` also runs offline provenance
+negative fixtures and `scripts/tests/test_model_security_source_guard.sh`, which
+mutates a temporary source copy to prove that path-loading, unverified loading,
+and unbounded production-transport regressions are rejected.
 
-In the Xcode toolbar at the top:
-1. Click on the scheme selector (left of the play/stop buttons)
-2. Ensure "MacTalk" is selected
-3. Select "My Mac" as the destination
+The 2026-07-18 run executed **203 tests, 0 failures, 0 skips**. At model-security
+closure checkout `72762ed` on 2026-07-26, the expanded selection executed
+**470 tests, 0 failures, 0 skips**; the repeat lane completed three relaunch
+iterations of that selection without failure. These numbers are command results
+from their named checkouts, not a permanent contract; rerun the command and read
+the XCTest summary for a new result.
 
-### Step 3: Run All Tests
+Useful deterministic variants:
 
-Use any of these methods:
-
-**Method 1: Keyboard Shortcut**
-```
-Press: Cmd + U
-```
-
-**Method 2: Menu**
-```
-Product → Test
-```
-
-**Method 3: Test Navigator**
-```
-1. Open Test Navigator (Cmd + 6)
-2. Click the ▶ button next to "MacTalkTests"
-```
-
-### Step 4: Run Individual Test Files
-
-To run a specific test file:
-
-1. Open Test Navigator (Cmd + 6)
-2. Expand "MacTalkTests"
-3. Click the ▶ button next to the specific test file:
-   - RingBufferTests
-   - AudioLevelMonitorTests
-   - AudioMixerTests
-   - ModelManagerTests
-
-### Step 5: Run Individual Tests
-
-To run a single test method:
-
-1. Open the test file in Xcode
-2. Look for the diamond icon (◇) in the gutter next to each test method
-3. Click the diamond to run just that test
-4. It will turn into a checkmark (✓) if passed or X (✗) if failed
-
-## Understanding Test Results
-
-### Test Success
-```
-✓ All tests passed
-Test Suite 'MacTalkTests' passed at 2025-01-15 10:30:00.123
-     Executed 60 tests, with 0 failures (0 unexpected) in 2.5 seconds
+```sh
+scripts/test-lanes.sh repeat       # three relaunch iterations
+scripts/test-lanes.sh appkit       # HUD/settings/status controllers, no TCC
+scripts/test-lanes.sh real-model   # explicit path required; never downloads
 ```
 
-### Test Failure
-If a test fails, you'll see:
-```
-✗ testRMSCalculationSilence failed
-XCTAssertEqual failed: ("0.5") is not equal to ("0.0")
-```
+The `real-model` lane must be opted into with
+`MACTALK_EXISTING_MODEL_PATH` pointing to one existing catalog artifact. It
+validates the catalog identity and SHA-256. It must not be run against a path
+that is also being changed by another process.
 
-## Expected Test Behavior
+## Coverage lane
 
-### Tests That Should Pass Immediately
-
-These tests don't require any external dependencies:
-
-- ✅ **RingBufferTests**: All tests should pass (pure Swift, no dependencies)
-- ✅ **AudioLevelMonitorTests**: All tests should pass (uses Accelerate framework)
-- ✅ **AudioMixerTests**: All tests should pass (uses AVFoundation)
-
-### Tests That May Need Adjustment
-
-These tests reference components that depend on whisper.cpp:
-
-- ⚠️ **ModelManagerTests**: Some tests may fail if the actual `ModelManager` implementation isn't complete yet
-
-## Common Issues and Solutions
-
-### Issue 1: "Cannot find 'ModelManager' in scope"
-
-**Cause**: The test file can't see the implementation.
-
-**Solution**: Make sure `ModelManager.swift` is added to the MacTalk target:
-1. Select `ModelManager.swift` in Project Navigator
-2. Open File Inspector (Cmd + Option + 1)
-3. Under "Target Membership", ensure "MacTalk" is checked
-
-### Issue 2: "Use of undeclared type 'RingBuffer'"
-
-**Cause**: Test target can't access the main app's code.
-
-**Solution**: The implementation files need to be visible to tests:
-1. Ensure all source files are in the MacTalk target
-2. If using `@testable import MacTalk`, ensure the scheme builds the app before tests
-
-### Issue 3: Build Fails Due to Missing whisper.cpp
-
-**Cause**: WhisperBridge.mm references whisper.cpp headers that aren't built yet.
-
-**Solution**: This is expected. For now, you can:
-
-**Option A**: Comment out whisper.cpp integration temporarily
-```swift
-// In WhisperBridge.mm, comment out whisper.cpp includes
-// #include "whisper.h"
+```sh
+scripts/coverage.sh
 ```
 
-**Option B**: Build whisper.cpp first (see `docs/XCODE_BUILD.md`)
+The result is `build/coverage/MacTalk.xcresult`; the per-file report is
+`build/coverage/coverage-by-file.txt`. On 2026-07-18, the command executed 203
+tests with 0 failures. `xccov` reported app target line coverage of
+**39.19% (4320/11022)** and test-bundle coverage of **88.20% (5896/6685)** in
+that artifact. These figures include the instrumented target exactly as
+reported by `xccov`; they are not claims of branch coverage, UI coverage, or
+coverage for unexecuted external packages. No minimum percentage is asserted
+here.
 
-**Option C**: Remove WhisperBridge.mm from the MacTalk target temporarily:
-1. Select WhisperBridge.mm in Project Navigator
-2. File Inspector → Target Membership
-3. Uncheck "MacTalk"
+When reporting a new number, include the exact command, checkout, date, and
+`.xcresult` or text artifact. Do not copy percentages from
+`docs/testing/TEST_COVERAGE.md` without regenerating the artifact; that file is
+historical until refreshed.
 
-### Issue 4: Performance Tests Take Too Long
+## TSan lane
 
-**Cause**: Performance tests use `measure { }` blocks which run multiple iterations.
-
-**Solution**: This is normal. Performance tests may take 10-30 seconds each.
-
-### Issue 5: Thread Safety Tests Fail Intermittently
-
-**Cause**: Race conditions in concurrent tests are timing-dependent.
-
-**Solution**: Re-run the test. If it fails consistently, there may be a real concurrency bug.
-
-## Running Tests from Command Line
-
-You can also run tests from the terminal:
-
-```bash
-# Run all tests
-xcodebuild test \
-  -project MacTalk.xcodeproj \
-  -scheme MacTalk \
-  -destination 'platform=macOS'
-
-# Run specific test class
-xcodebuild test \
-  -project MacTalk.xcodeproj \
-  -scheme MacTalk \
-  -destination 'platform=macOS' \
-  -only-testing:MacTalkTests/RingBufferTests
+```sh
+scripts/test-lanes.sh tsan
 ```
 
-## Test-Driven Development Workflow
+This lane runs `scripts/tsan-smoke.sh` first, checks the generated
+`MacTalk-TSan` scheme/configuration and test executable runtime link, and only
+then runs `ConcurrencyStressTests` and `AudioMixerTests`. On the baseline host,
+the standalone clang ThreadSanitizer binary segfaulted (signal 11), so the
+lane stopped with `TSAN/UNAVAILABLE` before XCTest. No TSan pass is claimed.
+The blocker is the Apple/host sanitizer runtime, not evidence that the tests
+pass or fail under TSan.
 
-When adding new features:
+## Build and signing lanes
 
-1. **Write the test first** (TDD approach)
-   ```swift
-   func testNewFeature() {
-       let result = myComponent.newFeature()
-       XCTAssertEqual(result, expectedValue)
-   }
-   ```
-
-2. **Run the test** - it should fail (red)
-
-3. **Implement the feature** - write minimal code to pass
-
-4. **Run the test again** - it should pass (green)
-
-5. **Refactor** - improve the code while keeping tests passing
-
-## Continuous Integration
-
-For CI/CD pipelines (GitHub Actions, etc.):
-
-```yaml
-- name: Run tests
-  run: |
-    xcodebuild test \
-      -project MacTalk/MacTalk.xcodeproj \
-      -scheme MacTalk \
-      -destination 'platform=macOS' \
-      -enableCodeCoverage YES
+```sh
+xcodegen generate
+git diff --exit-code -- MacTalk.xcodeproj
+./build.sh build
 ```
 
-## Code Coverage
+The build is a signed Release build and therefore needs the configured
+Developer ID identity/private key. CI uses its documented unsigned XCTest
+commands; signing and notarization are separate release gates. The baseline
+`./build.sh build` passed with Xcode 26.0.1 / Build 17A400. The baseline does
+not claim a notarized artifact.
 
-To see code coverage:
+## Manual hardware/TCC lane
 
-1. Run tests (Cmd + U)
-2. Open Report Navigator (Cmd + 9)
-3. Select the latest test run
-4. Click "Coverage" tab
-5. See coverage percentages for each file
+```sh
+MACTALK_HARDWARE_VALIDATION_ACK=I_HAVE_AUTHORIZED_CAPTURE \
+  scripts/test-lanes.sh hardware
+```
 
-**Coverage Goals**:
-- Core audio components: >90%
-- UI components: >70%
-- Utility classes: >95%
+This builds/launches the app and requires a supported microphone and app/system
+audio source. Manually approve Microphone and, for app audio, Screen
+Recording. Accessibility is separately required for auto-paste. The lane does
+not download models. It was not run for the baseline; acoustic/timestamp,
+stream-loss fallback, menu lifecycle, and permission reset behavior remain
+manual validation gaps.
 
-## Next Steps
+## TDD and evidence rules
 
-After tests pass:
+For implementation changes, add a focused XCTest, observe the expected red
+result, implement the smallest change, and rerun it green. Shell verifier
+changes likewise need passing and negative-fixture tests. A test count,
+coverage percentage, “supported macOS” statement, signing result, or model
+accuracy number is valid only when its command and artifact are named.
 
-1. ✅ Commit the test files
-2. ✅ Update PROGRESS.md with test coverage metrics
-3. ⬜ Set up CI/CD to run tests on every commit
-4. ⬜ Add integration tests for complete workflows
-5. ⬜ Add UI tests for menu bar interactions
-
-## Troubleshooting
-
-If you encounter any issues not covered here:
-
-1. Check the Xcode console for detailed error messages
-2. Review the test code for typos or incorrect assertions
-3. Verify all source files are properly added to targets
-4. Clean build folder: Product → Clean Build Folder (Cmd + Shift + K)
-5. Restart Xcode if the issue persists
-
-## Notes for This Session
-
-**IMPORTANT**: I created the Xcode project and test files, but I cannot run the tests directly because:
-
-- This development environment is running on Linux
-- Swift compiler and Xcode are not available here
-- Tests must be run on an actual macOS system with Xcode
-
-**What I've Completed**:
-- ✅ Created 4 comprehensive test files (60+ tests)
-- ✅ Generated Xcode project with proper targets
-- ✅ Configured test target with correct settings
-- ✅ Created shared scheme for easy testing
-
-**What You Need to Do**:
-1. Open `MacTalk.xcodeproj` in Xcode on your Mac
-2. Press **Cmd + U** to run all tests
-3. Review test results
-4. Report back any failures so I can fix them
-
-Once you confirm the tests pass, we can commit and push all changes to the repository.
+No lane may claim a real transcription model unless its path and catalog hash
+are stated. No lane may claim network isolation merely because the source has
+no provider calls: model downloaders use URLSession by design. No lane may
+claim TCC behavior from a unit test.

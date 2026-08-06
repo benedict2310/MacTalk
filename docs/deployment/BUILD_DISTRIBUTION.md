@@ -206,13 +206,8 @@ Create `MacTalk.entitlements`:
     <key>com.apple.security.automation.apple-events</key>
     <true/>
 
-    <!-- Hardened Runtime -->
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
+    <!-- Hardened Runtime is enabled by project.yml. Library validation remains
+         enabled for all bundled Whisper and FluidAudio binaries. -->
 </dict>
 </plist>
 ```

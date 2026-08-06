@@ -40,19 +40,19 @@ struct ASRWord {
 protocol ASREngine: AnyObject {
     // Is the engine currently processing audio?
     var isStreaming: Bool { get }
-    
+
     // Initialize/Warm up models (async)
     func initialize() async throws
-    
+
     // Start a session
     func start() async throws
-    
+
     // Stop and return final text/segments
     func stop() async throws -> [ASRFinalSegment]
-    
+
     // Process incoming audio buffer (from Mic/RingBuffer)
     func process(_ buffer: AVAudioPCMBuffer)
-    
+
     // Optional: Streaming callback registration
     func setPartialHandler(_ handler: @escaping (ASRPartial) -> Void)
 }

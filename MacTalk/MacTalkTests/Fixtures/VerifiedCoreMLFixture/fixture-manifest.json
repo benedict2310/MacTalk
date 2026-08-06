@@ -1,0 +1,27 @@
+{
+  "formatVersion": 1,
+  "model": {
+    "path": "model.mlmodel",
+    "size": 1182,
+    "sha256": "c2d71cf780e53498f7c5c741f7bfd7809f417ba09434e490a57fc6341e3f30d8"
+  },
+  "weights": {
+    "path": "weights/weight.bin",
+    "size": 148,
+    "sha256": "86ea2eefa543a095b45c410ca4daddc2f9c605f7f3ac7822d528c2aa49b8d366"
+  },
+  "input": {
+    "name": "x",
+    "shape": [10],
+    "dtype": "float32"
+  },
+  "output": {
+    "name": "double",
+    "shape": [10],
+    "dtype": "float32"
+  },
+  "prediction": {
+    "input": [1,2,3,4,5,6,7,8,9,10],
+    "output": [2,4,6,8,10,12,14,16,18,20]
+  }
+}

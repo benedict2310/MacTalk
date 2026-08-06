@@ -220,17 +220,37 @@ enum Permissions {
         return PermissionsActor.shared.getDiagnostics()
     }
 
+    /// Legacy fire-and-forget API. Existing callers only need the grant callback;
+    /// the completion-aware overload below is used by the async system client.
     @MainActor
     static func requestAccessibilityPermission(
         onGranted: (@MainActor @Sendable () -> Void)? = nil
+    ) {
+        requestAccessibilityPermission { granted in
+            if granted { onGranted?() }
+        }
+    }
+
+    /// Request Accessibility and complete on grant, denial, ignored prompt,
+    /// alert dismissal, or timeout. The timeout and polling interval are
+    /// injectable so non-TCC tests can exercise every terminal state.
+    @MainActor
+    static func requestAccessibilityPermission(
+        timeout: TimeInterval = 60,
+        pollInterval: TimeInterval = 0.5,
+        completion: @escaping @MainActor @Sendable (Bool) -> Void
     ) {
         NSLog("[Permissions] Requesting accessibility permission from user...")
         let diagnostics = getAccessibilityDiagnostics()
         DLOG("[Permissions] requestAccessibilityPermission called: trusted=\(diagnostics.isAccessibilityTrusted), bundle=\(diagnostics.bundleIdentifier), team=\(diagnostics.teamIdentifier.isEmpty ? "(none)" : diagnostics.teamIdentifier), adHoc=\(diagnostics.isAdHocSigned), fromXcode=\(diagnostics.isRunningFromXcode), executable=\(diagnostics.executablePath)")
 
-        if isAccessibilityTrusted() {
+        let finish: @MainActor @Sendable (Bool) -> Void = { granted in
             NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
-            onGranted?()
+            completion(granted)
+        }
+
+        if isAccessibilityTrusted() {
+            finish(true)
             return
         }
 
@@ -244,12 +264,11 @@ enum Permissions {
 
             switch action {
             case .none:
-                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
-                onGranted?()
+                finish(true)
             case .showSystemPrompt:
                 await PermissionsActor.shared.markAccessibilityPromptRequestedThisSession()
                 _ = PermissionsActor.shared.requestAccessibility(showPrompt: true)
-                await startAccessibilityPolling(onGranted: onGranted)
+                await startAccessibilityPolling(timeout: timeout, pollInterval: pollInterval, completion: finish)
             case .openSettings:
                 let alert = NSAlert()
                 configureAlertIcon(alert)
@@ -261,7 +280,11 @@ enum Permissions {
 
                 if alert.runModal() == .alertFirstButtonReturn {
                     openAccessibilitySettings()
-                    await startAccessibilityPolling(onGranted: onGranted)
+                    await startAccessibilityPolling(timeout: timeout, pollInterval: pollInterval, completion: finish)
+                } else {
+                    // Dismissing the guidance alert is a definitive denial for
+                    // this request; never leave an async caller suspended.
+                    finish(false)
                 }
             }
         }
@@ -269,16 +292,14 @@ enum Permissions {
 
     @MainActor
     private static func startAccessibilityPolling(
-        onGranted: (@MainActor @Sendable () -> Void)?
+        timeout: TimeInterval,
+        pollInterval: TimeInterval,
+        completion: @escaping @MainActor @Sendable (Bool) -> Void
     ) async {
         await PermissionsActor.shared.startPollingForGrant(
-            onGranted: {
-                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
-                onGranted?()
-            },
-            onTimeout: {
-                NotificationCenter.default.post(name: .permissionsDidChange, object: nil)
-            }
+            timeout: timeout,
+            pollInterval: pollInterval,
+            completion: completion
         )
     }
 

@@ -1,0 +1,33 @@
+{
+  "files": [
+    {
+      "bytes": 58456,
+      "path": "whisper-5359861c739e955e79d9a303bcbc70fb988958b1-hf-tree.json",
+      "sha256": "050f6ac9031d2968d460deda0081da6df6f9bf9ab9ab095b4671c567b03fae00",
+      "url": "https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1?recursive=true&expand=true&limit=100"
+    },
+    {
+      "bytes": 60158,
+      "path": "parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-001.json",
+      "sha256": "d136f82b4677df2ee402d922c42326835d579c48a1da599477d5bd4f291c87c2",
+      "url": "https://huggingface.co/api/models/FluidInference/parakeet-tdt-0.6b-v3-coreml/tree/aed02740059203c4a87495924f685de3722ae9ce?recursive=true&expand=true&limit=100"
+    },
+    {
+      "bytes": 50780,
+      "path": "parakeet-aed02740059203c4a87495924f685de3722ae9ce-hf-tree-002.json",
+      "sha256": "48bf39b0f7dcafcea876986e2821ae8205ef4d9cc76bf59567f05768412c9dea",
+      "url": "https://huggingface.co/api/models/FluidInference/parakeet-tdt-0.6b-v3-coreml/tree/aed02740059203c4a87495924f685de3722ae9ce?expand=true&recursive=true&limit=100&cursor=ZXlKbWFXeGxYMjVoYldVaU9pSk5aV3hGYm1OdlpHVnlMbTFzYlc5a1pXeGpMM2RsYVdkb2RITXZkMlZwWjJoMExtSnBiaUlzSW5SeVpXVmZiMmxrSWpvaU0yVTBPVGMzTUdRNU9HRTJZMlJqTnpjM1pUY3pPREJoWkRWbVpERTNaV0ppWVRNNU5EWTVaaUo5OjEwMA%3D%3D"
+    },
+    {
+      "bytes": 151122,
+      "path": "parakeet_vocab.json",
+      "sha256": "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735",
+      "url": "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/aed02740059203c4a87495924f685de3722ae9ce/parakeet_vocab.json?download=false"
+    }
+  ],
+  "repository_revisions": {
+    "parakeet": "aed02740059203c4a87495924f685de3722ae9ce",
+    "whisper": "5359861c739e955e79d9a303bcbc70fb988958b1"
+  },
+  "schema": "mactalk.model-evidence.v1"
+}
