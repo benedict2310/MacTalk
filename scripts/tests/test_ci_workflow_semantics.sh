@@ -58,6 +58,10 @@ raise 'release preflight must not set the Xcode developer directory' if release_
 release_env = release_build.fetch('env')
 raise 'release build must set MACTALK_XCODE_VERSION to the exact string 26.0.1' unless release_env['MACTALK_XCODE_VERSION'].is_a?(String) && release_env['MACTALK_XCODE_VERSION'] == '26.0.1'
 raise 'release build must select the concrete Xcode 26.0.1 developer directory' unless release_env['DEVELOPER_DIR'] == expected_developer_dir
+%w[build notarize].each do |job|
+  job_env = release_jobs.fetch(job)['env'] || {}
+  raise "release #{job} job env must not use the unavailable runner context" if job_env.values.any? { |value| value.to_s.include?('runner.') }
+end
 release_steps = Array(release_build.fetch('steps'))
 release_step_names = release_steps.map { |step| step['name'] if step.is_a?(Hash) }
 toolchain_step_index = release_step_names.index('Verify pinned Xcode toolchain')
@@ -69,6 +73,7 @@ toolchain_run = toolchain_step['run'].to_s
 signing_run = signing_step['run'].to_s
 signing_env = signing_step['env'] || {}
 raise 'release signing step must consume the certificate password secret' unless signing_env['CERTIFICATE_PASSWORD'].to_s.include?('secrets.MACTALK_CERTIFICATE_PASSWORD')
+raise 'release signing step must define the runner-temporary keychain path' unless signing_env['MACTALK_KEYCHAIN_PATH'].to_s == '${{ runner.temp }}/mactalk-release.keychain-db'
 raise 'release signing step must import the certificate' unless signing_run.include?('security import')
 raise 'release Xcode verification step does not fail closed when the pinned Xcode is absent' unless toolchain_run.include?('test -d "$DEVELOPER_DIR"')
 raise 'release Xcode verification step does not verify xcodebuild version' unless toolchain_run.include?('xcodebuild -version')
