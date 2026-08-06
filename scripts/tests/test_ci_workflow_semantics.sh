@@ -126,6 +126,14 @@ end
 documentation_runs = step_runs.call('documentation').join("\n")
 raise 'documentation job does not execute the docs checker fixture test' unless documentation_runs.include?('scripts/tests/test_ci_docs_checks.sh')
 
+appkit_steps = steps.call('appkit')
+appkit_checkout = appkit_steps.find { |step| step.is_a?(Hash) && step['name'] == 'Checkout source' }
+raise 'AppKit lane must recursively check out native submodules' unless appkit_checkout&.dig('with', 'submodules') == 'recursive'
+appkit_runs = step_runs.call('appkit').join("\n")
+%w[Vendor/whisper.cpp cmake\ .. cmake\ --build].each do |needle|
+  raise "AppKit lane does not prepare native dependency with #{needle}" unless appkit_runs.include?(needle)
+end
+
 # Every third-party action is immutable; no workflow may opt into hidden lanes.
 walk = lambda do |value, &block|
   block.call(value)

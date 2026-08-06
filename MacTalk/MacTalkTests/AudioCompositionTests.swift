@@ -523,6 +523,96 @@ final class AudioCompositionTests: XCTestCase {
         XCTAssertTrue(emissions.value.flatMap(\.1).allSatisfy { abs($0 - 0.4) < 0.0001 })
     }
 
+    func test_zeroLatenessExpiresSynchronouslyWithoutTimer() {
+        let clock = ManualArrivalClock()
+        let scheduler = ManualCompositionScheduler(clock: clock)
+        let emissions = CompositionEmissionBox()
+        let configuration = AudioCompositionConfiguration(maximumLatenessFrames: 0)
+        let pipeline = makePipeline(
+            configuration: configuration,
+            clock: clock,
+            scheduler: scheduler,
+            emissions: emissions
+        )
+        let session = UUID()
+        pipeline.reset(sessionID: session, mode: .microphoneAndApplication)
+
+        pipeline.ingest(
+            sessionID: session,
+            chunk: chunk(.microphone, frame: 0, values: [0.25, 0.5])
+        )
+
+        XCTAssertEqual(emissions.value.flatMap(\.1), [0.25, 0.5])
+        XCTAssertEqual(scheduler.activeCount, 0)
+    }
+
+    func test_staleTerminalOperationsDoNotCancelReplacementSessionExpiry() {
+        let clock = ManualArrivalClock()
+        let scheduler = ManualCompositionScheduler(clock: clock)
+        let emissions = CompositionEmissionBox()
+        let pipeline = makePipeline(clock: clock, scheduler: scheduler, emissions: emissions)
+        let staleSession = UUID()
+        let currentSession = UUID()
+        pipeline.reset(sessionID: staleSession, mode: .microphoneAndApplication)
+        pipeline.ingest(
+            sessionID: staleSession,
+            chunk: chunk(.microphone, frame: 0, values: [Float](repeating: 0.1, count: 100))
+        )
+        pipeline.reset(sessionID: currentSession, mode: .microphoneAndApplication)
+        pipeline.ingest(
+            sessionID: currentSession,
+            chunk: chunk(.microphone, frame: 0, values: [Float](repeating: 0.3, count: 100))
+        )
+        XCTAssertEqual(scheduler.activeCount, 1)
+
+        pipeline.finish(sessionID: staleSession)
+        pipeline.cancel(sessionID: staleSession)
+        pipeline.deactivateApplication(sessionID: staleSession)
+        pipeline.tick(sessionID: staleSession)
+
+        XCTAssertEqual(scheduler.activeCount, 1)
+        clock.advance(nanoseconds: 250_000_000)
+        scheduler.fireDue()
+        XCTAssertEqual(emissions.value.flatMap(\.1), [Float](repeating: 0.3, count: 100))
+    }
+
+    func test_staggeredSameSourceCallbacksKeepIndependentExpiryWindows() {
+        let clock = ManualArrivalClock()
+        let scheduler = ManualCompositionScheduler(clock: clock)
+        let emissions = CompositionEmissionBox()
+        let pipeline = makePipeline(clock: clock, scheduler: scheduler, emissions: emissions)
+        let session = UUID()
+        pipeline.reset(sessionID: session, mode: .microphoneAndApplication)
+
+        pipeline.ingest(
+            sessionID: session,
+            chunk: chunk(.microphone, frame: 0, values: [Float](repeating: 0.2, count: 1_000))
+        )
+        clock.advance(nanoseconds: 200_000_000)
+        pipeline.ingest(
+            sessionID: session,
+            chunk: chunk(.microphone, frame: 1_000, values: [Float](repeating: 0.4, count: 1_000))
+        )
+        XCTAssertEqual(scheduler.activeCount, 1)
+
+        clock.advance(nanoseconds: 50_000_000)
+        scheduler.fireDue()
+        XCTAssertEqual(emissions.value.flatMap(\.1), [Float](repeating: 0.2, count: 1_000))
+        XCTAssertEqual(scheduler.activeCount, 1)
+
+        clock.advance(nanoseconds: 199_000_000)
+        scheduler.fireDue()
+        XCTAssertEqual(emissions.value.flatMap(\.1).count, 1_000)
+
+        clock.advance(nanoseconds: 1_000_000)
+        scheduler.fireDue()
+        XCTAssertEqual(
+            emissions.value.flatMap(\.1),
+            [Float](repeating: 0.2, count: 1_000) + [Float](repeating: 0.4, count: 1_000)
+        )
+        XCTAssertEqual(scheduler.activeCount, 0)
+    }
+
     func test_pipelineKeepsAtMostOneExpiryQueuedAndStalledApplicationDoesNotStopMic() {
         let clock = ManualArrivalClock()
         let scheduler = ManualCompositionScheduler(clock: clock)
@@ -549,11 +639,13 @@ final class AudioCompositionTests: XCTestCase {
     }
 
     private func makePipeline(
+        configuration: AudioCompositionConfiguration = AudioCompositionConfiguration(),
         clock: ManualArrivalClock,
         scheduler: ManualCompositionScheduler,
         emissions: CompositionEmissionBox
     ) -> SerializedAudioCompositionPipeline {
         SerializedAudioCompositionPipeline(
+            configuration: configuration,
             arrivalClock: { clock.nowNanoseconds },
             scheduler: scheduler,
             emit: { session, samples in emissions.append(session: session, samples: samples) }

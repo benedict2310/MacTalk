@@ -146,6 +146,10 @@ struct AudioTimelineComposer: Sendable {
     }
 
     var hasPendingOutput: Bool { maxPlacedEnd() > outputCursor }
+    var renderedThroughFrontier: Int { outputCursor }
+    var pendingExpiryFrontier: Int {
+        min(maxPlacedEnd(), outputCursor + configuration.maximumBufferedFrames)
+    }
 
     mutating func reset(sessionID: UUID, mode: AudioCompositionMode) {
         self.sessionID = sessionID
@@ -264,6 +268,12 @@ struct AudioTimelineComposer: Sendable {
     /// ticking. Both APIs intentionally share the same bounded behavior.
     mutating func expire(sessionID: UUID) -> [Float] {
         tick(sessionID: sessionID)
+    }
+
+    mutating func expire(sessionID: UUID, through frontier: Int) -> [Float] {
+        guard self.sessionID == sessionID,
+              mode == .microphoneAndApplication else { return [] }
+        return render(until: min(frontier, maxPlacedEnd()))
     }
 
     mutating func deactivateApplication(sessionID: UUID) -> [Float] {
@@ -584,13 +594,21 @@ private struct DispatchAudioCompositionScheduler: AudioCompositionScheduler {
 /// callback queues. Every operation completes before its caller returns.
 /// Arrival lateness is intentionally owned here, not inferred from media PTS.
 final class SerializedAudioCompositionPipeline: @unchecked Sendable {
+    private struct ExpiryMarker {
+        let deadlineNanoseconds: UInt64
+        let renderFrontier: Int
+    }
+
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<Void>()
     private var composer: AudioTimelineComposer
     private let configuration: AudioCompositionConfiguration
     private let arrivalClock: @Sendable () -> UInt64
     private let scheduler: any AudioCompositionScheduler
+    private var activeSessionID: UUID?
+    private var expiryMarkers: [ExpiryMarker] = []
     private var expiryTask: (any AudioCompositionScheduledTask)?
+    private var scheduledExpiryDeadline: UInt64?
     private var expiryGeneration = UUID()
     private let emit: @Sendable (UUID, [Float]) -> Void
     private let microphoneReady: @Sendable (UUID) -> Void
@@ -616,6 +634,7 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
     func reset(sessionID: UUID, mode: AudioCompositionMode) {
         onQueue {
             cancelExpiry()
+            activeSessionID = sessionID
             composer.reset(sessionID: sessionID, mode: mode)
         }
     }
@@ -625,6 +644,7 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
         // timestamp in `chunk` remains untouched and is never used as a clock.
         let arrival = arrivalClock()
         onQueue {
+            guard activeSessionID == sessionID else { return }
             let wasReady = composer.hasMicrophoneAnchor
             let output = composer.ingest(sessionID: sessionID, chunk: chunk)
             if !wasReady && composer.hasMicrophoneAnchor { microphoneReady(sessionID) }
@@ -635,6 +655,7 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
 
     func ingestTail(sessionID: UUID, source: AudioCompositionSource, samples: [Float]) {
         onQueue {
+            guard activeSessionID == sessionID else { return }
             let output = composer.ingestTail(sessionID: sessionID, source: source, samples: samples)
             if !output.isEmpty { emit(sessionID, output) }
             updateExpiry(sessionID: sessionID, arrivalNanoseconds: arrivalClock())
@@ -645,11 +666,15 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
     /// This is useful for deterministic schedulers and for a final bounded
     /// timer callback.
     func tick(sessionID: UUID) {
-        onQueue { tickOnQueue(sessionID: sessionID, nowNanoseconds: arrivalClock()) }
+        onQueue {
+            guard activeSessionID == sessionID else { return }
+            tickOnQueue(sessionID: sessionID, nowNanoseconds: arrivalClock())
+        }
     }
 
     func deactivateApplication(sessionID: UUID) {
         onQueue {
+            guard activeSessionID == sessionID else { return }
             cancelExpiry()
             let output = composer.deactivateApplication(sessionID: sessionID)
             if !output.isEmpty { emit(sessionID, output) }
@@ -658,21 +683,28 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
 
     func finish(sessionID: UUID) {
         onQueue {
+            guard activeSessionID == sessionID else { return }
             cancelExpiry()
             let output = composer.finish(sessionID: sessionID)
+            activeSessionID = nil
             if !output.isEmpty { emit(sessionID, output) }
         }
     }
 
     func cancel(sessionID: UUID) {
         onQueue {
+            guard activeSessionID == sessionID else { return }
             cancelExpiry()
             composer.cancel(sessionID: sessionID)
+            activeSessionID = nil
         }
     }
 
     func recordInvalidTimestamp(sessionID: UUID, source: AudioCompositionSource) {
-        onQueue { composer.recordInvalidTimestamp(sessionID: sessionID, source: source) }
+        onQueue {
+            guard activeSessionID == sessionID else { return }
+            composer.recordInvalidTimestamp(sessionID: sessionID, source: source)
+        }
     }
 
     var metrics: AudioCompositionMetrics {
@@ -680,38 +712,97 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
     }
 
     private func updateExpiry(sessionID: UUID, arrivalNanoseconds: UInt64) {
+        expiryMarkers.removeAll {
+            $0.renderFrontier <= composer.renderedThroughFrontier
+        }
         guard composer.isWaitingForCounterpart,
-              composer.hasPendingOutput,
-              configuration.maximumLatenessFrames > 0 else {
+              composer.hasPendingOutput else {
             cancelExpiry()
             return
         }
-        guard expiryTask == nil else { return }
-        let delay = UInt64(configuration.maximumLatenessFrames)
-            .multipliedReportingOverflow(by: 1_000_000_000 / UInt64(configuration.sampleRate))
-        let boundedDelay = delay.overflow ? 250_000_000 : delay.partialValue
-        let deadline = arrivalNanoseconds > UInt64.max - boundedDelay
-            ? UInt64.max
-            : arrivalNanoseconds + boundedDelay
+
+        let renderFrontier = composer.pendingExpiryFrontier
+        if configuration.maximumLatenessFrames == 0 {
+            let output = composer.expire(sessionID: sessionID, through: renderFrontier)
+            if !output.isEmpty { emit(sessionID, output) }
+            cancelExpiry()
+            return
+        }
+        let previousFrontier = expiryMarkers.last?.renderFrontier ?? composer.renderedThroughFrontier
+        if renderFrontier > previousFrontier {
+            let delay = UInt64(configuration.maximumLatenessFrames)
+                .multipliedReportingOverflow(by: 1_000_000_000 / UInt64(configuration.sampleRate))
+            let boundedDelay = delay.overflow ? 250_000_000 : delay.partialValue
+            let candidateDeadline = arrivalNanoseconds > UInt64.max - boundedDelay
+                ? UInt64.max
+                : arrivalNanoseconds + boundedDelay
+            let deadline = max(candidateDeadline, expiryMarkers.last?.deadlineNanoseconds ?? 0)
+            if expiryMarkers.last?.deadlineNanoseconds == deadline {
+                expiryMarkers[expiryMarkers.count - 1] = ExpiryMarker(
+                    deadlineNanoseconds: deadline,
+                    renderFrontier: renderFrontier
+                )
+            } else {
+                expiryMarkers.append(ExpiryMarker(
+                    deadlineNanoseconds: deadline,
+                    renderFrontier: renderFrontier
+                ))
+            }
+        }
+        scheduleExpiryHead(sessionID: sessionID)
+    }
+
+    private func scheduleExpiryHead(sessionID: UUID) {
+        guard let marker = expiryMarkers.first else {
+            cancelScheduledExpiry()
+            return
+        }
+        if expiryTask != nil, scheduledExpiryDeadline == marker.deadlineNanoseconds { return }
+        cancelScheduledExpiry()
         let generation = UUID()
         expiryGeneration = generation
-        expiryTask = scheduler.schedule(deadlineNanoseconds: deadline) { [weak self] in
-            self?.expiryFired(sessionID: sessionID, generation: generation, deadlineNanoseconds: deadline)
+        scheduledExpiryDeadline = marker.deadlineNanoseconds
+        expiryTask = scheduler.schedule(deadlineNanoseconds: marker.deadlineNanoseconds) { [weak self] in
+            self?.expiryFired(
+                sessionID: sessionID,
+                generation: generation,
+                deadlineNanoseconds: marker.deadlineNanoseconds
+            )
         }
     }
 
     private func expiryFired(sessionID: UUID, generation: UUID, deadlineNanoseconds: UInt64) {
         onQueue {
-            guard generation == expiryGeneration else { return }
+            guard generation == expiryGeneration,
+                  activeSessionID == sessionID else { return }
             expiryTask = nil
+            scheduledExpiryDeadline = nil
             let now = arrivalClock()
             guard now >= deadlineNanoseconds else {
-                // A scheduler may wake early; retain one task for the same
-                // deadline rather than allowing timer accumulation.
-                updateExpiry(sessionID: sessionID, arrivalNanoseconds: now)
+                scheduleExpiryHead(sessionID: sessionID)
                 return
             }
-            tickOnQueue(sessionID: sessionID, nowNanoseconds: now)
+
+            var renderFrontier = composer.renderedThroughFrontier
+            let dueCount = expiryMarkers.prefix {
+                $0.deadlineNanoseconds <= now
+            }.reduce(into: 0) { count, marker in
+                renderFrontier = max(renderFrontier, marker.renderFrontier)
+                count += 1
+            }
+            if dueCount > 0 {
+                expiryMarkers.removeFirst(dueCount)
+            }
+            let output = composer.expire(sessionID: sessionID, through: renderFrontier)
+            if !output.isEmpty { emit(sessionID, output) }
+            expiryMarkers.removeAll {
+                $0.renderFrontier <= composer.renderedThroughFrontier
+            }
+            if !composer.isWaitingForCounterpart || !composer.hasPendingOutput {
+                cancelExpiry()
+            } else {
+                scheduleExpiryHead(sessionID: sessionID)
+            }
         }
     }
 
@@ -721,10 +812,16 @@ final class SerializedAudioCompositionPipeline: @unchecked Sendable {
         updateExpiry(sessionID: sessionID, arrivalNanoseconds: nowNanoseconds)
     }
 
-    private func cancelExpiry() {
+    private func cancelScheduledExpiry() {
         expiryTask?.cancel()
         expiryTask = nil
+        scheduledExpiryDeadline = nil
         expiryGeneration = UUID()
+    }
+
+    private func cancelExpiry() {
+        cancelScheduledExpiry()
+        expiryMarkers.removeAll(keepingCapacity: true)
     }
 
     private func onQueue<T>(_ operation: () -> T) -> T {

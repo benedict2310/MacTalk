@@ -242,6 +242,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
+          submodules: recursive
           persist-credentials: false
       - name: Verify pinned toolchain
         shell: bash
@@ -250,6 +251,14 @@ jobs:
           test -d "$DEVELOPER_DIR"
           xcodebuild -version | tee build-xcode-version.txt
           grep -F "Xcode ${MACTALK_XCODE_VERSION}" build-xcode-version.txt
+      - name: Build whisper.cpp without network/model steps
+        run: |
+          set -euo pipefail
+          cd Vendor/whisper.cpp
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build . --config Release -j "$(sysctl -n hw.ncpu)"
       - name: Run explicit AppKit lane
         run: scripts/test-lanes.sh appkit
 
