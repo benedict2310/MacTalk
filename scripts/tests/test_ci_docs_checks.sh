@@ -10,6 +10,65 @@ trap 'rm -rf "$fixture"' EXIT
 tar -C "$ROOT" --exclude=.git --exclude=build -cf - . | tar -C "$fixture" -xf -
 MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null
 
+# The dated STATUS baseline is historical evidence. Release-candidate metadata
+# must not rewrite the version/build associated with its recorded test counts.
+if ! grep -Fq '"release_version":"1.1.3","build_number":"4"' "$fixture/docs/STATUS.md"; then
+    echo "STATUS historical baseline was rewritten with current release metadata" >&2
+    exit 1
+fi
+
+# Operators must see every immutable reserved tag before starting preflight.
+for reserved_tag in v1.1.3 v1.1.4; do
+    if [[ $(grep -Fc "$reserved_tag" "$fixture/docs/deployment/RELEASE_WORKFLOW.md") -lt 2 ]]; then
+        echo "release runbook does not name reserved tag $reserved_tag in policy and command guidance" >&2
+        exit 1
+    fi
+done
+
+# Repeating a reserved tag in policy must not compensate for omitting it from
+# the operator command guidance.
+python3 - "$fixture/docs/deployment/RELEASE_WORKFLOW.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace(
+    "`v1.1.3` and `v1.1.4` are permanently reserved",
+    "`v1.1.3` and `v1.1.4` (including `v1.1.4`) are permanently reserved",
+    1,
+)
+text = text.replace(
+    "# Use a newly created immutable tag; never reuse reserved v1.1.3 or v1.1.4.",
+    "# Use a newly created immutable tag; never reuse reserved v1.1.3.",
+    1,
+)
+path.write_text(text)
+PY
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted reserved tags only in policy, not command guidance" >&2
+    exit 1
+fi
+cp "$ROOT/docs/deployment/RELEASE_WORKFLOW.md" "$fixture/docs/deployment/RELEASE_WORKFLOW.md"
+
+# Current-source prose is separate from the historical baseline and must track
+# release-version.env independently.
+python3 - "$fixture/docs/STATUS.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text().replace(
+    "is marketing version `1.1.5`, build `6`.",
+    "is marketing version `1.1.4`, build `5`.",
+    1,
+)
+path.write_text(text)
+PY
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted stale current-source release metadata" >&2
+    exit 1
+fi
+cp "$ROOT/docs/STATUS.md" "$fixture/docs/STATUS.md"
+
 # The current provenance document must describe the active verified-source
 # loader. Reintroducing the retired inactive/future-loader claim must fail.
 printf '\nThe Parakeet source loader is inactive and reserved for a future loader.\n' >> "$fixture/docs/security/MODEL_PROVENANCE.md"

@@ -11,8 +11,9 @@ other values.
 Releases are made only from a clean, detached checkout whose `HEAD` equals
 an explicitly supplied immutable tag. The tag must be exactly `vX.Y.Z` and
 must equal `MACTALK_MARKETING_VERSION`; versions also use exactly `X.Y.Z`.
-`v1.1.3` is permanently reserved and must never be moved. Bump
-`scripts/release-version.env`, commit it, and create a new tag before starting
+`v1.1.3` and `v1.1.4` are permanently reserved and must never be moved,
+deleted, dispatched, or published. Bump `scripts/release-version.env`, commit
+it, and create a new tag before starting
 the workflow. The repository must protect release tags (no force-push/delete)
 and require release environment reviewers; the tag policy is the trust root,
 not a mutable branch ref.
@@ -50,7 +51,7 @@ Run from the repository root. This creates artifacts under `release/` (or the
 specified output directory), but does not create a tag or GitHub release:
 
 ```bash
-# Use a newly created immutable tag; never reuse v1.1.3.
+# Use a newly created immutable tag; never reuse reserved v1.1.3 or v1.1.4.
 git fetch --tags origin
 git checkout --detach vX.Y.Z
 export RELEASE_TAG='vX.Y.Z'
