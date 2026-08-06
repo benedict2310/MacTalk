@@ -65,7 +65,6 @@ jobs:
       RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
       MACTALK_CODE_SIGN_IDENTITY: ${{ vars.MACTALK_CODE_SIGN_IDENTITY }}
       MACTALK_DEVELOPMENT_TEAM: ${{ vars.MACTALK_DEVELOPMENT_TEAM }}
-      MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
     steps:
       - name: Checkout exact release tag
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
@@ -99,6 +98,7 @@ jobs:
           CERTIFICATE_P12_BASE64: ${{ secrets.MACTALK_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACTALK_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACTALK_KEYCHAIN_PASSWORD }}
+          MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
         run: |
           set -euo pipefail
           test -n "$CERTIFICATE_P12_BASE64" -a -n "$CERTIFICATE_PASSWORD" -a -n "$KEYCHAIN_PASSWORD"
@@ -129,6 +129,8 @@ jobs:
           if-no-files-found: error
       - name: Remove signing keychain and certificate
         if: always()
+        env:
+          MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
         run: |
           if ! security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null; then
             echo "signing keychain was already absent"
@@ -149,7 +151,6 @@ jobs:
       RELEASE_EXPECTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
       MACTALK_CODE_SIGN_IDENTITY: ${{ vars.MACTALK_CODE_SIGN_IDENTITY }}
       MACTALK_DEVELOPMENT_TEAM: ${{ vars.MACTALK_DEVELOPMENT_TEAM }}
-      MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
     steps:
       - name: Checkout exact release tag
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
@@ -183,6 +184,7 @@ jobs:
           CERTIFICATE_P12_BASE64: ${{ secrets.MACTALK_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACTALK_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACTALK_KEYCHAIN_PASSWORD }}
+          MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
         run: |
           set -euo pipefail
           test -n "$CERTIFICATE_P12_BASE64" -a -n "$CERTIFICATE_PASSWORD" -a -n "$KEYCHAIN_PASSWORD"
@@ -213,6 +215,8 @@ jobs:
           if-no-files-found: error
       - name: Remove signing keychain and certificate
         if: always()
+        env:
+          MACTALK_KEYCHAIN_PATH: ${{ runner.temp }}/mactalk-release.keychain-db
         run: |
           if ! security delete-keychain "$MACTALK_KEYCHAIN_PATH" 2>/dev/null; then
             echo "signing keychain was already absent"
