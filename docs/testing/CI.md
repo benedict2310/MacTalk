@@ -41,6 +41,12 @@ blocker. It first runs
 `scripts/tsan-smoke.sh` (`clang -fsanitize=thread`) and then builds the
 instrumented XCTest bundle and verifies its `libclang_rt.tsan` link. It runs
 `ConcurrencyStressTests` and `AudioMixerTests` three times in fresh test
-processes, followed by the complete deterministic suite, with explicit
-`-enableThreadSanitizer YES`. An XCTest pass is never reported without those
-runtime checks.
+processes, followed by the complete macOS 15-supported deterministic subset,
+with explicit `-enableThreadSanitizer YES`. Hosted run `31272883974` established
+three narrow runtime incompatibilities: `ParakeetStoreFileLockTests` subprocess
+probes terminate with status 15, macOS 15 CoreML rejects the version-10 fixture
+used by `VerifiedCoreMLByteAssetTests`, and
+`VerifiedParakeetModelLoaderTests` stalls at its first cancellation test. Those
+classes remain blocking in the ordinary macOS 26 unit lane but are excluded
+from the hosted TSan subset; every other deterministic class remains selected.
+An XCTest pass is never reported without the sanitizer runtime checks.

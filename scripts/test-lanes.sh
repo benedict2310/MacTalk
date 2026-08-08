@@ -24,6 +24,11 @@ while IFS= read -r argument; do
   DETERMINISTIC_ARGS+=("$argument")
 done < <(append_deterministic_test_selection)
 
+TSAN_SUPPORTED_ARGS=()
+while IFS= read -r argument; do
+  TSAN_SUPPORTED_ARGS+=("$argument")
+done < <(append_tsan_supported_test_selection)
+
 run_xctest() {
   local lane="$1"
   shift
@@ -90,7 +95,7 @@ tsan)
     -only-testing:MacTalkTests/AudioMixerTests \
     -test-iterations 3 -test-repetition-relaunch-enabled YES
   run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
-    "${DETERMINISTIC_ARGS[@]}"
+    "${TSAN_SUPPORTED_ARGS[@]}"
   ;;
 all)
   run_xctest unit

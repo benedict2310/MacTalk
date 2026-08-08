@@ -117,7 +117,32 @@ raise 'coverage artifacts omit an xcresult/log/report' unless coverage_uploads.a
 
 tsan_runs = step_runs.call('tsan').join("\n")
 tsan_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/test-lanes.sh'))
+test_selection = File.read(File.join(File.dirname(path), '../..', 'scripts/deterministic-test-selection.sh'))
 tsan_runs = "#{tsan_runs}\n#{tsan_implementation}"
+
+parse_shell_array = lambda do |name|
+  body = test_selection.match(/^#{Regexp.escape(name)}=\(\n(?<body>.*?)^\)$/m)&.[](:body)
+  raise "missing explicit #{name} array" unless body
+  body.lines.map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
+end
+
+deterministic_classes = parse_shell_array.call('DETERMINISTIC_TEST_CLASSES')
+tsan_supported_classes = parse_shell_array.call('TSAN_SUPPORTED_TEST_CLASSES')
+tsan_unsupported_classes = %w[
+  MacTalkTests/ParakeetStoreFileLockTests
+  MacTalkTests/VerifiedCoreMLByteAssetTests
+  MacTalkTests/VerifiedParakeetModelLoaderTests
+]
+raise 'TSan supported selection must contain every deterministic class except evidenced macos-15 incompatibilities' unless tsan_supported_classes == deterministic_classes - tsan_unsupported_classes
+%w[
+  MacTalkTests/AudioCompositionTests
+  MacTalkTests/AudioMixerTests
+  MacTalkTests/ConcurrencyStressTests
+  MacTalkTests/TranscriptionControllerTests
+].each do |class_name|
+  raise "TSan supported selection omits race-relevant #{class_name}" unless tsan_supported_classes.include?(class_name)
+end
+raise 'TSan supported selection must expose a dedicated argument builder' unless test_selection.include?('append_tsan_supported_test_selection()')
 raise 'TSan job is not limited to schedule/manual execution' unless jobs.fetch('tsan')['if'].to_s.include?('schedule') && jobs.fetch('tsan')['if'].to_s.include?('workflow_dispatch')
 %w[tsan-smoke.sh test-lanes.sh tsan enableThreadSanitizer YES].each do |needle|
   raise "TSan job missing #{needle}" unless tsan_runs.include?(needle)
@@ -125,8 +150,10 @@ end
 raise 'TSan job does not verify an instrumented runtime link' unless tsan_runs.include?('verify-tsan-runtime.sh')
 focused_index = tsan_implementation.index('-only-testing:MacTalkTests/ConcurrencyStressTests')
 raise 'TSan focused concurrency suite is missing' unless focused_index
-full_index = tsan_implementation.index('"${DETERMINISTIC_ARGS[@]}"', focused_index)
-raise 'TSan full deterministic suite is missing or runs before focused repetitions' unless full_index && focused_index < full_index
+full_index = tsan_implementation.index('"${TSAN_SUPPORTED_ARGS[@]}"', focused_index)
+raise 'TSan full supported suite is missing or runs before focused repetitions' unless full_index && focused_index < full_index
+raise 'TSan lane must build dedicated supported-suite arguments' unless tsan_implementation.include?('done < <(append_tsan_supported_test_selection)')
+raise 'TSan lane must not reuse the broader deterministic arguments after focused repetitions' if tsan_implementation.index('"${DETERMINISTIC_ARGS[@]}"', focused_index)
 focused_block = tsan_implementation[focused_index...full_index]
 raise 'TSan focused audio suite is missing' unless focused_block.include?('-only-testing:MacTalkTests/AudioMixerTests')
 raise 'TSan focused concurrency/audio suites must run exactly three times' unless focused_block.match?(/(?:^|\s)-test-iterations 3(?:\s|$)/)
@@ -183,8 +210,13 @@ testing_doc = File.read(File.join(File.dirname(path), '../..', 'docs/testing/TES
 raise 'CI policy must document the compatible macos-15 TSan runtime' unless ci_doc.include?('TSan job uses the hosted `macos-15` image')
 raise 'CI policy must document the TSan-only deployment-target override' unless ci_doc.include?('TSan-only `MACOSX_DEPLOYMENT_TARGET=15.0` override')
 raise 'CI policy must document three focused TSan repetitions' unless ci_doc.include?('three times in fresh test processes')
-raise 'CI policy must document the full deterministic TSan lane' unless ci_doc.include?('complete deterministic suite')
+raise 'CI policy must document the complete supported TSan subset' unless ci_doc.include?('complete macOS 15-supported deterministic subset')
+raise 'CI policy must identify the hosted incompatibility evidence' unless ci_doc.include?('run `31272883974`')
+%w[ParakeetStoreFileLockTests VerifiedCoreMLByteAssetTests VerifiedParakeetModelLoaderTests].each do |class_name|
+  raise "CI policy must document the evidenced TSan exclusion for #{class_name}" unless ci_doc.include?(class_name)
+end
 raise 'testing guide must document three focused TSan repetitions' unless testing_doc.include?('three times in fresh test processes')
-raise 'testing guide must document the full deterministic TSan lane' unless testing_doc.include?('complete deterministic suite')
+raise 'testing guide must document the complete supported TSan subset' unless testing_doc.include?('complete macOS 15-supported deterministic subset')
+raise 'testing guide must identify the hosted incompatibility evidence' unless testing_doc.include?('run `31272883974`')
 puts 'CI workflow semantic contract passed'
 RUBY
