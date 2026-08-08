@@ -135,6 +135,7 @@ tsan_function = tsan_implementation.match(/^run_tsan_command\(\) \{\n(?<body>.*?
 raise 'TSan lane is missing run_tsan_command' unless tsan_function
 raise 'TSan lane must lower its test-host deployment target for macos-15' unless tsan_function.include?('MACOSX_DEPLOYMENT_TARGET=15.0')
 raise 'TSan deployment-target override must be confined to run_tsan_command' unless tsan_implementation.scan('MACOSX_DEPLOYMENT_TARGET=15.0').length == 1
+raise 'TSan enablement flag must be supplied exactly once by run_tsan_command' unless tsan_implementation.scan('-enableThreadSanitizer YES').length == 1
 
 %w[lint security documentation].each do |job|
   raise "#{job} job is not blocking" if jobs.fetch(job).key?('continue-on-error')

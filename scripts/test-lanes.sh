@@ -79,7 +79,7 @@ tsan)
     exit 1
   }
   TSAN_DERIVED_DATA="$TEST_HOME/DerivedData"
-  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" -only-testing:MacTalkTests/TSanSmokeTests -enableThreadSanitizer YES
+  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" -only-testing:MacTalkTests/TSanSmokeTests
   TSAN_EXECUTABLE="$(find "$TSAN_DERIVED_DATA" -type f -path '*MacTalkTests.xctest/Contents/MacOS/MacTalkTests' -print -quit)"
   "$ROOT/scripts/verify-tsan-runtime.sh" "$TSAN_EXECUTABLE"
   # Re-run the race-sensitive suites in fresh test processes before the full
@@ -88,11 +88,9 @@ tsan)
   run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
     -only-testing:MacTalkTests/ConcurrencyStressTests \
     -only-testing:MacTalkTests/AudioMixerTests \
-    -test-iterations 3 -test-repetition-relaunch-enabled YES \
-    -enableThreadSanitizer YES
+    -test-iterations 3 -test-repetition-relaunch-enabled YES
   run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
-    "${DETERMINISTIC_ARGS[@]}" \
-    -enableThreadSanitizer YES
+    "${DETERMINISTIC_ARGS[@]}"
   ;;
 all)
   run_xctest unit
