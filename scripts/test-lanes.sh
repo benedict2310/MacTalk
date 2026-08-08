@@ -24,6 +24,11 @@ while IFS= read -r argument; do
   DETERMINISTIC_ARGS+=("$argument")
 done < <(append_deterministic_test_selection)
 
+TSAN_SUPPORTED_ARGS=()
+while IFS= read -r argument; do
+  TSAN_SUPPORTED_ARGS+=("$argument")
+done < <(append_tsan_supported_test_selection)
+
 run_xctest() {
   local lane="$1"
   shift
@@ -33,8 +38,11 @@ run_xctest() {
 }
 
 run_tsan_command() {
+  # The compatible hosted TSan runtime is macOS 15. Keep this command-line
+  # override isolated to instrumented tests; release/product builds remain 26.0.
   MACTALK_TEST_LANE=tsan xcodebuild test -project "$PROJECT" -scheme MacTalk-TSan \
     -destination "$DESTINATION" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+    MACOSX_DEPLOYMENT_TARGET=15.0 \
     ENABLE_THREAD_SANITIZER=YES -enableThreadSanitizer YES "$@"
 }
 
@@ -76,13 +84,18 @@ tsan)
     exit 1
   }
   TSAN_DERIVED_DATA="$TEST_HOME/DerivedData"
-  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" -only-testing:MacTalkTests/TSanSmokeTests -enableThreadSanitizer YES
+  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" -only-testing:MacTalkTests/TSanSmokeTests
   TSAN_EXECUTABLE="$(find "$TSAN_DERIVED_DATA" -type f -path '*MacTalkTests.xctest/Contents/MacOS/MacTalkTests' -print -quit)"
   "$ROOT/scripts/verify-tsan-runtime.sh" "$TSAN_EXECUTABLE"
+  # Re-run the race-sensitive suites in fresh test processes before the full
+  # deterministic lane. This makes transient callback/resampler races more
+  # likely to surface while preserving the same instrumented DerivedData.
   run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
     -only-testing:MacTalkTests/ConcurrencyStressTests \
     -only-testing:MacTalkTests/AudioMixerTests \
-    -enableThreadSanitizer YES
+    -test-iterations 3 -test-repetition-relaunch-enabled YES
+  run_tsan_command -derivedDataPath "$TSAN_DERIVED_DATA" \
+    "${TSAN_SUPPORTED_ARGS[@]}"
   ;;
 all)
   run_xctest unit

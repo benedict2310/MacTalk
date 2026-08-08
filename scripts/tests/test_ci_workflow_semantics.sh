@@ -28,9 +28,13 @@ end
 xcode_jobs = %w[unit coverage tsan appkit]
 expected_developer_dir = '/Applications/Xcode_26.0.1.app/Contents/Developer'
 workflow_env = workflow.fetch('env')
+raise 'workflow must require exact Xcode 26.0.1' unless workflow_env['MACTALK_XCODE_VERSION'] == '26.0.1'
 raise 'workflow must select the concrete Xcode 26.0.1 developer directory' unless workflow_env['DEVELOPER_DIR'] == expected_developer_dir
-xcode_jobs.each do |job|
+%w[unit coverage appkit].each do |job|
   raise "#{job} job must run on macos-26" unless jobs.fetch(job)['runs-on'] == 'macos-26'
+end
+raise 'TSan job must run Xcode 26.0.1 on the compatible macos-15 runtime' unless jobs.fetch('tsan')['runs-on'] == 'macos-15'
+xcode_jobs.each do |job|
   job_env = jobs.fetch(job)['env'] || {}
   raise "#{job} job must inherit the pinned developer directory" if job_env.key?('DEVELOPER_DIR')
 end
@@ -41,7 +45,8 @@ xcode_jobs.each do |job|
   toolchain_runs = step_runs.call(job).join("\n")
   raise "#{job} job does not fail closed when the pinned Xcode is absent" unless toolchain_runs.include?('test -d "$DEVELOPER_DIR"')
   raise "#{job} job does not verify xcodebuild version" unless toolchain_runs.include?('xcodebuild -version')
-  raise "#{job} job does not enforce the pinned Xcode major-minor" unless toolchain_runs.include?('grep -F "Xcode ${MACTALK_XCODE_VERSION}"')
+  exact_xcode_check = 'test "$(sed -n \'1p\' build-xcode-version.txt)" = "Xcode ${MACTALK_XCODE_VERSION}"'
+  raise "#{job} job does not enforce exact Xcode 26.0.1" unless toolchain_runs.include?(exact_xcode_check)
   raise "#{job} job must not mutate the selected Xcode" if toolchain_runs.include?('xcode-select') || toolchain_runs.include?('sudo ')
 end
 
@@ -112,12 +117,52 @@ raise 'coverage artifacts omit an xcresult/log/report' unless coverage_uploads.a
 
 tsan_runs = step_runs.call('tsan').join("\n")
 tsan_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/test-lanes.sh'))
+test_selection = File.read(File.join(File.dirname(path), '../..', 'scripts/deterministic-test-selection.sh'))
 tsan_runs = "#{tsan_runs}\n#{tsan_implementation}"
+
+parse_shell_array = lambda do |name|
+  body = test_selection.match(/^#{Regexp.escape(name)}=\(\n(?<body>.*?)^\)$/m)&.[](:body)
+  raise "missing explicit #{name} array" unless body
+  body.lines.map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
+end
+
+deterministic_classes = parse_shell_array.call('DETERMINISTIC_TEST_CLASSES')
+tsan_supported_classes = parse_shell_array.call('TSAN_SUPPORTED_TEST_CLASSES')
+tsan_unsupported_classes = %w[
+  MacTalkTests/ParakeetStoreFileLockTests
+  MacTalkTests/VerifiedCoreMLByteAssetTests
+  MacTalkTests/VerifiedParakeetModelLoaderTests
+]
+raise 'TSan supported selection must contain every deterministic class except evidenced macos-15 incompatibilities' unless tsan_supported_classes == deterministic_classes - tsan_unsupported_classes
+%w[
+  MacTalkTests/AudioCompositionTests
+  MacTalkTests/AudioMixerTests
+  MacTalkTests/ConcurrencyStressTests
+  MacTalkTests/TranscriptionControllerTests
+].each do |class_name|
+  raise "TSan supported selection omits race-relevant #{class_name}" unless tsan_supported_classes.include?(class_name)
+end
+raise 'TSan supported selection must expose a dedicated argument builder' unless test_selection.include?('append_tsan_supported_test_selection()')
 raise 'TSan job is not limited to schedule/manual execution' unless jobs.fetch('tsan')['if'].to_s.include?('schedule') && jobs.fetch('tsan')['if'].to_s.include?('workflow_dispatch')
 %w[tsan-smoke.sh test-lanes.sh tsan enableThreadSanitizer YES].each do |needle|
   raise "TSan job missing #{needle}" unless tsan_runs.include?(needle)
 end
 raise 'TSan job does not verify an instrumented runtime link' unless tsan_runs.include?('verify-tsan-runtime.sh')
+focused_index = tsan_implementation.index('-only-testing:MacTalkTests/ConcurrencyStressTests')
+raise 'TSan focused concurrency suite is missing' unless focused_index
+full_index = tsan_implementation.index('"${TSAN_SUPPORTED_ARGS[@]}"', focused_index)
+raise 'TSan full supported suite is missing or runs before focused repetitions' unless full_index && focused_index < full_index
+raise 'TSan lane must build dedicated supported-suite arguments' unless tsan_implementation.include?('done < <(append_tsan_supported_test_selection)')
+raise 'TSan lane must not reuse the broader deterministic arguments after focused repetitions' if tsan_implementation.index('"${DETERMINISTIC_ARGS[@]}"', focused_index)
+focused_block = tsan_implementation[focused_index...full_index]
+raise 'TSan focused audio suite is missing' unless focused_block.include?('-only-testing:MacTalkTests/AudioMixerTests')
+raise 'TSan focused concurrency/audio suites must run exactly three times' unless focused_block.match?(/(?:^|\s)-test-iterations 3(?:\s|$)/)
+raise 'TSan focused repetitions must relaunch the test process' unless focused_block.include?('-test-repetition-relaunch-enabled YES')
+tsan_function = tsan_implementation.match(/^run_tsan_command\(\) \{\n(?<body>.*?)^\}/m)&.[](:body)
+raise 'TSan lane is missing run_tsan_command' unless tsan_function
+raise 'TSan lane must lower its test-host deployment target for macos-15' unless tsan_function.include?('MACOSX_DEPLOYMENT_TARGET=15.0')
+raise 'TSan deployment-target override must be confined to run_tsan_command' unless tsan_implementation.scan('MACOSX_DEPLOYMENT_TARGET=15.0').length == 1
+raise 'TSan enablement flag must be supplied exactly once by run_tsan_command' unless tsan_implementation.scan('-enableThreadSanitizer YES').length == 1
 
 %w[lint security documentation].each do |job|
   raise "#{job} job is not blocking" if jobs.fetch(job).key?('continue-on-error')
@@ -160,5 +205,18 @@ end
 %w[docs/testing/TESTING.md docs/testing/TEST_LANES.md docs/testing/TEST_COVERAGE.md].each do |doc|
   raise "missing documented path #{doc}" unless File.file?(File.join(File.dirname(path), '../..', doc))
 end
+ci_doc = File.read(File.join(File.dirname(path), '../..', 'docs/testing/CI.md')).gsub(/\s+/, ' ')
+testing_doc = File.read(File.join(File.dirname(path), '../..', 'docs/testing/TESTING.md')).gsub(/\s+/, ' ')
+raise 'CI policy must document the compatible macos-15 TSan runtime' unless ci_doc.include?('TSan job uses the hosted `macos-15` image')
+raise 'CI policy must document the TSan-only deployment-target override' unless ci_doc.include?('TSan-only `MACOSX_DEPLOYMENT_TARGET=15.0` override')
+raise 'CI policy must document three focused TSan repetitions' unless ci_doc.include?('three times in fresh test processes')
+raise 'CI policy must document the complete supported TSan subset' unless ci_doc.include?('complete macOS 15-supported deterministic subset')
+raise 'CI policy must identify the hosted incompatibility evidence' unless ci_doc.include?('run `31272883974`')
+%w[ParakeetStoreFileLockTests VerifiedCoreMLByteAssetTests VerifiedParakeetModelLoaderTests].each do |class_name|
+  raise "CI policy must document the evidenced TSan exclusion for #{class_name}" unless ci_doc.include?(class_name)
+end
+raise 'testing guide must document three focused TSan repetitions' unless testing_doc.include?('three times in fresh test processes')
+raise 'testing guide must document the complete supported TSan subset' unless testing_doc.include?('complete macOS 15-supported deterministic subset')
+raise 'testing guide must identify the hosted incompatibility evidence' unless testing_doc.include?('run `31272883974`')
 puts 'CI workflow semantic contract passed'
 RUBY
