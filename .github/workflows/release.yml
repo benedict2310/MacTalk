@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: New immutable release tag matching scripts/release-version.env (never v1.1.3)
+        description: New immutable release tag matching scripts/release-version.env (never reserved v1.1.3 or v1.1.4)
         required: true
         type: string
 

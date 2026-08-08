@@ -27,7 +27,8 @@ required = [
     "LICENSE", "README.md", "project.yml", "scripts/release-version.env",
     "MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
     "docs/STATUS.md", "docs/security/MODEL_PROVENANCE.md", "docs/development/ARCHITECTURE.md",
-    "docs/development/SETUP.md", "docs/development/adr/ADR-001-timestamp-aligned-audio-composition.md",
+    "docs/development/SETUP.md", "docs/deployment/RELEASE_WORKFLOW.md",
+    "docs/development/adr/ADR-001-timestamp-aligned-audio-composition.md",
     "docs/development/adr/ADR-002-settings-and-state-ownership.md",
     "docs/development/adr/ADR-003-privacy-logging.md",
     "docs/development/adr/ADR-004-dependency-pinning.md",
@@ -70,12 +71,13 @@ try:
 except json.JSONDecodeError as exc:
     fail(f"STATUS machine-readable block is invalid JSON: {exc}")
 for key, value in {
-    "date": "2026-07-18", "release_version": version, "build_number": build,
+    "date": "2026-07-18", "release_version": "1.1.3", "build_number": "4",
     "deployment_target": platform, "swift_version": swift,
     "xcodegen_version": "2.44.1", "fluidaudio_version": fluid,
 }.items():
     if data.get(key) != value:
-        fail(f"STATUS {key} does not match source ({data.get(key)!r} != {value!r})")
+        evidence = "historical baseline" if key in ("date", "release_version", "build_number") else "recorded source fact"
+        fail(f"STATUS {evidence} {key} is incorrect ({data.get(key)!r} != {value!r})")
 for section, command in {
     "unit_tests": "scripts/test-lanes.sh unit",
     "coverage": "scripts/coverage.sh",
@@ -90,6 +92,20 @@ if data.get("tsan", {}).get("result") != "blocked":
     fail("STATUS must record the standalone TSan runtime blocker")
 if not data.get("hardware_tcc", {}).get("reason") or not data.get("release", {}).get("blockers"):
     fail("STATUS must record manual TCC and release blockers")
+current_release = re.search(
+    r"Release metadata in\s+`scripts/release-version\.env` is marketing version\s+`([^`]+)`, build `([^`]+)`\.",
+    status,
+)
+if not current_release or current_release.groups() != (version, build):
+    fail("STATUS current-source release version/build does not match release-version.env")
+
+release_runbook = read("docs/deployment/RELEASE_WORKFLOW.md")
+for guidance in (
+    "`v1.1.3` and `v1.1.4` are permanently reserved",
+    "# Use a newly created immutable tag; never reuse reserved v1.1.3 or v1.1.4.",
+):
+    if guidance not in release_runbook:
+        fail(f"release runbook omits reserved-tag guidance: {guidance}")
 
 readme = read("README.md")
 if not re.search(r"\[[^\]]*License[^\]]*\]\(\.?/?LICENSE\)", readme, re.I):
