@@ -73,11 +73,13 @@ scripts/test-lanes.sh tsan
 
 This lane runs `scripts/tsan-smoke.sh` first, checks the generated
 `MacTalk-TSan` scheme/configuration and test executable runtime link, and only
-then runs `ConcurrencyStressTests` and `AudioMixerTests`. On the baseline host,
-the standalone clang ThreadSanitizer binary segfaulted (signal 11), so the
-lane stopped with `TSAN/UNAVAILABLE` before XCTest. No TSan pass is claimed.
-The blocker is the Apple/host sanitizer runtime, not evidence that the tests
-pass or fail under TSan.
+then runs `ConcurrencyStressTests` and `AudioMixerTests` three times in fresh
+test processes before running the complete deterministic suite. On the
+baseline host, the standalone clang ThreadSanitizer binary segfaulted (signal
+11), so the lane stopped with `TSAN/UNAVAILABLE` before XCTest. No local TSan
+pass is claimed. The blocker is the Apple/host sanitizer runtime, not evidence
+that the tests pass or fail under TSan; hosted CI uses the compatible
+`macos-15` runtime with the same pinned Xcode 26.0.1 toolchain.
 
 ## Build and signing lanes
 
