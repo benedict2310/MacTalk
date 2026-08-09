@@ -3,8 +3,9 @@ import Foundation
 struct ShortcutConfiguration: Equatable {
     let micOnly: KeyboardShortcut?
     let micPlusAppAudio: KeyboardShortcut?
+    let correctLast: KeyboardShortcut?
 
-    static let empty = ShortcutConfiguration(micOnly: nil, micPlusAppAudio: nil)
+    static let empty = ShortcutConfiguration(micOnly: nil, micPlusAppAudio: nil, correctLast: nil)
 }
 
 @MainActor
@@ -32,7 +33,8 @@ struct UserDefaultsShortcutConfigurationReader: ShortcutConfigurationReading {
     func shortcuts() -> ShortcutConfiguration {
         ShortcutConfiguration(
             micOnly: decode("startMicOnlyShortcut"),
-            micPlusAppAudio: decode("startMicPlusAppShortcut")
+            micPlusAppAudio: decode("startMicPlusAppShortcut"),
+            correctLast: decode("correctLastTranscriptionShortcut")
         )
     }
 
@@ -98,6 +100,9 @@ final class ShortcutCoordinator: ShortcutCoordinating {
         }
         if let shortcut = configuration.micPlusAppAudio {
             register(shortcut, intent: .toggleMicPlusAppAudio)
+        }
+        if let shortcut = configuration.correctLast {
+            register(shortcut, intent: .correctLastTranscription)
         }
     }
 

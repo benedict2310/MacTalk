@@ -90,6 +90,33 @@ final class TranscriptionControllerTests: XCTestCase {
         }, ["prepare", "reset", "process", "finalize"])
     }
 
+    func test_terminalResultPreservesRawAndCleanedPipelineStages() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            finals: [ASRFinalSegment(text: "um mac talk", words: [])]
+        ))
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let received = DeterministicValueBox<TerminalTranscription?>(nil)
+        let final = expectation(description: "structured terminal result")
+        controller.onTerminalResult = { result in
+            received.set(result)
+            final.fulfill()
+        }
+
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        await stopAndAdvance(controller)
+        await fulfillment(of: [final], timeout: 2)
+
+        XCTAssertEqual(received.get()?.rawASRText, "um mac talk")
+        XCTAssertEqual(received.get()?.cleanedText, "Mac talk.")
+        XCTAssertEqual(received.get()?.provider, .whisper)
+    }
+
     func test_finalTranscriptPreservesEarlierPartialsWithoutDuplicatingOverlap() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(

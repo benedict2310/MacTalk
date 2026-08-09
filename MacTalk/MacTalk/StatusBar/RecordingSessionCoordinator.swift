@@ -21,6 +21,12 @@ protocol TranscriptionSession: AnyObject {
 }
 
 @MainActor
+protocol StructuredTranscriptionSession: TranscriptionSession {
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> Void)? { get set }
+    func configure(requestContext: ASRRequestContext)
+}
+
+@MainActor
 protocol TranscriptionSessionFactory: AnyObject {
     func make(engine: any ASREngine) -> any TranscriptionSession
 }
@@ -51,6 +57,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         var source: AppPickerWindowController.AudioSource?
         var selection: EngineSelection?
         var session: (any TranscriptionSession)?
+        var macTeachSession: MacTeachSessionSnapshot? = nil
         var didStopSession = false
         var didOutputFinal = false
     }
@@ -62,6 +69,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private let output: any OutputCoordinating
     private let audioSources: (any AppAudioSourceCoordinating)?
     private let settingsSnapshot: @MainActor () -> SettingsSnapshot
+    private let macTeach: MacTeachCoordinator?
     private var request: RequestContext?
     private var work: Task<Void, Never>?
     private var engineActivityActive = false
@@ -75,7 +83,8 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         sessions: any TranscriptionSessionFactory,
         output: any OutputCoordinating,
         settingsSnapshot: @escaping @MainActor () -> SettingsSnapshot,
-        audioSources: (any AppAudioSourceCoordinating)? = nil
+        audioSources: (any AppAudioSourceCoordinating)? = nil,
+        macTeach: MacTeachCoordinator? = nil
     ) {
         self.permission = permission
         self.engine = engine
@@ -84,6 +93,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         self.output = output
         self.audioSources = audioSources
         self.settingsSnapshot = settingsSnapshot
+        self.macTeach = macTeach
     }
 
     func requestStart(mode: TranscriptionController.Mode) {
@@ -268,6 +278,19 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         transition(.starting, selection: selection)
         work = Task { @MainActor [weak self, weak session] in
             do {
+                if let macTeach = self?.macTeach {
+                    let snapshot = await macTeach.captureSession(
+                        settings: context.settings,
+                        target: context.target
+                    )
+                    guard let self, self.owns(id), case .starting = self.state.phase else {
+                        return
+                    }
+                    self.request?.macTeachSession = snapshot
+                    (session as? any StructuredTranscriptionSession)?.configure(
+                        requestContext: snapshot.requestContext
+                    )
+                }
                 try await session?.start(
                     mode: context.mode,
                     audioSource: context.source,
@@ -292,6 +315,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         }
         session.onFinal = { [weak self] text in
             self?.receiveFinal(text, requestID: requestID)
+        }
+        if let structuredSession = session as? any StructuredTranscriptionSession {
+            structuredSession.onTerminalResult = { [weak self] terminal in
+                await self?.receiveTerminal(terminal, requestID: requestID)
+            }
         }
         session.onMicLevel = { [weak self] level in
             guard let self, self.owns(requestID) else { return }
@@ -332,6 +360,46 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             )
         )
         emit(.finalOutput(result))
+    }
+
+    private func receiveTerminal(_ terminal: TerminalTranscription, requestID: UUID) async {
+        guard owns(requestID), state.phase == .finalizing,
+              request?.didOutputFinal == false,
+              let context = request,
+              let selection = context.selection,
+              let macTeachSession = context.macTeachSession,
+              let macTeach else {
+            receiveFinal(terminal.cleanedText, requestID: requestID)
+            return
+        }
+        request?.didOutputFinal = true
+        let delivered = macTeach.deliver(terminal, session: macTeachSession)
+        emit(.finalText(delivered.text))
+        let result = output.handleFinal(
+            text: delivered.text,
+            context: OutputContext(
+                target: context.target,
+                autoPastePreference: context.settings.autoPaste,
+                showNotifications: context.settings.showNotifications
+            )
+        )
+        emit(.finalOutput(result))
+
+        let insertionSucceeded: Bool? = switch result.insertOutcome {
+        case .axSetValueSuccess, .cmdVFallback: true
+        case .permissionDenied, .failed, .skippedTargetChanged: false
+        case .notAttempted: nil
+        }
+        do {
+            try await macTeach.persist(
+                delivered,
+                session: macTeachSession,
+                selection: selection,
+                insertionSucceeded: insertionSucceeded
+            )
+        } catch {
+            DebugLogger.shared.log(.error(description: "MacTeach history persistence failed"))
+        }
     }
 
     private func fail(_ id: UUID, message: String) {

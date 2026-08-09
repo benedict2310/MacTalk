@@ -71,6 +71,13 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(snapshot.captureMode, .micOnly)
         XCTAssertTrue(snapshot.showNotifications)
         XCTAssertFalse(snapshot.autoPaste)
+        XCTAssertTrue(snapshot.macTeach.textHistoryEnabled)
+        XCTAssertEqual(snapshot.macTeach.textRetentionDays, 30)
+        XCTAssertEqual(snapshot.macTeach.maximumTextRecords, 500)
+        XCTAssertFalse(snapshot.macTeach.keepRecordings)
+        XCTAssertEqual(snapshot.macTeach.audioRetentionDays, 7)
+        XCTAssertTrue(snapshot.macTeach.personalVocabularyEnabled)
+        XCTAssertTrue(snapshot.macTeach.suggestCorrections)
         XCTAssertEqual(snapshot.provider, snapshot.whisperModel?.provider)
 
         settings.provider = .parakeet
@@ -188,6 +195,28 @@ final class AppSettingsTests: XCTestCase {
 
         let stored = defaults.string(forKey: "asrProvider")
         XCTAssertEqual(stored, ASRProvider.parakeet.rawValue)
+    }
+
+    func test_persistsMacTeachPrivacyAndRetentionSettings() {
+        let settings = AppSettings.makeForTesting(defaults: defaults)
+
+        settings.setTextHistoryEnabled(false)
+        settings.setTextRetention(days: 90, maximumRecords: 1_000)
+        settings.setKeepRecordings(true)
+        settings.setAudioRetentionDays(30)
+        settings.setPersonalVocabularyEnabled(false)
+        settings.setSuggestCorrections(false)
+
+        let reloaded = AppSettings.makeForTesting(defaults: defaults)
+        XCTAssertEqual(reloaded.snapshot.macTeach, MacTeachSettingsSnapshot(
+            textHistoryEnabled: false,
+            textRetentionDays: 90,
+            maximumTextRecords: 1_000,
+            keepRecordings: true,
+            audioRetentionDays: 30,
+            personalVocabularyEnabled: false,
+            suggestCorrections: false
+        ))
     }
 
     func test_postsNotificationOnProviderChange() {

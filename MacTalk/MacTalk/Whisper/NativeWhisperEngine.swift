@@ -21,6 +21,10 @@ import Darwin
 /// The whisper.cpp context is NOT thread-safe internally. This class ensures
 /// serial access to prevent data races in the underlying C++ code.
 final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
+    /// Conservative final UTF-8 guard when the loaded whisper.cpp context does
+    /// not expose an exact tokenizer budget at this Swift boundary.
+    static let maximumInitialPromptUTF8Bytes = 640
+
     private var ctx: OpaquePointer?
     private let queue = DispatchQueue(label: "com.mactalk.whisper.engine", qos: .userInitiated)
     let provider: ASRProvider = .whisper
@@ -75,6 +79,21 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         return ASRPartial(text: result.text, words: [])
     }
 
+    func process(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRPartial? {
+        guard let samples = samples(from: buffer) else {
+            return nil
+        }
+        guard let result = transcribeStreaming(
+            samples: samples,
+            language: context.language,
+            initialPrompt: Self.initialPrompt(for: context)
+        ) else {
+            return nil
+        }
+
+        return ASRPartial(text: result.text, words: [])
+    }
+
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
         guard let samples = samples(from: buffer) else {
             return nil
@@ -85,12 +104,27 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         return ASRFinalSegment(text: result.text, words: [])
     }
 
+    func finalize(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRFinalSegment? {
+        guard let samples = samples(from: buffer) else {
+            return nil
+        }
+        guard let result = transcribeFinal(
+            samples: samples,
+            language: context.language,
+            initialPrompt: Self.initialPrompt(for: context)
+        ) else {
+            return nil
+        }
+        return ASRFinalSegment(text: result.text, words: [])
+    }
+
     /// Transcribe audio samples (16kHz mono float32)
     func transcribe(
         samples: [Float],
         language: String? = nil,
         translate: Bool = false,
-        noContext: Bool = false
+        noContext: Bool = false,
+        initialPrompt: String? = nil
     ) -> Result? {
         guard let ctx = ctx else {
             DLOG("Whisper context is unavailable")
@@ -108,15 +142,19 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
             let textPtr = samples.withUnsafeBufferPointer { bufferPointer -> UnsafeMutablePointer<CChar>? in
                 guard let baseAddress = bufferPointer.baseAddress else { return nil }
 
-                let langCStr = language?.cString(using: .utf8)
-                return wt_whisper_transcribe(
-                    UnsafeMutableRawPointer(ctx),
-                    baseAddress,
-                    Int32(bufferPointer.count),
-                    langCStr,
-                    translate,
-                    noContext
-                )
+                return Self.withOptionalCString(language) { languagePointer in
+                    Self.withOptionalCString(initialPrompt) { promptPointer in
+                        wt_whisper_transcribe(
+                            UnsafeMutableRawPointer(ctx),
+                            baseAddress,
+                            Int32(bufferPointer.count),
+                            languagePointer,
+                            translate,
+                            noContext,
+                            promptPointer
+                        )
+                    }
+                }
             }
 
             guard let textPointer = textPtr else {
@@ -135,14 +173,60 @@ final class NativeWhisperEngine: @unchecked Sendable, ASREngine {
         }
     }
 
-    /// Convenience method for streaming with default settings
-    func transcribeStreaming(samples: [Float], language: String? = nil) -> Result? {
-        return transcribe(samples: samples, language: language, translate: false, noContext: false)
+    /// Convenience method for streaming with default settings.
+    func transcribeStreaming(
+        samples: [Float],
+        language: String? = nil,
+        initialPrompt: String? = nil
+    ) -> Result? {
+        transcribe(
+            samples: samples,
+            language: language,
+            translate: false,
+            noContext: false,
+            initialPrompt: initialPrompt
+        )
     }
 
-    /// Convenience method for final transcription with full context
-    func transcribeFinal(samples: [Float], language: String? = nil) -> Result? {
-        return transcribe(samples: samples, language: language, translate: false, noContext: false)
+    /// Convenience method for final transcription with full context.
+    func transcribeFinal(
+        samples: [Float],
+        language: String? = nil,
+        initialPrompt: String? = nil
+    ) -> Result? {
+        transcribe(
+            samples: samples,
+            language: language,
+            translate: false,
+            noContext: false,
+            initialPrompt: initialPrompt
+        )
+    }
+
+    /// Converts the already ranked session hint snapshot into Whisper's compact
+    /// initial prompt. Empty and duplicate entries are ignored without changing
+    /// the relative order of the remaining terms.
+    static func initialPrompt(for context: ASRRequestContext) -> String? {
+        var seen = Set<String>()
+        var prompt = ""
+        for hint in context.vocabularyHints {
+            let term = hint.writtenForm.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, seen.insert(term).inserted else { continue }
+            let candidate = prompt.isEmpty ? term : "\(prompt), \(term)"
+            guard candidate.utf8.count <= maximumInitialPromptUTF8Bytes else { continue }
+            prompt = candidate
+        }
+        return prompt.isEmpty ? nil : prompt
+    }
+
+    /// `withCString` scopes each UTF-8 buffer across the complete synchronous
+    /// native inference call. No pointer escapes into whisper.cpp state.
+    private static func withOptionalCString<T>(
+        _ value: String?,
+        _ body: (UnsafePointer<CChar>?) -> T
+    ) -> T {
+        guard let value, !value.isEmpty else { return body(nil) }
+        return value.withCString(body)
     }
 
     private func samples(from buffer: AVAudioPCMBuffer) -> [Float]? {

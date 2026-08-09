@@ -58,6 +58,7 @@ targets:
           - $(PROJECT_DIR)/Vendor/whisper.cpp/build/ggml/src
         OTHER_LDFLAGS:
           - -lwhisper
+          - -lsqlite3
           - -framework Accelerate
           - -framework Metal
           - -framework Foundation
@@ -86,6 +87,7 @@ targets:
       - sdk: ScreenCaptureKit.framework
       - sdk: UserNotifications.framework
       - sdk: CoreML.framework
+      - sdk: libsqlite3.tbd
       - package: FluidAudio
     postBuildScripts:
       - name: Copy Whisper Libraries
