@@ -711,9 +711,43 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     func stop() {
+        guard let sessionID = beginStopping() else { return }
+        let deadline = timingScheduler.nowNanoseconds
+            .addingReportingOverflow(UInt64(tailDrainMs) * 1_000_000)
+        let stopDeadline = deadline.overflow ? UInt64.max : deadline.partialValue
+        pendingStopTask = timingScheduler.schedule(deadlineNanoseconds: stopDeadline) { [weak self] in
+            guard let self else { return }
+            self.pendingFinalizationTask = Task { [self] in await completeStopping(sessionID: sessionID) }
+        }
+        print("Transcription stopped")
+    }
+
+    /// Synchronously requests capture shutdown, then awaits the complete
+    /// terminal pipeline including metrics persistence. This is the contract
+    /// used by explicit lifecycle cleanup; normal UI stop remains scheduled.
+    func stopAndWait() async {
+        if let pendingFinalizationTask {
+            await pendingFinalizationTask.value
+            return
+        }
+        if let sessionID = beginStopping() {
+            pendingStopTask?.cancel()
+            pendingStopTask = nil
+            await completeStopping(sessionID: sessionID)
+            return
+        }
+        // A normal stop may already have marked the session stopping while its
+        // bounded handoff is waiting on the scheduler. Take ownership of that
+        // same session instead of returning before persistence.
+        let sessionID = audioState.withLock { state in state.isStopping ? state.sessionID : nil }
+        guard let sessionID else { return }
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        await completeStopping(sessionID: sessionID)
+    }
+
+    private func beginStopping() -> UUID? {
         DLOG("Transcription stop requested")
-        // Invalidate callbacks and mark the state before capture shutdown.
-        // Queued work can then never append after final stream draining begins.
         audioSessionGate.stop()
         appAudioGate.stop()
         let sessionID: UUID? = audioState.withLock { state in
@@ -723,55 +757,42 @@ final class TranscriptionController: @unchecked Sendable {
         }
         guard let sessionID else {
             DLOG("Ignoring duplicate transcription stop request")
-            return
+            return nil
         }
         recorder(for: sessionID)?.recordStopRequested()
         captureSession.stop()
-        // The capture handoff is bounded but asynchronous. Give its delivery
-        // worker a chance to drain, then route both converter tails through the
-        // same composer before final inference.
-        // Keep the controller alive through final inference and clipboard delivery.
-        // The scheduler is injectable so tests explicitly advance this bounded
-        // capture handoff instead of sleeping and polling.
-        let deadline = timingScheduler.nowNanoseconds
-            .addingReportingOverflow(UInt64(tailDrainMs) * 1_000_000)
-        let stopDeadline = deadline.overflow ? UInt64.max : deadline.partialValue
-        pendingStopTask = timingScheduler.schedule(deadlineNanoseconds: stopDeadline) { [weak self] in
-            guard let self else { return }
-            Task { [self] in
-                finishAudioStreams(sessionID: sessionID)
-                compositionPipeline.finish(sessionID: sessionID)
-                let terminalResult = await flushFinalChunk(sessionID: sessionID)
-                let outcome: PipelineSessionOutcome
-                switch terminalResult {
-                case .noSpeech: outcome = .noSpeech
-                case .completed: outcome = .completed
-                case .inferenceFailed: outcome = .inferenceFailed
-                }
-                await finalizeRecorder(sessionID: sessionID, outcome: outcome)
-
-                audioState.withLock { state in
-                    if state.sessionID == sessionID {
-                        state.isStopping = false
-                    }
-                }
-                if let onFinalizationComplete {
-                    await onFinalizationComplete()
-                }
-            }
-        }
-
-        print("Transcription stopped")
+        return sessionID
     }
 
-    func cancelStart() {
+    private func completeStopping(sessionID: UUID) async {
+        finishAudioStreams(sessionID: sessionID)
+        compositionPipeline.finish(sessionID: sessionID)
+        let terminalResult = await flushFinalChunk(sessionID: sessionID)
+        let outcome: PipelineSessionOutcome
+        switch terminalResult {
+        case .noSpeech: outcome = .noSpeech
+        case .completed: outcome = .completed
+        case .inferenceFailed: outcome = .inferenceFailed
+        }
+        await finalizeRecorder(sessionID: sessionID, outcome: outcome)
+
+        audioState.withLock { state in
+            if state.sessionID == sessionID {
+                state.isStopping = false
+            }
+        }
+        if let onFinalizationComplete {
+            await onFinalizationComplete()
+        }
+        pendingFinalizationTask = nil
+    }
+
+    func cancelStart() async {
         let sessionID = cancelStartAndReturnSession()
         pendingFinalizationTask?.cancel()
-        pendingFinalizationTask = Task { [weak self] in
-            guard let self else { return }
-            await self.cancelPendingChunkTasks(sessionID: sessionID)
-            await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
-        }
+        pendingFinalizationTask = nil
+        await cancelPendingChunkTasks(sessionID: sessionID)
+        await finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
         print("Transcription start cancelled")
     }
 
@@ -967,7 +988,7 @@ final class TranscriptionController: @unchecked Sendable {
         if let sessionID {
             if recorder(for: sessionID)?.recordComposedOutput(samples: UInt64(samples.count)) == true,
                let signpostID = sessionLifecycle.withLock({ $0[sessionID]?.signpostID }) {
-                PipelineSignposts.firstAudio(signpostID)
+                PipelineSignposts.firstComposedAudio(signpostID)
             }
             if trimmedSamples > 0 { recorder(for: sessionID)?.recordTrimmedAudio(samples: UInt64(trimmedSamples)) }
         }

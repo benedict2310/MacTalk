@@ -168,7 +168,7 @@ final class TranscriptionControllerTests: XCTestCase {
         )
 
         try await controller.start(mode: .micOnly)
-        controller.cancelStart()
+        await controller.cancelStart()
         await metricsStore.waitForCount(1)
         let storedCount = await metricsStore.count
         XCTAssertEqual(storedCount, 1)
@@ -211,12 +211,12 @@ final class TranscriptionControllerTests: XCTestCase {
 
         try await controller.start(mode: .micOnly)
         capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 110)
-        controller.cancelStart()
+        await controller.cancelStart()
         await store.waitForCount(1)
 
         try await controller.start(mode: .micOnly)
         capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 113)
-        controller.cancelStart()
+        await controller.cancelStart()
         await store.waitForCount(2)
         let reports = await store.reports(limit: 2)
         XCTAssertEqual(reports.map(\.capture.microphoneDroppedBuffers), [10, 3])

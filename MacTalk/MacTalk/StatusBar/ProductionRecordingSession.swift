@@ -47,7 +47,11 @@ final class ProductionTranscriptionSession: TranscriptionSession {
     }
 
     func stop() { controller.stop() }
-    func cancelStart() { controller.cancelStart() }
+    func stopAndWait() async { await controller.stopAndWait() }
+    func requestCancelStart() {
+        Task { [controller] in await controller.cancelStart() }
+    }
+    func cancelStart() async { await controller.cancelStart() }
 }
 
 @MainActor

@@ -71,6 +71,61 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.session.stopCount, 1)
     }
 
+    func test_cleanupAwaitsCancelledStartBeforeReleasingSession() async throws {
+        let harness = RecordingHarness()
+        harness.session.startSuspended = true
+        harness.session.cancelSuspended = true
+        harness.session.persistsMetrics = true
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .starting }
+
+        let cleanup = Task { @MainActor in await harness.coordinator.cleanup() }
+        await harness.session.waitForCancelStart()
+        harness.session.releaseCancel()
+        await harness.session.metricsStore.waitForRecordStart()
+        XCTAssertFalse(cleanup.isCancelled)
+        XCTAssertNotNil(harness.coordinator.state.requestID)
+        XCTAssertEqual(harness.session.asyncCancelStarts, 1)
+        let pendingCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(pendingCount, 0)
+
+        await harness.session.metricsStore.releaseRecord()
+        await cleanup.value
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertEqual(harness.session.releasedSessions, 1)
+        let completedCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(completedCount, 1)
+        XCTAssertEqual(harness.session.stopAndWaitCount, 0)
+    }
+
+    func test_cleanupAwaitsRecordingStopAndDoesNotFinalizeTwice() async throws {
+        let harness = RecordingHarness()
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.session.stopSuspended = true
+        harness.session.persistsMetrics = true
+
+        let cleanup = Task { @MainActor in await harness.coordinator.cleanup() }
+        await harness.waitFor { harness.session.stopAndWaitStarted }
+        harness.session.releaseStopAndWait()
+        await harness.session.metricsStore.waitForRecordStart()
+        XCTAssertNotNil(harness.coordinator.state.requestID)
+        XCTAssertEqual(harness.session.stopAndWaitCount, 1)
+        XCTAssertEqual(harness.session.cancelStarts, 0)
+        let pendingCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(pendingCount, 0)
+
+        await harness.session.metricsStore.releaseRecord()
+        await cleanup.value
+        await harness.coordinator.cleanup()
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertEqual(harness.session.releasedSessions, 1)
+        XCTAssertEqual(harness.session.stopAndWaitCount, 1)
+        let completedCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(completedCount, 1)
+        XCTAssertEqual(harness.session.cancelStarts, 0)
+    }
+
     func test_micOnlyReachesRecordingWithOneImmutableSnapshot() async throws {
         let harness = RecordingHarness()
         let coordinator = harness.coordinator
@@ -345,20 +400,90 @@ private final class RecordingSessionFake: TranscriptionSession {
     var starts: [Start] = []
     var startSuspended = false
     var cancelStarts = 0
+    var asyncCancelStarts = 0
     var stopCount = 0
+    var cancelSuspended = false
+    var cancelStarted = false
+    var stopSuspended = false
+    var stopAndWaitStarted = false
+    var stopAndWaitCount = 0
+    var persistsMetrics = false
+    let metricsStore = DelayedCoordinatorMetricsStore()
+    var releasedSessions = 0
     var lastRequestID: UUID?
     private var continuation: CheckedContinuation<Void, Error>?
+    private var cancelContinuation: CheckedContinuation<Void, Never>?
+    private var cancelStartWaiter: CheckedContinuation<Void, Never>?
+    private var stopContinuation: CheckedContinuation<Void, Never>?
     init(provider: ASRProvider) { providerValue = provider }
     func start(mode: TranscriptionController.Mode, audioSource: AppPickerWindowController.AudioSource?, settingsSnapshot: SettingsSnapshot) async throws {
         starts.append(Start(snapshot: settingsSnapshot, source: audioSource))
         if startSuspended { try await withCheckedThrowingContinuation { continuation = $0 } }
     }
     func stop() { stopCount += 1 }
-    func cancelStart() { cancelStarts += 1 }
+    func requestCancelStart() {
+        cancelStarts += 1
+    }
+    func stopAndWait() async {
+        stopAndWaitCount += 1
+        stopAndWaitStarted = true
+        if stopSuspended { await withCheckedContinuation { continuation in stopContinuation = continuation } }
+        if persistsMetrics { await metricsStore.record() }
+        releasedSessions += 1
+    }
+    func cancelStart() async {
+        asyncCancelStarts += 1
+        cancelStarted = true
+        cancelStartWaiter?.resume()
+        cancelStartWaiter = nil
+        if cancelSuspended { await withCheckedContinuation { continuation in cancelContinuation = continuation } }
+        if persistsMetrics { await metricsStore.record() }
+        releasedSessions += 1
+    }
     func releaseStart() { continuation?.resume(); continuation = nil }
+    func waitForCancelStart() async {
+        if cancelStarted { return }
+        await withCheckedContinuation { cancelStartWaiter = $0 }
+    }
+    func releaseCancel() { cancelContinuation?.resume(); cancelContinuation = nil }
+    func releaseStopAndWait() { stopContinuation?.resume(); stopContinuation = nil }
     @discardableResult
     func emitFinal(_ value: String) -> OutputResult? { onFinal?(value) ?? nil }
     func emitFinalizationComplete() { onFinalizationComplete?() }
+}
+
+private actor DelayedCoordinatorMetricsStore {
+    private var started = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var releaseRequested = false
+    private(set) var recordCount = 0
+
+    func record() async {
+        started = true
+        startWaiter?.resume()
+        startWaiter = nil
+        if releaseRequested {
+            releaseRequested = false
+        } else {
+            await withCheckedContinuation { continuation in releaseWaiter = continuation }
+        }
+        recordCount += 1
+    }
+
+    func waitForRecordStart() async {
+        if started { return }
+        await withCheckedContinuation { continuation in startWaiter = continuation }
+    }
+
+    func releaseRecord() {
+        if let releaseWaiter {
+            releaseWaiter.resume()
+            self.releaseWaiter = nil
+        } else {
+            releaseRequested = true
+        }
+    }
 }
 
 private final class TestRecordingEngine: ASREngine, @unchecked Sendable {

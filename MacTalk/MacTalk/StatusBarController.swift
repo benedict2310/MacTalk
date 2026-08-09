@@ -65,8 +65,8 @@ final class StatusBarController {
         render()
     }
 
-    func cleanup() {
-        recording.cleanup()
+    func cleanup() async {
+        await recording.cleanup()
         dependencies.appAudioSource.cleanup()
         dependencies.shortcut.cleanup()
         dependencies.shortcut.onIntent = nil

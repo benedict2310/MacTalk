@@ -69,8 +69,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Clean up resources
-        statusBarController?.cleanup()
+        // NSApplication's termination callback is synchronous. Controlled
+        // callers use the async cleanup contract; termination remains best
+        // effort because AppKit does not await this callback.
+        Task { @MainActor [weak self] in
+            await self?.statusBarController?.cleanup()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

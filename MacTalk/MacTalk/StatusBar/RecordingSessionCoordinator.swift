@@ -17,7 +17,11 @@ protocol TranscriptionSession: AnyObject {
         settingsSnapshot: SettingsSnapshot
     ) async throws
     func stop()
-    func cancelStart()
+    func stopAndWait() async
+    /// Cancels start without making a synchronous caller wait for persistence.
+    func requestCancelStart()
+    /// Awaits cancellation and its terminal metrics persistence.
+    func cancelStart() async
 }
 
 @MainActor
@@ -35,7 +39,7 @@ protocol RecordingSessionCoordinating: AnyObject {
     func provideAudioSource(requestID: UUID, source: AppPickerWindowController.AudioSource?)
     func respondToDownloadPrompt(requestID: UUID, approved: Bool)
     func stop()
-    func cleanup()
+    func cleanup() async
 }
 
 /// Owns the complete lifecycle of one recording request. Every asynchronous
@@ -207,7 +211,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         }
     }
 
-    func cleanup() {
+    func cleanup() async {
         guard let request else {
             work?.cancel()
             work = nil
@@ -216,9 +220,25 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             state = .idle
             return
         }
-        cancelOwnedWork(request.id)
-        request.session?.cancelStart()
-        request.session?.stop()
+
+        // Keep the request/session retained until the session has completed its
+        // terminal metrics write. Cleanup is an explicit async durability
+        // boundary; deinit remains best effort in TranscriptionController.
+        let session = request.session
+        switch state.phase {
+        case .recording, .finalizing:
+            cancelOwnedWork(request.id)
+            await session?.stopAndWait()
+        default:
+            // Let the session invalidate its own start operation first. This
+            // avoids dropping a suspended start task before it can persist its
+            // terminal report.
+            await session?.cancelStart()
+            // Invalidate coordinator callbacks before cancelling the start
+            // task; retain the request until all cleanup side effects finish.
+            transition(.idle, requestID: nil, mode: nil, selection: nil)
+            cancelOwnedWork(request.id)
+        }
         output.cancel()
         self.request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)
@@ -345,8 +365,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private func abort(_ id: UUID) {
         guard owns(id) else { return }
         cancelOwnedWork(id)
-        request?.session?.cancelStart()
+        let session = request?.session
         request?.session = nil
+        session?.requestCancelStart()
         output.cancel()
         request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)

@@ -301,6 +301,7 @@ enum PipelineSignposts {
     static func beginInference(_ id: OSSignpostID, kind: PipelineInferenceKind) { os_signpost(.begin, log: log, name: "Inference", signpostID: id, "%{public}s", kind.rawValue) }
     static func endInference(_ id: OSSignpostID) { os_signpost(.end, log: log, name: "Inference", signpostID: id) }
     static func firstAudio(_ id: OSSignpostID) { os_signpost(.event, log: log, name: "FirstAudio", signpostID: id) }
+    static func firstComposedAudio(_ id: OSSignpostID) { os_signpost(.event, log: log, name: "FirstComposedAudio", signpostID: id) }
     static func firstPartial(_ id: OSSignpostID) { os_signpost(.event, log: log, name: "FirstPartial", signpostID: id) }
 }
 
