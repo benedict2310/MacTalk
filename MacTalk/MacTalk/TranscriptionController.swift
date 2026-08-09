@@ -225,6 +225,11 @@ protocol TranscriptionCaptureSession: AnyObject {
         callback: @escaping @Sendable (UUID, CMSampleBuffer) -> Void,
         errorCallback: @escaping @Sendable (UUID, Error) -> Void
     ) async throws
+    /// Requests capture shutdown without awaiting. This is safe on callback
+    /// and other hot paths because it performs no async I/O.
+    func requestStop()
+    /// Awaits durable retirement of any in-flight capture start and its stream.
+    func stopAndWait() async
     /// Stops only the app/system-audio stream, preserving microphone capture.
     func stopAppAudio()
     /// Stops every active capture source.
@@ -233,6 +238,8 @@ protocol TranscriptionCaptureSession: AnyObject {
 
 extension TranscriptionCaptureSession {
     var healthSnapshot: CaptureHealthMetrics { .zero }
+    func requestStop() { stop() }
+    func stopAndWait() async {}
 }
 
 /// Platform capture implementation used by the application.
@@ -283,15 +290,24 @@ final class LiveTranscriptionCaptureSession: @unchecked Sendable, TranscriptionC
         }
     }
 
-    func stopAppAudio() {
-        screenCapture.stop()
-    }
-
-    func stop() {
+    func requestStop() {
         healthLock.lock()
         defer { healthLock.unlock() }
         micCapture.stop()
-        stopAppAudio()
+        screenCapture.requestStop()
+    }
+
+    func stopAndWait() async {
+        requestStop()
+        await screenCapture.stopAndWait()
+    }
+
+    func stopAppAudio() {
+        screenCapture.requestStop()
+    }
+
+    func stop() {
+        requestStop()
     }
 }
 
@@ -749,7 +765,8 @@ final class TranscriptionController: @unchecked Sendable {
         let previousSessionID = audioState.withLock { $0.sessionID }
         audioSessionGate.stop()
         appAudioGate.stop()
-        captureSession.stop()
+        captureSession.requestStop()
+        await captureSession.stopAndWait()
         compositionPipeline.cancel(sessionID: previousSessionID)
         await cancelPendingChunkTasks(sessionID: previousSessionID)
         guard !Task.isCancelled, owns(generation) else {
@@ -822,7 +839,8 @@ final class TranscriptionController: @unchecked Sendable {
             throw error
         }
         guard audioSessionGate.accepts(sessionID), isSessionActive(sessionID) else {
-            captureSession.stop()
+            captureSession.requestStop()
+            await captureSession.stopAndWait()
             await awaitFinalization(sessionID: sessionID) { [weak self] in
                 guard let self else { return }
                 await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
@@ -980,11 +998,12 @@ final class TranscriptionController: @unchecked Sendable {
             return nil
         }
         recorder(for: sessionID)?.recordStopRequested()
-        captureSession.stop()
+        captureSession.requestStop()
         return sessionID
     }
 
     private func completeStopping(sessionID: UUID) async {
+        await captureSession.stopAndWait()
         finishAudioStreams(sessionID: sessionID)
         compositionPipeline.finish(sessionID: sessionID)
         let terminalResult = await flushFinalChunk(sessionID: sessionID)
@@ -1012,6 +1031,7 @@ final class TranscriptionController: @unchecked Sendable {
         let sessionID = invalidateCurrentStart()
         let task = claimFinalization(sessionID: sessionID) { [weak self] in
             guard let self else { return }
+            await self.captureSession.stopAndWait()
             await self.cancelPendingChunkTasks(sessionID: sessionID)
             await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
         }
@@ -1025,7 +1045,7 @@ final class TranscriptionController: @unchecked Sendable {
     private func invalidateCurrentStart() -> UUID {
         audioSessionGate.stop()
         appAudioGate.stop()
-        captureSession.stop()
+        captureSession.requestStop()
         let sessionID = audioState.withLock { $0.sessionID }
         let generation = lifecycleState.withLock { $0.activeGeneration }
         if let generation { invalidateStartGeneration(generation) }
@@ -1040,6 +1060,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     func cancelStart() async {
         let sessionID = invalidateCurrentStart()
+        await captureSession.stopAndWait()
         await awaitFinalization(sessionID: sessionID) { [weak self] in
             guard let self else { return }
             await self.cancelPendingChunkTasks(sessionID: sessionID)
@@ -1066,11 +1087,13 @@ final class TranscriptionController: @unchecked Sendable {
                 cancelScheduledStop()
                 audioSessionGate.stop()
                 appAudioGate.stop()
-                captureSession.stop()
+                captureSession.requestStop()
+                await captureSession.stopAndWait()
                 compositionPipeline.cancel(sessionID: sessionID)
             }
         } else {
             sessionID = cancelStartAndReturnSession()
+            await captureSession.stopAndWait()
         }
         await awaitFinalization(sessionID: sessionID) { [weak self] in
             guard let self else { return }
@@ -1084,7 +1107,7 @@ final class TranscriptionController: @unchecked Sendable {
         cancelScheduledStop()
         audioSessionGate.stop()
         appAudioGate.stop()
-        captureSession.stop()
+        captureSession.requestStop()
 
         let sessionID = audioState.withLock { state in
             let sessionID = state.sessionID
