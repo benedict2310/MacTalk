@@ -4,7 +4,7 @@ import Foundation
 protocol TranscriptionSession: AnyObject {
     var provider: ASRProvider { get }
     var onPartial: (@Sendable @MainActor (String) -> Void)? { get set }
-    var onFinal: (@Sendable @MainActor (String) -> Void)? { get set }
+    var onFinal: (@Sendable @MainActor (String) -> OutputResult?)? { get set }
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)? { get set }
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)? { get set }
     var onAppAudioLost: (@Sendable @MainActor () -> Void)? { get set }
@@ -317,10 +317,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         }
     }
 
-    private func receiveFinal(_ text: String, requestID: UUID) {
+    @discardableResult
+    private func receiveFinal(_ text: String, requestID: UUID) -> OutputResult? {
         guard owns(requestID), state.phase == .finalizing,
               request?.didOutputFinal == false,
-              let context = request else { return }
+              let context = request else { return nil }
         request?.didOutputFinal = true
         emit(.finalText(text))
         let result = output.handleFinal(
@@ -332,6 +333,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             )
         )
         emit(.finalOutput(result))
+        return result
     }
 
     private func fail(_ id: UUID, message: String) {

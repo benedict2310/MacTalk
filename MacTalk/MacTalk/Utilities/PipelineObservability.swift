@@ -51,6 +51,7 @@ struct PipelineAudioMetrics: Codable, Sendable, Equatable {
     var microphoneConvertedSamples: UInt64 = 0
     var applicationInputSamples: UInt64 = 0
     var conversionNanoseconds: UInt64 = 0
+    var applicationConversionNanoseconds: UInt64 = 0
     var conversionFailures: UInt64 = 0
     var composedSamples: UInt64 = 0
     var vadSkips: UInt64 = 0
@@ -176,8 +177,15 @@ final class PipelineSessionRecorder: @unchecked Sendable {
             s.capture.microphoneCallbacks &+= 1
         }
     }
-    func recordApplicationInput(callbacks: UInt64 = 1, samples: UInt64 = 0, lossEvents: UInt64 = 0) {
-        let t = tick(); state.withLock { s in mark(&s.firstCapture, at: t); s.audio.applicationInputSamples &+= samples; s.capture.applicationCallbacks &+= callbacks; s.capture.applicationLossEvents &+= lossEvents }
+    func recordApplicationInput(callbacks: UInt64 = 1, samples: UInt64 = 0, lossEvents: UInt64 = 0, conversionNanoseconds: UInt64 = 0, conversionFailed: Bool = false) {
+        let t = tick(); state.withLock { s in
+            mark(&s.firstCapture, at: t)
+            s.audio.applicationInputSamples &+= samples
+            s.audio.applicationConversionNanoseconds &+= conversionNanoseconds
+            if conversionFailed { s.audio.conversionFailures &+= 1 }
+            s.capture.applicationCallbacks &+= callbacks
+            s.capture.applicationLossEvents &+= lossEvents
+        }
     }
     func recordConversionFailure() { state.withLock { $0.audio.conversionFailures &+= 1 } }
     func recordComposedOutput(samples: UInt64) { let t = tick(); state.withLock { s in mark(&s.firstComposed, at: t); s.audio.composedSamples &+= samples } }

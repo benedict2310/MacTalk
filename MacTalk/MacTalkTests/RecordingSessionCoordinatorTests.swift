@@ -133,8 +133,8 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         harness.coordinator.stop()
         harness.coordinator.stop()
         XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
-        harness.session.emitFinal("hello")
-        harness.session.emitFinal("duplicate")
+        XCTAssertNotNil(harness.session.emitFinal("hello"))
+        XCTAssertNil(harness.session.emitFinal("duplicate"))
         XCTAssertEqual(harness.output.finalTexts, ["hello"])
         XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
         harness.session.emitFinalizationComplete()
@@ -336,7 +336,7 @@ private final class RecordingSessionFake: TranscriptionSession {
     var providerValue: ASRProvider
     var provider: ASRProvider { providerValue }
     var onPartial: (@Sendable @MainActor (String) -> Void)?
-    var onFinal: (@Sendable @MainActor (String) -> Void)?
+    var onFinal: (@Sendable @MainActor (String) -> OutputResult?)?
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?
@@ -356,7 +356,8 @@ private final class RecordingSessionFake: TranscriptionSession {
     func stop() { stopCount += 1 }
     func cancelStart() { cancelStarts += 1 }
     func releaseStart() { continuation?.resume(); continuation = nil }
-    func emitFinal(_ value: String) { onFinal?(value) }
+    @discardableResult
+    func emitFinal(_ value: String) -> OutputResult? { onFinal?(value) ?? nil }
     func emitFinalizationComplete() { onFinalizationComplete?() }
 }
 

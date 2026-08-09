@@ -13,7 +13,7 @@ final class ProductionTranscriptionSession: TranscriptionSession {
         get { controller.onPartial }
         set { controller.onPartial = newValue }
     }
-    var onFinal: (@Sendable @MainActor (String) -> Void)? {
+    var onFinal: (@Sendable @MainActor (String) -> OutputResult?)? {
         get { controller.onFinal }
         set { controller.onFinal = newValue }
     }
@@ -53,6 +53,9 @@ final class ProductionTranscriptionSession: TranscriptionSession {
 @MainActor
 final class ProductionTranscriptionSessionFactory: TranscriptionSessionFactory {
     func make(engine: any ASREngine) -> any TranscriptionSession {
-        ProductionTranscriptionSession(controller: TranscriptionController(engine: engine))
+        let batteryMode = PerformanceMonitor.currentBatteryMode
+        return ProductionTranscriptionSession(
+            controller: TranscriptionController(engine: engine, batteryModeSnapshot: batteryMode)
+        )
     }
 }

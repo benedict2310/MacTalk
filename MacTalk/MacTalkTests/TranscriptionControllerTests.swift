@@ -55,6 +55,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { text in
             finalText.set(text)
             finalExpectation.fulfill()
+            return nil
         }
 
         try await controller.start(mode: .micOnly)
@@ -110,6 +111,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { text in
             finalText.set(text)
             finalExpectation.fulfill()
+            return nil
         }
 
         try await controller.start(mode: .micOnly)
@@ -152,6 +154,56 @@ final class TranscriptionControllerTests: XCTestCase {
             ),
             "I agree,"
         )
+    }
+
+    func test_controllerPersistsExactlyOneReportThroughInjectedMetricsStore() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: engine,
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        controller.cancelStart()
+        await metricsStore.waitForCount(1)
+        let storedCount = await metricsStore.count
+        XCTAssertEqual(storedCount, 1)
+    }
+
+    func test_controllerStoresCompletedOutputAndCmdVAsScheduled() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            finals: [ASRFinalSegment(text: "completed output", words: [])]
+        ))
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: engine,
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+        controller.onFinal = { _ in
+            OutputResult(clipboardWritten: true, insertOutcome: .cmdVFallback, userMessage: "", permissionEffect: nil)
+        }
+
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        await stopAndAdvance(controller)
+        await metricsStore.waitForCount(1)
+        let reports = await metricsStore.reports(limit: 2)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .completed)
+        XCTAssertTrue(report.output.clipboardWritten)
+        XCTAssertEqual(report.output.insertOutcome, .cmdVScheduledUnverified)
+        XCTAssertFalse(report.output.insertCompleted)
     }
 
     func test_microphoneCaptureStartFailureCleansUpBeforeSurfacing() async throws {
@@ -218,6 +270,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { _ in
             events.set(events.get() + ["final"])
             final.fulfill()
+            return nil
         }
         controller.onFinalizationComplete = { finalizationComplete.fulfill() }
 
@@ -758,6 +811,30 @@ final class TranscriptionControllerTests: XCTestCase {
             throw NSError(domain: "TranscriptionControllerTests", code: Int(setStatus))
         }
         return sampleBuffer
+    }
+}
+
+private final class RecordingPipelineMetricsStore: PipelineMetricsStoring, @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: [PipelineSessionReport]())
+    private var storedReports: [PipelineSessionReport] = []
+
+    var count: Int { lock.withLock { $0.count } }
+
+    func record(_ report: PipelineSessionReport) async {
+        lock.withLock { $0.append(report) }
+    }
+
+    func reports(limit: Int) async -> [PipelineSessionReport] {
+        lock.withLock { Array($0.suffix(limit)) }
+    }
+
+    func formattedReport(limit: Int) async -> String { "test" }
+
+    func waitForCount(_ expected: Int) async {
+        for _ in 0..<100 {
+            if count == expected { return }
+            await Task.yield()
+        }
     }
 }
 
