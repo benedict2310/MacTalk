@@ -1,5 +1,21 @@
 import Foundation
 
+final class SessionCleanup: @unchecked Sendable {
+    private let task: Task<Void, Never>
+    // Keeps the session/controller alive until the terminal persistence task
+    // has completed. The owner is released with this handle.
+    private let owner: AnyObject
+
+    init(task: Task<Void, Never>, owner: AnyObject) {
+        self.task = task
+        self.owner = owner
+    }
+
+    func wait() async {
+        await task.value
+    }
+}
+
 @MainActor
 protocol TranscriptionSession: AnyObject {
     var provider: ASRProvider { get }
@@ -18,10 +34,8 @@ protocol TranscriptionSession: AnyObject {
     ) async throws
     func stop()
     func stopAndWait() async
-    /// Cancels start without making a synchronous caller wait for persistence.
-    func requestCancelStart()
-    /// Awaits cancellation and its terminal metrics persistence.
-    func cancelStart() async
+    /// Invalidates start synchronously and returns a strong durability handle.
+    func requestCancelStart() -> SessionCleanup
 }
 
 @MainActor
@@ -69,8 +83,10 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private var request: RequestContext?
     private var work: Task<Void, Never>?
     // Cancellation is initiated synchronously, then retained until its
-    // session-level finalization/persistence task has completed.
-    private var pendingCancellations: [Task<Void, Never>] = []
+    // session-level finalization/persistence task has completed. Entries are
+    // keyed by request and remove themselves when their strong cleanup task
+    // finishes.
+    private var pendingCancellations: [UUID: Task<Void, Never>] = [:]
     private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
     var onEvent: ((RecordingSessionEvent) -> Void)?
@@ -106,7 +122,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             target: output.captureTarget()
         )
         transition(.authorizing)
-        let priorCancellations = pendingCancellations
+        let priorCancellations = Array(pendingCancellations.values)
         work = Task { @MainActor [weak self] in
             guard let self else { return }
             for cancellation in priorCancellations {
@@ -222,10 +238,10 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         guard let request else {
             work?.cancel()
             work = nil
-            for cancellation in pendingCancellations {
+            let cancellations = Array(pendingCancellations.values)
+            for cancellation in cancellations {
                 await cancellation.value
             }
-            pendingCancellations.removeAll()
             engine.recordingActivityChanged(false)
             engineActivityActive = false
             state = .idle
@@ -244,16 +260,19 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             // Let the session invalidate its own start operation first. This
             // avoids dropping a suspended start task before it can persist its
             // terminal report.
-            await session?.cancelStart()
+            if let session {
+                let cleanup = session.requestCancelStart()
+                await cleanup.wait()
+            }
             // Invalidate coordinator callbacks before cancelling the start
             // task; retain the request until all cleanup side effects finish.
             transition(.idle, requestID: nil, mode: nil, selection: nil)
             cancelOwnedWork(request.id)
         }
-        for cancellation in pendingCancellations {
+        let cancellations = Array(pendingCancellations.values)
+        for cancellation in cancellations {
             await cancellation.value
         }
-        pendingCancellations.removeAll()
         output.cancel()
         self.request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)
@@ -379,14 +398,20 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
 
     private func abort(_ id: UUID) {
         guard owns(id) else { return }
-        cancelOwnedWork(id)
+        // Invalidate the session before cancelling coordinator work. This
+        // closes the window where a canceled start could publish success.
         let session = request?.session
-        request?.session = nil
-        session?.requestCancelStart()
-        if let session {
-            pendingCancellations.append(Task { [weak session] in
-                await session?.cancelStart()
-            })
+        let cleanup = session?.requestCancelStart()
+        cancelOwnedWork(id)
+        if let cleanup {
+            let requestID = id
+            pendingCancellations[requestID] = Task { @MainActor [weak self, cleanup] in
+                await cleanup.wait()
+                guard let self else { return }
+                if self.pendingCancellations[requestID] != nil {
+                    self.pendingCancellations.removeValue(forKey: requestID)
+                }
+            }
         }
         output.cancel()
         request = nil

@@ -16,6 +16,13 @@ import os
 /// the render callback returns. Consumers therefore never retain or inspect
 /// AVAudioPCMBuffer/AVAudioTime owned by AVAudioEngine. If the queue is full,
 /// the newest buffer is dropped (and `droppedBufferCount` is incremented).
+final class AudioCaptureDropCounter: @unchecked Sendable {
+    private let value = Atomic<UInt64>(0)
+
+    var count: UInt64 { value.load(ordering: .acquiring) }
+    func increment() { value.wrappingAdd(1, ordering: .relaxed) }
+}
+
 struct AudioCaptureFrame: Sendable, Equatable {
     let samples: [Float]
     let sampleRate: Double
@@ -44,23 +51,27 @@ final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
     private let queue: OwnedAudioRing
     private let schedule: @Sendable (@escaping @Sendable () -> Void) -> Void
     private let delivery: @Sendable (UUID, AudioCaptureFrame) -> Void
+    private let dropCounter: AudioCaptureDropCounter
     private let state = Atomic<Int>(0)
 
     init(
         slotCount: Int,
         maxFramesPerBuffer: Int,
         schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
-        delivery: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void
+        delivery: @escaping @Sendable (UUID, AudioCaptureFrame) -> Void,
+        dropCounter: AudioCaptureDropCounter = AudioCaptureDropCounter()
     ) {
         queue = OwnedAudioRing(slotCount: slotCount, maxFrames: maxFramesPerBuffer)
         self.schedule = schedule
         self.delivery = delivery
+        self.dropCounter = dropCounter
     }
 
     @discardableResult
     func push(buffer: AVAudioPCMBuffer, sampleRate: Double, sessionID: UUID, firstSampleHostTime: UInt64 = 1) -> Bool {
         guard firstSampleHostTime != 0 else {
             queue.recordDrop()
+            dropCounter.increment()
             return false
         }
         guard queue.push(
@@ -69,16 +80,18 @@ final class AudioCaptureDeliveryCoordinator: @unchecked Sendable {
             sessionID: sessionID,
             firstSampleHostTime: firstSampleHostTime
         ) else {
+            dropCounter.increment()
             return false
         }
         requestDrain()
         return true
     }
 
-    var droppedBufferCount: UInt64 { queue.droppedCount }
+    var droppedBufferCount: UInt64 { dropCounter.count }
 
     func recordDroppedBuffer() {
         queue.recordDrop()
+        dropCounter.increment()
     }
 
     private func requestDrain() {
@@ -131,6 +144,7 @@ final class AudioCapture: NSObject, @unchecked Sendable {
     static let defaultMaxFramesPerBuffer = 8_192
     private let slotCount: Int
     private let maxFramesPerBuffer: Int
+    private let lifetimeDropCounter = AudioCaptureDropCounter()
     private var deliveryCoordinator: AudioCaptureDeliveryCoordinator?
     private var isRunning = false
 
@@ -167,7 +181,8 @@ final class AudioCapture: NSObject, @unchecked Sendable {
             slotCount: slotCount,
             maxFramesPerBuffer: maxFramesPerBuffer,
             schedule: schedule,
-            delivery: onPCMFloatBuffer
+            delivery: onPCMFloatBuffer,
+            dropCounter: lifetimeDropCounter
         )
         deliveryCoordinator = coordinator
 
@@ -215,7 +230,7 @@ final class AudioCapture: NSObject, @unchecked Sendable {
     var droppedBufferCount: UInt64 {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        return deliveryCoordinator?.droppedBufferCount ?? 0
+        return lifetimeDropCounter.count
     }
 
     func getCurrentLevel() -> Float {

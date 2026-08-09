@@ -421,8 +421,9 @@ private final class RecordingSessionFake: TranscriptionSession {
         if startSuspended { try await withCheckedThrowingContinuation { continuation = $0 } }
     }
     func stop() { stopCount += 1 }
-    func requestCancelStart() {
+    func requestCancelStart() -> SessionCleanup {
         cancelStarts += 1
+        return SessionCleanup(task: Task { await self.cancelStart() }, owner: self)
     }
     func stopAndWait() async {
         stopAndWaitCount += 1

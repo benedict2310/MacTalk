@@ -67,6 +67,24 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertEqual(first.outcome, .cancelled)
     }
 
+    func testApplicationFirstAcceptedCaptureWinsWithoutLossOrZeroCallback() {
+        let clock = TestPipelineClock()
+        let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .parakeet, modelID: "parakeet", captureMode: .micPlusAppAudio, language: nil, batteryMode: false, startedAt: Date()), nowNanoseconds: { clock.now })
+
+        XCTAssertFalse(recorder.recordApplicationInput(callbacks: 0, samples: 0))
+        recorder.recordApplicationLoss()
+        clock.advance(ms: 10)
+        XCTAssertTrue(recorder.recordApplicationInput(callbacks: 1, samples: 32))
+        clock.advance(ms: 10)
+        XCTAssertFalse(recorder.recordMicrophoneInput(inputSamples: 32, convertedSamples: 32, conversionNanoseconds: 1))
+
+        let report = recorder.finish(outcome: .completed, capture: .zero, composition: .init())
+        XCTAssertEqual(report.latency.firstAcceptedCaptureMs!, 10, accuracy: 0.001)
+        XCTAssertEqual(report.capture.applicationCallbacks, 1)
+        XCTAssertEqual(report.capture.applicationLossEvents, 1)
+        XCTAssertEqual(report.audio.applicationInputSamples, 32)
+    }
+
     func testAllCountersAndPrivacySchema() throws {
         let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .whisper, modelID: "m", captureMode: .micOnly, language: nil, batteryMode: false, startedAt: Date()), nowNanoseconds: { 0 })
         recorder.recordMicrophoneInput(inputSamples: 10, convertedSamples: 8, conversionNanoseconds: 3, conversionFailed: true)

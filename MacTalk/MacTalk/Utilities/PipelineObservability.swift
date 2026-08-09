@@ -199,21 +199,29 @@ final class PipelineSessionRecorder: @unchecked Sendable {
     func recordMicrophoneInput(inputSamples: UInt64, convertedSamples: UInt64, conversionNanoseconds: UInt64, conversionFailed: Bool = false) -> Bool {
         let time = tick()
         return state.withLock { s in
-            let isFirst = s.firstCapture == nil
-            mark(&s.firstCapture, at: time); s.audio.microphoneInputSamples &+= inputSamples; s.audio.microphoneConvertedSamples &+= convertedSamples; s.audio.conversionNanoseconds &+= conversionNanoseconds; if conversionFailed { s.audio.conversionFailures &+= 1 }
+            let isFirst = s.firstCapture == nil && convertedSamples > 0
+            if convertedSamples > 0 { mark(&s.firstCapture, at: time) }
+            s.audio.microphoneInputSamples &+= inputSamples; s.audio.microphoneConvertedSamples &+= convertedSamples; s.audio.conversionNanoseconds &+= conversionNanoseconds; if conversionFailed { s.audio.conversionFailures &+= 1 }
             s.capture.microphoneCallbacks &+= 1
             return isFirst
         }
     }
-    func recordApplicationInput(callbacks: UInt64 = 1, samples: UInt64 = 0, lossEvents: UInt64 = 0, conversionNanoseconds: UInt64 = 0, conversionFailed: Bool = false) {
-        let t = tick(); state.withLock { s in
-            mark(&s.firstCapture, at: t)
+    @discardableResult
+    func recordApplicationInput(callbacks: UInt64 = 1, samples: UInt64 = 0, lossEvents: UInt64 = 0, conversionNanoseconds: UInt64 = 0, conversionFailed: Bool = false) -> Bool {
+        let t = tick(); return state.withLock { s in
+            let isFirst = s.firstCapture == nil && samples > 0
+            if samples > 0 { mark(&s.firstCapture, at: t) }
             s.audio.applicationInputSamples &+= samples
             s.audio.applicationConversionNanoseconds &+= conversionNanoseconds
             if conversionFailed { s.audio.conversionFailures &+= 1 }
             s.capture.applicationCallbacks &+= callbacks
             s.capture.applicationLossEvents &+= lossEvents
+            return isFirst
         }
+    }
+
+    func recordApplicationLoss() {
+        state.withLock { $0.capture.applicationLossEvents &+= 1 }
     }
     func recordConversionFailure() { state.withLock { $0.audio.conversionFailures &+= 1 } }
     @discardableResult
