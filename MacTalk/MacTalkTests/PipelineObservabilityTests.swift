@@ -99,6 +99,48 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertEqual(report.finalInference.realTimeFactor!, 2.0 / 3.0, accuracy: 0.001)
     }
 
+    func testFormatterIsolatesStatisticsByProviderModelAndModeDimension() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = PipelineMetricsStore(fileURL: directory.appendingPathComponent("pipeline-metrics.jsonl"))
+        let reportA1 = makeReport(index: 1, provider: .whisper, modelID: "whisper-base", mode: .micOnly, outcome: .completed, firstPartialMs: 10, stopToFinalMs: 100, incrementalRTF: 1, finalRTF: 4, droppedBuffers: 2, conversionFailures: 1, compositionAnomalies: 3, vadSkips: 4, trimmedSamples: 5, fallbackCount: 6)
+        let reportA2 = makeReport(index: 2, provider: .whisper, modelID: "whisper-base", mode: .micOnly, outcome: .cancelled, firstPartialMs: 20, stopToFinalMs: 200, incrementalRTF: 2, finalRTF: 5, droppedBuffers: 2, conversionFailures: 1, compositionAnomalies: 3, vadSkips: 4, trimmedSamples: 5, fallbackCount: 6)
+        let reportA3 = makeReport(index: 3, provider: .whisper, modelID: "whisper-base", mode: .micOnly, outcome: .completed, firstPartialMs: 30, stopToFinalMs: 300, incrementalRTF: 3, finalRTF: 6, droppedBuffers: 2, conversionFailures: 1, compositionAnomalies: 3, vadSkips: 4, trimmedSamples: 5, fallbackCount: 6)
+        let reportB1 = makeReport(index: 4, provider: .parakeet, modelID: "parakeet", mode: .micPlusAppAudio, outcome: .inferenceFailed, firstPartialMs: 400, stopToFinalMs: 4_000, incrementalRTF: 10, finalRTF: 13, droppedBuffers: 15, conversionFailures: 6, compositionAnomalies: 7, vadSkips: 8, trimmedSamples: 9, fallbackCount: 10)
+        let reportB2 = makeReport(index: 5, provider: .parakeet, modelID: "parakeet", mode: .micPlusAppAudio, outcome: .cancelled, firstPartialMs: 500, stopToFinalMs: 5_000, incrementalRTF: 11, finalRTF: 14, droppedBuffers: 15, conversionFailures: 6, compositionAnomalies: 7, vadSkips: 8, trimmedSamples: 9, fallbackCount: 10)
+        let groupA = [reportA1, reportA2, reportA3]
+        let groupB = [reportB1, reportB2]
+        for report in groupA + groupB { await store.record(report) }
+
+        let formatted = await store.formattedReport(limit: 10)
+        let sectionA = try! section(named: "whisper/whisper-base/micOnly", in: formatted)
+        let sectionB = try! section(named: "parakeet/parakeet/micPlusAppAudio", in: formatted)
+
+        XCTAssertTrue(sectionA.contains("whisper/whisper-base/micOnly: 3 observations"))
+        XCTAssertTrue(sectionA.contains("Outcomes: cancelled=1, completed=2"))
+        XCTAssertTrue(sectionA.contains("First partial ms p50/p95: 20.000/30.000"))
+        XCTAssertTrue(sectionA.contains("Stop to final ms p50/p95: 200.000/300.000"))
+        XCTAssertTrue(sectionA.contains("Incremental RTF p50/p95: 2.000/3.000"))
+        XCTAssertTrue(sectionA.contains("Final RTF p50/p95: 5.000/6.000"))
+        XCTAssertTrue(sectionA.contains("Capture drops: 6; conversion failures: 3; composition anomalies: 9; VAD skips: 12; trimmed samples: 15; fallback: 18"))
+        XCTAssertFalse(sectionA.contains("inferenceFailed")); XCTAssertFalse(sectionA.contains("100.000/500.000")); XCTAssertFalse(sectionA.contains("30; conversion failures: 12"))
+
+        XCTAssertTrue(sectionB.contains("parakeet/parakeet/micPlusAppAudio: 2 observations"))
+        XCTAssertTrue(sectionB.contains("Outcomes: cancelled=1, inferenceFailed=1"))
+        XCTAssertTrue(sectionB.contains("First partial ms p50/p95: 400.000/500.000"))
+        XCTAssertTrue(sectionB.contains("Stop to final ms p50/p95: 4000.000/5000.000"))
+        XCTAssertTrue(sectionB.contains("Incremental RTF p50/p95: 10.000/11.000"))
+        XCTAssertTrue(sectionB.contains("Final RTF p50/p95: 13.000/14.000"))
+        XCTAssertTrue(sectionB.contains("Capture drops: 30; conversion failures: 12; composition anomalies: 14; VAD skips: 16; trimmed samples: 18; fallback: 20"))
+        XCTAssertFalse(sectionB.contains("completed=2")); XCTAssertFalse(sectionB.contains("20.000/30.000")); XCTAssertFalse(sectionB.contains("6; conversion failures: 3"))
+    }
+
+    private func section(named name: String, in formatted: String) throws -> String {
+        let marker = "Dimension \(name):"
+        guard let start = formatted.range(of: marker) else { throw NSError(domain: "PipelineObservabilityTests", code: 1) }
+        let end = formatted.range(of: "\nDimension ", range: start.upperBound..<formatted.endIndex)?.lowerBound ?? formatted.endIndex
+        return String(formatted[start.lowerBound..<end])
+    }
+
     func testRecorderAndStoreSchemaKeepProviderModelAndModeDimensionsSeparate() async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let url = directory.appendingPathComponent("pipeline-metrics.jsonl")
@@ -166,10 +208,10 @@ final class PipelineObservabilityTests: XCTestCase {
     func testFormatterUsesNearestRankAndExcludesMissingValues() async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = PipelineMetricsStore(fileURL: directory.appendingPathComponent("pipeline-metrics.jsonl"))
-        await store.record(makeReport(index: 1, firstPartialMs: 1))
-        await store.record(makeReport(index: 2, firstPartialMs: 2))
-        await store.record(makeReport(index: 3, firstPartialMs: 100))
-        await store.record(makeReport(index: 4, firstPartialMs: nil))
+        await store.record(makeReport(index: 1, modelID: "same-dimension", firstPartialMs: 1))
+        await store.record(makeReport(index: 2, modelID: "same-dimension", firstPartialMs: 2))
+        await store.record(makeReport(index: 3, modelID: "same-dimension", firstPartialMs: 100))
+        await store.record(makeReport(index: 4, modelID: "same-dimension", firstPartialMs: nil))
         let formatted = await store.formattedReport(limit: 10)
         XCTAssertTrue(formatted.contains("First partial ms p50/p95: 2.000/100.000"))
     }
@@ -264,11 +306,23 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertEqual(report.audio.vadSkips, 16_000)
     }
 
-    private func makeReport(index: Int, provider: ASRProvider = .whisper, modelID: String? = nil, mode: SettingsCaptureMode = .micOnly, firstPartialMs: Double? = nil) -> PipelineSessionReport {
+    private func makeReport(index: Int, provider: ASRProvider = .whisper, modelID: String? = nil, mode: SettingsCaptureMode = .micOnly, outcome: PipelineSessionOutcome? = nil, firstPartialMs: Double? = nil, stopToFinalMs: Double? = nil, incrementalRTF: Double? = nil, finalRTF: Double? = nil, droppedBuffers: UInt64 = 0, conversionFailures: UInt64 = 0, compositionAnomalies: UInt64 = 0, vadSkips: UInt64 = 0, trimmedSamples: UInt64 = 0, fallbackCount: UInt64 = 0) -> PipelineSessionReport {
         let context = PipelineSessionContext(id: UUID(), provider: provider, modelID: modelID ?? "model-\(index)", captureMode: mode, language: nil, batteryMode: false, startedAt: Date(timeIntervalSince1970: Double(index)))
         var latency = PipelineLatencyMetrics()
         latency.firstPartialFromStartMs = firstPartialMs
-        return PipelineSessionReport(schemaVersion: 1, context: context, outcome: index.isMultiple(of: 2) ? .completed : .cancelled, completedAt: Date(), latency: latency, audio: PipelineAudioMetrics(), capture: .zero, queue: PipelineQueueMetrics(), incrementalInference: PipelineInferenceMetrics(), finalInference: PipelineInferenceMetrics(), output: PipelineOutputMetrics(), composition: .init(), resources: PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil))
+        latency.stopToFinalMs = stopToFinalMs
+        var audio = PipelineAudioMetrics()
+        audio.conversionFailures = conversionFailures
+        audio.vadSkips = vadSkips
+        audio.trimmedSamples = trimmedSamples
+        audio.fallbackCount = fallbackCount
+        var capture = CaptureHealthMetrics.zero
+        capture.microphoneDroppedBuffers = droppedBuffers
+        var incrementalInference = PipelineInferenceMetrics()
+        incrementalInference.realTimeFactor = incrementalRTF
+        var finalInference = PipelineInferenceMetrics()
+        finalInference.realTimeFactor = finalRTF
+        return PipelineSessionReport(schemaVersion: 1, context: context, outcome: outcome ?? (index.isMultiple(of: 2) ? .completed : .cancelled), completedAt: Date(), latency: latency, audio: audio, capture: capture, queue: PipelineQueueMetrics(), incrementalInference: incrementalInference, finalInference: finalInference, output: PipelineOutputMetrics(), composition: .init(lateFramesDropped: Int(compositionAnomalies)), resources: PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil))
     }
 }
 

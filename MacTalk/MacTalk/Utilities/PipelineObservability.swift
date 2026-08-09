@@ -356,20 +356,30 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
         guard !reports.isEmpty else { return "No completed sessions\nSchema version: 1\nObservations: 0" }
         let groups = Dictionary(grouping: reports) { "\($0.context.provider.rawValue)/\($0.context.modelID)/\($0.context.captureMode.rawValue)" }
         var lines = ["Pipeline metrics (schema version 1)", "Observations: \(reports.count)", "Location: \(fileURL.path)"]
-        for key in groups.keys.sorted() { lines.append("Dimension \(key): \(groups[key]!.count) observations") }
-        lines.append("Outcomes: " + reports.map { $0.outcome.rawValue }.reduce(into: [:]) { $0[$1, default: 0] += 1 }.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", "))
-        lines.append("First partial ms p50/p95: \(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.95))")
-        lines.append("Stop to final ms p50/p95: \(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.95))")
-        lines.append("Incremental RTF p50/p95: \(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.5))/\(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.95))")
-        lines.append("Final RTF p50/p95: \(percentile(reports.compactMap { $0.finalInference.realTimeFactor }, p: 0.5))/\(percentile(reports.compactMap { $0.finalInference.realTimeFactor }, p: 0.95))")
+        for key in groups.keys.sorted() {
+            let dimensionReports = groups[key]!
+            lines.append("Dimension \(key): \(dimensionReports.count) observations")
+            lines.append(contentsOf: statistics(for: dimensionReports))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func statistics(for reports: [PipelineSessionReport]) -> [String] {
+        let outcomes = reports.map { $0.outcome.rawValue }.reduce(into: [:]) { $0[$1, default: 0] += 1 }
         let drops = reports.reduce(0) { $0 + $1.capture.microphoneDroppedBuffers }
         let conversionFailures = reports.reduce(0) { $0 + $1.audio.conversionFailures }
         let compositionAnomalies = reports.reduce(0) { $0 + UInt64($1.composition.lateFramesDropped + $1.composition.nonFiniteSamplesReplaced) }
         let vadSkips = reports.reduce(0) { $0 + $1.audio.vadSkips }
         let trimmedSamples = reports.reduce(0) { $0 + $1.audio.trimmedSamples }
         let fallbackCount = reports.reduce(0) { $0 + $1.audio.fallbackCount }
-        lines.append("Capture drops: \(drops); conversion failures: \(conversionFailures); composition anomalies: \(compositionAnomalies); VAD skips: \(vadSkips); trimmed samples: \(trimmedSamples); fallback: \(fallbackCount)")
-        return lines.joined(separator: "\n")
+        return [
+            "Outcomes: " + outcomes.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", "),
+            "First partial ms p50/p95: \(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.95))",
+            "Stop to final ms p50/p95: \(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.95))",
+            "Incremental RTF p50/p95: \(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.5))/\(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.95))",
+            "Final RTF p50/p95: \(percentile(reports.compactMap { $0.finalInference.realTimeFactor }, p: 0.5))/\(percentile(reports.compactMap { $0.finalInference.realTimeFactor }, p: 0.95))",
+            "Capture drops: \(drops); conversion failures: \(conversionFailures); composition anomalies: \(compositionAnomalies); VAD skips: \(vadSkips); trimmed samples: \(trimmedSamples); fallback: \(fallbackCount)"
+        ]
     }
     private func percentile(_ values: [Double], p: Double) -> String { guard !values.isEmpty else { return "n/a" }; let sorted = values.sorted(); let index = max(0, Int(ceil(p * Double(sorted.count))) - 1); return String(format: "%.3f", sorted[index]) }
 }
