@@ -68,6 +68,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private let settingsSnapshot: @MainActor () -> SettingsSnapshot
     private var request: RequestContext?
     private var work: Task<Void, Never>?
+    // Cancellation is initiated synchronously, then retained until its
+    // session-level finalization/persistence task has completed.
+    private var pendingCancellations: [Task<Void, Never>] = []
     private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
     var onEvent: ((RecordingSessionEvent) -> Void)?
@@ -103,8 +106,12 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             target: output.captureTarget()
         )
         transition(.authorizing)
+        let priorCancellations = pendingCancellations
         work = Task { @MainActor [weak self] in
             guard let self else { return }
+            for cancellation in priorCancellations {
+                await cancellation.value
+            }
             let result = await permission.authorizeStart(mode: mode)
             guard self.owns(id), case .authorizing = self.state.phase else { return }
             switch result {
@@ -215,6 +222,10 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         guard let request else {
             work?.cancel()
             work = nil
+            for cancellation in pendingCancellations {
+                await cancellation.value
+            }
+            pendingCancellations.removeAll()
             engine.recordingActivityChanged(false)
             engineActivityActive = false
             state = .idle
@@ -239,6 +250,10 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             transition(.idle, requestID: nil, mode: nil, selection: nil)
             cancelOwnedWork(request.id)
         }
+        for cancellation in pendingCancellations {
+            await cancellation.value
+        }
+        pendingCancellations.removeAll()
         output.cancel()
         self.request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)
@@ -368,6 +383,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         let session = request?.session
         request?.session = nil
         session?.requestCancelStart()
+        if let session {
+            pendingCancellations.append(Task { [weak session] in
+                await session?.cancelStart()
+            })
+        }
         output.cancel()
         request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)

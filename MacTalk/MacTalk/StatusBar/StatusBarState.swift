@@ -58,6 +58,8 @@ enum AutoInsertOutcome: Equatable, Sendable {
     case permissionDenied
     case failed
     case skippedTargetChanged
+    /// The owning coordinator rejected this stale or superseded output.
+    case rejected
 }
 
 struct OutputContext: Equatable, Sendable {

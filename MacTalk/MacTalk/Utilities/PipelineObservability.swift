@@ -14,6 +14,7 @@ enum PipelineInsertOutcome: String, Codable, Sendable {
     case targetChanged
     case failed
     case cmdVScheduledUnverified
+    case rejected
 
     var completed: Bool { self == .inserted }
 }

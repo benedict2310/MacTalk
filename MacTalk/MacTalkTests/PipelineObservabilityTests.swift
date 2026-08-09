@@ -88,6 +88,16 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertFalse(output.insertCompleted)
     }
 
+    func testRejectedOutputHandoffIsTypedAndNotCompleted() {
+        let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .whisper, modelID: "m", captureMode: .micOnly, language: nil, batteryMode: false, startedAt: Date()), nowNanoseconds: { 0 })
+        recorder.recordFinalPresented()
+        recorder.recordOutputHandoff(clipboardWritten: false, insertOutcome: .rejected)
+        let report = recorder.finish(outcome: .completed, capture: .zero, composition: .init())
+        XCTAssertEqual(report.output.insertOutcome.rawValue, "rejected")
+        XCTAssertFalse(report.output.insertCompleted)
+        XCTAssertNotNil(report.latency.finalOutputHandoffMs)
+    }
+
     func testFinishMergesExternalDropSnapshotButRetainsRecorderCallbackAndLossCounters() {
         let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .whisper, modelID: "m", captureMode: .micOnly, language: nil, batteryMode: false, startedAt: Date()), nowNanoseconds: { 0 })
         recorder.recordMicrophoneInput(inputSamples: 1, convertedSamples: 1, conversionNanoseconds: 1)

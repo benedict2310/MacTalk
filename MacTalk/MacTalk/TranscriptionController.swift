@@ -333,7 +333,10 @@ final class TranscriptionController: @unchecked Sendable {
     // Recorder, baseline, signpost, and terminal state are published/taken as
     // one unit. No asynchronous work or I/O is performed while this lock is held.
     private let sessionLifecycle = OSAllocatedUnfairLock(initialState: [UUID: SessionLifecycle]())
-    private var pendingFinalizationTask: Task<Void, Never>?
+    // Every terminal path claims the same per-session task. Keeping ownership
+    // in a lock-protected registry prevents timer/cleanup/replacement races
+    // without ever awaiting while the lock is held.
+    private let finalizationTasks = OSAllocatedUnfairLock(initialState: [UUID: Task<Void, Never>]())
     private let levelMonitor = MultiChannelLevelMonitor()
     private let audioSessionGate = AudioSessionGate()
     /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
@@ -437,7 +440,6 @@ final class TranscriptionController: @unchecked Sendable {
         self.maxFinalAudioSamples = max(1, maxFinalAudioSamples)
         self.finalAudioTrimMarginSamples = max(1, finalAudioTrimMarginSamples)
         self.hardwareValidationRecorder = AudioHardwareValidationRecorder.fromEnvironment()
-        self.pendingFinalizationTask = nil
         self.audioState = OSAllocatedUnfairLock(
             initialState: AudioState(chunkDuration: chunkDurationMs, language: "en")
         )
@@ -459,6 +461,30 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func recorder(for sessionID: UUID) -> PipelineSessionRecorder? {
         sessionLifecycle.withLock { $0[sessionID]?.recorder }
+    }
+
+    private func claimFinalization(
+        sessionID: UUID,
+        operation: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
+        finalizationTasks.withLock { tasks in
+            if let existing = tasks[sessionID] { return existing }
+            let task = Task { await operation() }
+            tasks[sessionID] = task
+            return task
+        }
+    }
+
+    private func existingFinalization(sessionID: UUID) -> Task<Void, Never>? {
+        finalizationTasks.withLock { $0[sessionID] }
+    }
+
+    private func awaitFinalization(
+        sessionID: UUID,
+        operation: @escaping @Sendable () async -> Void
+    ) async {
+        let task = claimFinalization(sessionID: sessionID, operation: operation)
+        await task.value
     }
 
     private func isSessionActive(_ sessionID: UUID) -> Bool {
@@ -551,6 +577,7 @@ final class TranscriptionController: @unchecked Sendable {
         case .permissionDenied: return .permissionDenied
         case .failed: return .failed
         case .skippedTargetChanged: return .targetChanged
+        case .rejected: return .rejected
         }
     }
 
@@ -612,7 +639,10 @@ final class TranscriptionController: @unchecked Sendable {
         compositionPipeline.cancel(sessionID: previousSessionID)
         await cancelPendingChunkTasks(sessionID: previousSessionID)
         let previousComposition = audioCompositionMetrics
-        await finalizeRecorder(sessionID: previousSessionID, outcome: .cancelled, composition: previousComposition)
+        await awaitFinalization(sessionID: previousSessionID) { [weak self] in
+            guard let self else { return }
+            await self.finalizeRecorder(sessionID: previousSessionID, outcome: .cancelled, composition: previousComposition)
+        }
 
         let sessionID = audioSessionGate.begin()
         installRecorder(for: sessionID, settings: recorderSettings)
@@ -639,6 +669,10 @@ final class TranscriptionController: @unchecked Sendable {
             mode: recordingMode == .micPlusAppAudio ? .microphoneAndApplication : .microphoneOnly
         )
 
+        // Publish the baseline before creating the capture delivery. Drops
+        // during microphone startup therefore belong to this session.
+        publishMicrophoneDropBaseline(for: sessionID)
+
         // Start microphone capture FIRST so we don't lose the beginning
         // of the user's speech while the engine prepares.
         do {
@@ -648,13 +682,15 @@ final class TranscriptionController: @unchecked Sendable {
         } catch {
             // A microphone start failure must invalidate the session and stop
             // any partially initialized capture before surfacing the error.
-            await cancelStartAndWait(outcome: .startFailed)
+            await cancelStartAndWait(sessionID: sessionID, outcome: .startFailed)
             throw error
         }
-        publishMicrophoneDropBaseline(for: sessionID)
         guard audioSessionGate.accepts(sessionID), isSessionActive(sessionID) else {
             captureSession.stop()
-            await finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+            await awaitFinalization(sessionID: sessionID) { [weak self] in
+                guard let self else { return }
+                await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+            }
             throw CancellationError()
         }
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
@@ -663,7 +699,7 @@ final class TranscriptionController: @unchecked Sendable {
         // Set up app audio capture if needed (also starts immediately)
         if case .micPlusAppAudio = recordingMode {
             guard let source = audioSource else {
-                await cancelStartAndWait(outcome: .startFailed)
+                await cancelStartAndWait(sessionID: sessionID, outcome: .startFailed)
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
@@ -691,7 +727,7 @@ final class TranscriptionController: @unchecked Sendable {
                     }
                 )
             } catch {
-                await cancelStartAndWait(outcome: .startFailed)
+                await cancelStartAndWait(sessionID: sessionID, outcome: .startFailed)
                 throw error
             }
         }
@@ -700,16 +736,29 @@ final class TranscriptionController: @unchecked Sendable {
         // buffered in audioChunk/allAudio while this runs. If preparation fails,
         // stop captures here so direct callers cannot leave the microphone active.
         guard isSessionActive(sessionID) else {
-            await cancelStartAndWait()
+            await cancelStartAndWait(sessionID: sessionID)
             throw CancellationError()
         }
         recorder(for: sessionID)?.recordPrepareStarted()
         do {
             try await engine.prepare()
+            try Task.checkCancellation()
+            guard audioSessionGate.accepts(sessionID), isSessionActive(sessionID) else {
+                await cancelStartAndWait(sessionID: sessionID)
+                throw CancellationError()
+            }
             await engine.reset()
+            try Task.checkCancellation()
+            guard audioSessionGate.accepts(sessionID), isSessionActive(sessionID) else {
+                await cancelStartAndWait(sessionID: sessionID)
+                throw CancellationError()
+            }
             recorder(for: sessionID)?.recordPrepareCompleted()
+        } catch is CancellationError {
+            await cancelStartAndWait(sessionID: sessionID, outcome: .cancelled)
+            throw CancellationError()
         } catch {
-            await cancelStartAndWait(outcome: .startFailed)
+            await cancelStartAndWait(sessionID: sessionID, outcome: .startFailed)
             throw error
         }
 
@@ -724,7 +773,10 @@ final class TranscriptionController: @unchecked Sendable {
         let stopDeadline = deadline.overflow ? UInt64.max : deadline.partialValue
         pendingStopTask = timingScheduler.schedule(deadlineNanoseconds: stopDeadline) { [weak self] in
             guard let self else { return }
-            self.pendingFinalizationTask = Task { [self] in await completeStopping(sessionID: sessionID) }
+            _ = self.claimFinalization(sessionID: sessionID) { [weak self] in
+                guard let self else { return }
+                await self.completeStopping(sessionID: sessionID)
+            }
         }
         print("Transcription stopped")
     }
@@ -733,24 +785,30 @@ final class TranscriptionController: @unchecked Sendable {
     /// terminal pipeline including metrics persistence. This is the contract
     /// used by explicit lifecycle cleanup; normal UI stop remains scheduled.
     func stopAndWait() async {
-        if let pendingFinalizationTask {
-            await pendingFinalizationTask.value
+        if let sessionID = audioState.withLock({ state in state.isStopping ? state.sessionID : nil }),
+           let existing = existingFinalization(sessionID: sessionID) {
+            await existing.value
             return
         }
         if let sessionID = beginStopping() {
             pendingStopTask?.cancel()
             pendingStopTask = nil
-            await completeStopping(sessionID: sessionID)
+            await awaitFinalization(sessionID: sessionID) { [weak self] in
+                guard let self else { return }
+                await self.completeStopping(sessionID: sessionID)
+            }
             return
         }
         // A normal stop may already have marked the session stopping while its
-        // bounded handoff is waiting on the scheduler. Take ownership of that
-        // same session instead of returning before persistence.
+        // bounded handoff is waiting on the scheduler. Claim that same task.
         let sessionID = audioState.withLock { state in state.isStopping ? state.sessionID : nil }
         guard let sessionID else { return }
         pendingStopTask?.cancel()
         pendingStopTask = nil
-        await completeStopping(sessionID: sessionID)
+        await awaitFinalization(sessionID: sessionID) { [weak self] in
+            guard let self else { return }
+            await self.completeStopping(sessionID: sessionID)
+        }
     }
 
     private func beginStopping() -> UUID? {
@@ -791,22 +849,79 @@ final class TranscriptionController: @unchecked Sendable {
         if let onFinalizationComplete {
             await onFinalizationComplete()
         }
-        pendingFinalizationTask = nil
+    }
+
+    /// Invalidates a start synchronously before the coordinator goes idle.
+    func requestCancelStart() {
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        audioSessionGate.stop()
+        appAudioGate.stop()
+        captureSession.stop()
+        let sessionID = audioState.withLock { $0.sessionID }
+        compositionPipeline.cancel(sessionID: sessionID)
+        sessionLifecycle.withLock { lifecycles in
+            guard var lifecycle = lifecycles[sessionID] else { return }
+            lifecycle.cancellationRequested = true
+            lifecycles[sessionID] = lifecycle
+        }
+        _ = claimFinalization(sessionID: sessionID) { [weak self] in
+            guard let self else { return }
+            await self.cancelPendingChunkTasks(sessionID: sessionID)
+            await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+        }
     }
 
     func cancelStart() async {
-        let sessionID = cancelStartAndReturnSession()
-        pendingFinalizationTask?.cancel()
-        pendingFinalizationTask = nil
-        await cancelPendingChunkTasks(sessionID: sessionID)
-        await finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+        let currentSessionID = audioState.withLock { $0.sessionID }
+        let alreadyInvalidated = sessionLifecycle.withLock { $0[currentSessionID]?.cancellationRequested == true }
+        if alreadyInvalidated {
+            await awaitFinalization(sessionID: currentSessionID) { [weak self] in
+                guard let self else { return }
+                await self.cancelPendingChunkTasks(sessionID: currentSessionID)
+                await self.finalizeRecorder(sessionID: currentSessionID, outcome: .cancelled)
+            }
+        } else {
+            let sessionID = cancelStartAndReturnSession()
+            await awaitFinalization(sessionID: sessionID) { [weak self] in
+                guard let self else { return }
+                await self.cancelPendingChunkTasks(sessionID: sessionID)
+                await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+            }
+        }
         print("Transcription start cancelled")
     }
 
-    private func cancelStartAndWait(outcome: PipelineSessionOutcome = .cancelled) async {
-        let sessionID = cancelStartAndReturnSession()
-        await cancelPendingChunkTasks(sessionID: sessionID)
-        await finalizeRecorder(sessionID: sessionID, outcome: outcome)
+    private func cancelStartAndWait(
+        sessionID requestedSessionID: UUID? = nil,
+        outcome: PipelineSessionOutcome = .cancelled
+    ) async {
+        let sessionID: UUID
+        if let requestedSessionID {
+            sessionID = requestedSessionID
+            let wasAlreadyCancelled = sessionLifecycle.withLock { lifecycles in
+                guard var lifecycle = lifecycles[sessionID] else { return true }
+                if lifecycle.cancellationRequested { return true }
+                lifecycle.cancellationRequested = true
+                lifecycles[sessionID] = lifecycle
+                return false
+            }
+            if !wasAlreadyCancelled {
+                pendingStopTask?.cancel()
+                pendingStopTask = nil
+                audioSessionGate.stop()
+                appAudioGate.stop()
+                captureSession.stop()
+                compositionPipeline.cancel(sessionID: sessionID)
+            }
+        } else {
+            sessionID = cancelStartAndReturnSession()
+        }
+        await awaitFinalization(sessionID: sessionID) { [weak self] in
+            guard let self else { return }
+            await self.cancelPendingChunkTasks(sessionID: sessionID)
+            await self.finalizeRecorder(sessionID: sessionID, outcome: outcome)
+        }
         print("Transcription start cancelled")
     }
 
@@ -1145,12 +1260,12 @@ final class TranscriptionController: @unchecked Sendable {
         let finalInferenceID = UUID()
         recorder(for: sessionID)?.recordInferenceQueued(id: finalInferenceID, kind: .final, audioSamples: UInt64(snapshot.audio.count))
         recorder(for: sessionID)?.recordInferenceStarted(id: finalInferenceID)
+        var inferenceFailed = false
         let finalInferenceSignpostID = PipelineSignposts.inferenceID()
         PipelineSignposts.beginInference(finalInferenceSignpostID, kind: .final)
-        var inferenceFailed = false
-        defer { PipelineSignposts.endInference(finalInferenceSignpostID) }
         do {
             let finalSegment = try await engine.finalize(samples: snapshot.audio, language: snapshot.language)
+            PipelineSignposts.endInference(finalInferenceSignpostID)
             recorder(for: sessionID)?.recordInferenceCompleted(id: finalInferenceID, succeeded: true)
             recorder(for: sessionID)?.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
             if let finalSegment {
@@ -1161,16 +1276,23 @@ final class TranscriptionController: @unchecked Sendable {
                 }
             }
         } catch {
+            PipelineSignposts.endInference(finalInferenceSignpostID)
             inferenceFailed = true
             recorder(for: sessionID)?.recordInferenceCompleted(id: finalInferenceID, succeeded: false)
             recorder(for: sessionID)?.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
             DebugLogger.shared.log(.error(description: error.localizedDescription))
         }
 
+        // A partial result is still useful when final inference fails. Wait for
+        // every queued partial to publish before handing that accumulated text
+        // to output, while retaining the terminal inferenceFailed outcome.
         for task in pendingPartialTasks {
             await task.value
         }
-        if inferenceFailed { return .inferenceFailed }
+        if inferenceFailed {
+            _ = await emitFinalTranscript(sessionID: sessionID)
+            return .inferenceFailed
+        }
 
         if let finalText {
             audioState.withLock { state in
@@ -1215,6 +1337,15 @@ final class TranscriptionController: @unchecked Sendable {
             recorder(for: sessionID)?.recordOutputHandoff(
                 clipboardWritten: result.clipboardWritten,
                 insertOutcome: pipelineInsertOutcome(result.insertOutcome)
+            )
+        } else {
+            // A callback was present and synchronously rejected this result
+            // (normally because the coordinator no longer owns the request).
+            // Preserve the recognized transcript's completed lifecycle while
+            // distinguishing rejected output from no callback/no speech.
+            recorder(for: sessionID)?.recordOutputHandoff(
+                clipboardWritten: false,
+                insertOutcome: .rejected
             )
         }
         return .completed(result)

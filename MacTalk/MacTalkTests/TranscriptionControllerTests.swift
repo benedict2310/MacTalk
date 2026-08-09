@@ -47,7 +47,8 @@ final class TranscriptionControllerTests: XCTestCase {
         engine.onEvent = { event in
             if case .process = event { processStarted.fulfill() }
         }
-        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings, scheduler: scheduler)
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings, scheduler: scheduler, metricsStore: metricsStore)
         controller.language = "en"
 
         let finalExpectation = expectation(description: "final callback")
@@ -79,6 +80,12 @@ final class TranscriptionControllerTests: XCTestCase {
         await stopAndAdvance(controller)
         await fulfillment(of: [finalExpectation], timeout: 2)
         XCTAssertEqual(finalText.get(), "Final result.")
+        await metricsStore.waitForCount(1)
+        let reports = await metricsStore.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .completed)
+        XCTAssertEqual(report.output.insertOutcome, .rejected)
+        XCTAssertNotNil(report.latency.finalOutputHandoffMs)
         XCTAssertEqual(engine.finalizeCalls.map(\.samples), [samples + samples])
         XCTAssertEqual(engine.events.compactMap { event -> String? in
             switch event {
@@ -222,11 +229,16 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(reports.map(\.capture.microphoneDroppedBuffers), [10, 3])
     }
 
-    func test_finalInferenceFailurePersistsTypedFailureWithoutPartial() async throws {
+    func test_finalInferenceFailurePersistsTypedFailureAndPublishesSuccessfulPartial() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(
+            partials: [ASRPartial(text: "partial fallback", words: [])],
             finalizeErrors: [.finalize(0)]
         ))
+        let partialStarted = expectation(description: "partial inference started")
+        engine.onEvent = { event in
+            if case .process = event { partialStarted.fulfill() }
+        }
         let metricsStore = DelayedPipelineMetricsStore()
         let controller = TranscriptionController(
             engine: engine,
@@ -234,18 +246,27 @@ final class TranscriptionControllerTests: XCTestCase {
             scheduler: scheduler,
             metricsStore: metricsStore
         )
+        controller.onFinal = { _ in
+            OutputResult(clipboardWritten: true, insertOutcome: .notAttempted, userMessage: "", permissionEffect: nil)
+        }
 
         try await controller.start(mode: .micOnly)
-        capture.emitMicrophone(AudioCaptureFrame(
-            samples: [Float](repeating: 0.25, count: 16_000),
-            sampleRate: 16_000,
-            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
-        ))
+        for index in 0..<2 {
+            capture.emitMicrophone(AudioCaptureFrame(
+                samples: [Float](repeating: 0.25, count: 16_000),
+                sampleRate: 16_000,
+                firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: UInt64(index + 1) * 1_000_000_000)
+            ))
+        }
+        await fulfillment(of: [partialStarted], timeout: 1)
         controller.stop()
         await advanceStopScheduler()
         await metricsStore.waitUntilRecordStarted()
         let reports = await metricsStore.reports(limit: 1)
-        XCTAssertEqual(reports.first?.outcome, .inferenceFailed)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .inferenceFailed)
+        XCTAssertTrue(report.output.clipboardWritten)
+        XCTAssertEqual(report.output.insertOutcome, .notAttempted)
         await metricsStore.release()
     }
 
