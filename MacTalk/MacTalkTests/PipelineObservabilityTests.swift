@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import MacTalk
 
@@ -154,6 +155,61 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertTrue(formatted.contains("Dimension parakeet/parakeet/micPlusAppAudio"))
     }
 
+    func testStoreRejectsSameUserFIFOWithoutBlocking() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        chmod(directory.path, 0o700)
+        let url = directory.appendingPathComponent("pipeline-metrics.jsonl")
+        XCTAssertEqual(mkfifo(url.path, 0o600), 0)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let finished = expectation(description: "FIFO metrics operation returns")
+        let report = makeReport(index: 1)
+        Task {
+            await PipelineMetricsStore(fileURL: url).record(report)
+            finished.fulfill()
+        }
+        await fulfillment(of: [finished], timeout: 1.0)
+    }
+
+    func testStoreDiscardsSemanticallyInvalidNegativeCompositionReport() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        chmod(directory.path, 0o700)
+        let url = directory.appendingPathComponent("pipeline-metrics.jsonl")
+        let invalid = makeReport(index: 1, compositionMetrics: AudioCompositionMetrics(lateFramesDropped: -1))
+        try JSONEncoder().encode(invalid).write(to: url)
+        chmod(url.path, 0o600)
+
+        let store = PipelineMetricsStore(fileURL: url)
+        let formatted = await store.formattedReport(limit: 10)
+        XCTAssertTrue(formatted.contains("No completed sessions"))
+        let reports = await store.reports(limit: 10)
+        XCTAssertEqual(reports, [])
+    }
+
+    func testFormatterSaturatesUInt64AndCompositionTotalsAcrossRecords() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = PipelineMetricsStore(fileURL: directory.appendingPathComponent("pipeline-metrics.jsonl"))
+        let maximum = UInt64.max
+        let composition = AudioCompositionMetrics(lateFramesDropped: Int.max, bufferedOverlapFramesDropped: Int.max, preAnchorFramesDropped: Int.max, invalidMicrophoneTimestamps: Int.max, invalidApplicationTimestamps: Int.max, discontinuitiesElided: Int.max, nonFiniteSamplesReplaced: Int.max, clippedSamples: Int.max)
+        await store.record(makeReport(index: 1, droppedBuffers: maximum, conversionFailures: maximum, compositionMetrics: composition, vadSkips: maximum, trimmedSamples: maximum, fallbackCount: maximum))
+        await store.record(makeReport(index: 2, droppedBuffers: maximum, conversionFailures: maximum, compositionMetrics: composition, vadSkips: maximum, trimmedSamples: maximum, fallbackCount: maximum))
+
+        let formatted = await store.formattedReport(limit: 10)
+        XCTAssertTrue(formatted.contains("Capture drops: \(maximum); conversion failures: \(maximum); composition anomalies: \(maximum); VAD skips: \(maximum); trimmed samples: \(maximum); fallback: \(maximum)"))
+    }
+
+    func testFormatterUsesPOSIXDecimalSeparator() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = PipelineMetricsStore(fileURL: directory.appendingPathComponent("pipeline-metrics.jsonl"))
+        await store.record(makeReport(index: 1, firstPartialMs: 1.25, stopToFinalMs: 2.5, incrementalRTF: 3.75, finalRTF: 4.125))
+
+        let formatted = await store.formattedReport(limit: 10)
+        XCTAssertTrue(formatted.contains("First partial ms p50/p95: 1.250/1.250"))
+        XCTAssertFalse(formatted.contains("1,250"))
+    }
+
     func testStoreRejectsSymlinkedDirectoryAndFileWithoutTouchingTargets() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let realDirectory = root.appendingPathComponent("real")
@@ -306,7 +362,7 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertEqual(report.audio.vadSkips, 16_000)
     }
 
-    private func makeReport(index: Int, provider: ASRProvider = .whisper, modelID: String? = nil, mode: SettingsCaptureMode = .micOnly, outcome: PipelineSessionOutcome? = nil, firstPartialMs: Double? = nil, stopToFinalMs: Double? = nil, incrementalRTF: Double? = nil, finalRTF: Double? = nil, droppedBuffers: UInt64 = 0, conversionFailures: UInt64 = 0, compositionAnomalies: UInt64 = 0, vadSkips: UInt64 = 0, trimmedSamples: UInt64 = 0, fallbackCount: UInt64 = 0) -> PipelineSessionReport {
+    private func makeReport(index: Int, provider: ASRProvider = .whisper, modelID: String? = nil, mode: SettingsCaptureMode = .micOnly, outcome: PipelineSessionOutcome? = nil, firstPartialMs: Double? = nil, stopToFinalMs: Double? = nil, incrementalRTF: Double? = nil, finalRTF: Double? = nil, droppedBuffers: UInt64 = 0, conversionFailures: UInt64 = 0, compositionAnomalies: UInt64 = 0, compositionMetrics: AudioCompositionMetrics? = nil, vadSkips: UInt64 = 0, trimmedSamples: UInt64 = 0, fallbackCount: UInt64 = 0) -> PipelineSessionReport {
         let context = PipelineSessionContext(id: UUID(), provider: provider, modelID: modelID ?? "model-\(index)", captureMode: mode, language: nil, batteryMode: false, startedAt: Date(timeIntervalSince1970: Double(index)))
         var latency = PipelineLatencyMetrics()
         latency.firstPartialFromStartMs = firstPartialMs
@@ -322,7 +378,7 @@ final class PipelineObservabilityTests: XCTestCase {
         incrementalInference.realTimeFactor = incrementalRTF
         var finalInference = PipelineInferenceMetrics()
         finalInference.realTimeFactor = finalRTF
-        return PipelineSessionReport(schemaVersion: 1, context: context, outcome: outcome ?? (index.isMultiple(of: 2) ? .completed : .cancelled), completedAt: Date(), latency: latency, audio: audio, capture: capture, queue: PipelineQueueMetrics(), incrementalInference: incrementalInference, finalInference: finalInference, output: PipelineOutputMetrics(), composition: .init(lateFramesDropped: Int(compositionAnomalies)), resources: PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil))
+        return PipelineSessionReport(schemaVersion: 1, context: context, outcome: outcome ?? (index.isMultiple(of: 2) ? .completed : .cancelled), completedAt: Date(), latency: latency, audio: audio, capture: capture, queue: PipelineQueueMetrics(), incrementalInference: incrementalInference, finalInference: finalInference, output: PipelineOutputMetrics(), composition: compositionMetrics ?? .init(lateFramesDropped: Int(compositionAnomalies)), resources: PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil))
     }
 }
 

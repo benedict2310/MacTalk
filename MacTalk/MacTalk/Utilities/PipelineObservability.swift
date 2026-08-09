@@ -277,80 +277,174 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
         self.maximumFileBytes = max(1, maximumFileBytes)
         self.maximumLineBytes = max(1, maximumLineBytes)
     }
-    func record(_ report: PipelineSessionReport) async { var reports = readReports(); reports.append(report); writeReports(Array(reports.suffix(retentionLimit))) }
-    func reports(limit: Int) async -> [PipelineSessionReport] { guard limit > 0 else { return [] }; return Array(readReports().suffix(limit)) }
+    func record(_ report: PipelineSessionReport) async {
+        guard isSemanticallyValid(report) else { return }
+        var reports = readReports()
+        reports.append(report)
+        writeReports(Array(reports.suffix(retentionLimit)))
+    }
+    func reports(limit: Int) async -> [PipelineSessionReport] {
+        guard limit > 0 else { return [] }
+        return Array(readReports().suffix(limit))
+    }
     func formattedReport(limit: Int) async -> String { format(Array(readReports().suffix(max(0, limit)))) }
 
+    private var metricsBasename: String { fileURL.lastPathComponent }
+    private var metricsDirectoryURL: URL { fileURL.deletingLastPathComponent() }
+
+    private func openMetricsDirectory(create: Bool) -> Int32? {
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+        var descriptor = open(metricsDirectoryURL.path, flags)
+        if descriptor < 0, create, errno == ENOENT {
+            do {
+                try FileManager.default.createDirectory(at: metricsDirectoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+            } catch {
+                return nil
+            }
+            descriptor = open(metricsDirectoryURL.path, flags)
+        }
+        guard descriptor >= 0 else { return nil }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == getuid(),
+              (info.st_mode & 0o7777) == 0o700 else {
+            close(descriptor)
+            return nil
+        }
+        return descriptor
+    }
+
     private func readReports() -> [PipelineSessionReport] {
-        guard secureParentAndFile() else { return [] }
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return [] }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
+        guard let directoryDescriptor = openMetricsDirectory(create: false) else { return [] }
+        defer { close(directoryDescriptor) }
+        let descriptor = openat(directoryDescriptor, metricsBasename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { return [] }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(),
+              (info.st_mode & 0o7777) == 0o600,
+              info.st_size >= 0 else { return [] }
+        let size = UInt64(info.st_size)
         let boundedLength = min(size, UInt64(maximumFileBytes))
         let start = size - boundedLength
-        guard (try? handle.seek(toOffset: start)) != nil else { return [] }
-        let data = handle.readData(ofLength: Int(boundedLength))
-        return data.split(separator: 10, omittingEmptySubsequences: true).compactMap { line in
-            guard line.count <= maximumLineBytes else { return nil }
-            return try? decoder.decode(PipelineSessionReport.self, from: Data(line))
-        }
-    }
-    private func writeReports(_ reports: [PipelineSessionReport]) {
-        guard secureParentAndFile(create: true) else { return }
-        var kept: [Data] = []
-        for report in reports {
-            guard let data = try? encoder.encode(report), data.count + 1 <= maximumLineBytes else { continue }
-            kept.append(data)
-        }
-        while !kept.isEmpty && kept.reduce(0, { $0 + $1.count + 1 }) > maximumFileBytes { kept.removeFirst() }
-        let directory = fileURL.deletingLastPathComponent()
-        let temp = directory.appendingPathComponent(".pipeline-metrics-\(UUID().uuidString).tmp")
-        let data = kept.reduce(into: Data()) { result, line in result.append(line); result.append(10) }
-        let fm = FileManager.default
-        guard fm.createFile(atPath: temp.path, contents: nil, attributes: [.posixPermissions: NSNumber(value: 0o600)]) else { return }
-        guard securePermissions(temp, mode: 0o600), !isSymlink(temp) else { try? fm.removeItem(at: temp); return }
-        do {
-            let handle = try FileHandle(forWritingTo: temp)
-            try handle.write(contentsOf: data)
-            try handle.close()
-            guard securePermissions(temp, mode: 0o600) else { throw CocoaError(.fileWriteNoPermission) }
-            if fm.fileExists(atPath: fileURL.path) {
-                try fm.replaceItemAt(fileURL, withItemAt: temp)
-            } else {
-                try fm.moveItem(at: temp, to: fileURL)
+        guard lseek(descriptor, off_t(start), SEEK_SET) >= 0 else { return [] }
+        var bytes = [UInt8](repeating: 0, count: Int(boundedLength))
+        var offset = 0
+        while offset < bytes.count {
+            let remaining = bytes.count - offset
+            let count = bytes.withUnsafeMutableBytes { buffer in
+                Darwin.read(descriptor, buffer.baseAddress!.advanced(by: offset), remaining)
             }
-            guard securePermissions(fileURL, mode: 0o600), !isSymlink(fileURL) else { return }
-        } catch {
-            try? fm.removeItem(at: temp)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return []
+            }
+            if count == 0 { break }
+            offset += count
+        }
+        let data = Data(bytes: bytes, count: offset)
+        return data.split(separator: 10, omittingEmptySubsequences: true).compactMap { line in
+            guard line.count <= maximumLineBytes,
+                  let report = try? decoder.decode(PipelineSessionReport.self, from: Data(line)),
+                  isSemanticallyValid(report) else { return nil }
+            return report
         }
     }
-    private func secureParentAndFile(create: Bool = false) -> Bool {
-        let fm = FileManager.default
-        let directory = fileURL.deletingLastPathComponent()
-        let directoryExists = fm.fileExists(atPath: directory.path)
-        if !directoryExists {
-            guard create else { return false }
-            do {
-                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-                guard chmod(directory.path, 0o700) == 0 else { return false }
-            } catch { return false }
+
+    private func writeReports(_ reports: [PipelineSessionReport]) {
+        guard let directoryDescriptor = openMetricsDirectory(create: true) else { return }
+        defer { close(directoryDescriptor) }
+        var kept: [Data] = []
+        var totalBytes: UInt64 = 0
+        for report in reports {
+            guard isSemanticallyValid(report), let data = try? encoder.encode(report), data.count <= maximumLineBytes - 1 else { continue }
+            kept.append(data)
+            totalBytes = saturatingAdd(totalBytes, UInt64(data.count) + 1)
         }
-        guard !isSymlink(directory), ownedByCurrentUser(directory), securePermissions(directory, mode: 0o700) else { return false }
-        guard !isSymlink(fileURL) else { return false }
-        if fm.fileExists(atPath: fileURL.path) {
-            return securePermissions(fileURL, mode: 0o600)
+        while !kept.isEmpty && totalBytes > UInt64(maximumFileBytes) {
+            let removed = kept.removeFirst()
+            totalBytes -= UInt64(removed.count) + 1
         }
-        return create
+        var data = Data()
+        data.reserveCapacity(Int(totalBytes))
+        for line in kept { data.append(line); data.append(10) }
+
+        let destination = metricsBasename
+        var destinationInfo = stat()
+        let destinationStatus = fstatat(directoryDescriptor, destination, &destinationInfo, AT_SYMLINK_NOFOLLOW)
+        if destinationStatus == 0 {
+            guard (destinationInfo.st_mode & S_IFMT) == S_IFREG,
+                  destinationInfo.st_uid == getuid(),
+                  (destinationInfo.st_mode & 0o7777) == 0o600 else { return }
+        } else if errno != ENOENT {
+            return
+        }
+
+        let temporaryName = ".pipeline-metrics-\(UUID().uuidString).tmp"
+        var temporaryDescriptor = openat(directoryDescriptor, temporaryName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard temporaryDescriptor >= 0 else { return }
+        var renamed = false
+        defer {
+            if temporaryDescriptor >= 0 { close(temporaryDescriptor) }
+            if !renamed { unlinkat(directoryDescriptor, temporaryName, 0) }
+        }
+        var temporaryInfo = stat()
+        guard fstat(temporaryDescriptor, &temporaryInfo) == 0,
+              (temporaryInfo.st_mode & S_IFMT) == S_IFREG,
+              temporaryInfo.st_uid == getuid(),
+              (temporaryInfo.st_mode & 0o7777) == 0o600 else { return }
+        var offset = 0
+        while offset < data.count {
+            let count = data.withUnsafeBytes { buffer in
+                Darwin.write(temporaryDescriptor, buffer.baseAddress!.advanced(by: offset), data.count - offset)
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            guard count > 0 else { return }
+            offset += count
+        }
+        guard close(temporaryDescriptor) == 0 else {
+            temporaryDescriptor = -1
+            return
+        }
+        temporaryDescriptor = -1
+        guard renameat(directoryDescriptor, temporaryName, directoryDescriptor, destination) == 0 else { return }
+        renamed = true
     }
-    private func ownedByCurrentUser(_ url: URL) -> Bool {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), let owner = attrs[.ownerAccountID] as? NSNumber else { return false }
-        return owner.uint32Value == getuid()
+
+    private func isSemanticallyValid(_ report: PipelineSessionReport) -> Bool {
+        let composition = report.composition
+        guard composition.lateFramesDropped >= 0,
+              composition.bufferedOverlapFramesDropped >= 0,
+              composition.preAnchorFramesDropped >= 0,
+              composition.invalidMicrophoneTimestamps >= 0,
+              composition.invalidApplicationTimestamps >= 0,
+              composition.discontinuitiesElided >= 0,
+              composition.nonFiniteSamplesReplaced >= 0,
+              composition.clippedSamples >= 0 else { return false }
+        let latency = report.latency
+        let queue = report.queue
+        let incremental = report.incrementalInference
+        let final = report.finalInference
+        return [latency.prepareMs, latency.firstAcceptedCaptureMs, latency.firstComposedAudioMs,
+                latency.firstPartialFromStartMs, latency.firstPartialFromComposedAudioMs,
+                latency.stopToFinalMs, latency.finalOutputHandoffMs, latency.totalMs,
+                queue.maximumDelayMs, incremental.durationMs, incremental.realTimeFactor,
+                final.durationMs, final.realTimeFactor].allSatisfy { value in
+            guard let value else { return true }
+            return value.isFinite && value >= 0
+        }
     }
-    private func securePermissions(_ url: URL, mode: Int32) -> Bool {
-        guard ownedByCurrentUser(url), let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), let permissions = attrs[.posixPermissions] as? NSNumber else { return false }
-        return permissions.int32Value & 0o777 == mode
+
+    private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (result, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : result
     }
-    private func isSymlink(_ url: URL) -> Bool { ((try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false) }
 
     private func format(_ reports: [PipelineSessionReport]) -> String {
         guard !reports.isEmpty else { return "No completed sessions\nSchema version: 1\nObservations: 0" }
@@ -366,12 +460,19 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
 
     private func statistics(for reports: [PipelineSessionReport]) -> [String] {
         let outcomes = reports.map { $0.outcome.rawValue }.reduce(into: [:]) { $0[$1, default: 0] += 1 }
-        let drops = reports.reduce(0) { $0 + $1.capture.microphoneDroppedBuffers }
-        let conversionFailures = reports.reduce(0) { $0 + $1.audio.conversionFailures }
-        let compositionAnomalies = reports.reduce(0) { $0 + UInt64($1.composition.lateFramesDropped + $1.composition.nonFiniteSamplesReplaced) }
-        let vadSkips = reports.reduce(0) { $0 + $1.audio.vadSkips }
-        let trimmedSamples = reports.reduce(0) { $0 + $1.audio.trimmedSamples }
-        let fallbackCount = reports.reduce(0) { $0 + $1.audio.fallbackCount }
+        let drops = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.capture.microphoneDroppedBuffers) }
+        let conversionFailures = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.conversionFailures) }
+        let compositionAnomalies = reports.reduce(UInt64(0)) { total, report in
+            let composition = report.composition
+            let counters = [composition.lateFramesDropped, composition.bufferedOverlapFramesDropped,
+                            composition.preAnchorFramesDropped, composition.invalidMicrophoneTimestamps,
+                            composition.invalidApplicationTimestamps, composition.discontinuitiesElided,
+                            composition.nonFiniteSamplesReplaced, composition.clippedSamples]
+            return counters.reduce(total) { saturatingAdd($0, UInt64($1)) }
+        }
+        let vadSkips = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.vadSkips) }
+        let trimmedSamples = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.trimmedSamples) }
+        let fallbackCount = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.fallbackCount) }
         return [
             "Outcomes: " + outcomes.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", "),
             "First partial ms p50/p95: \(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.95))",
@@ -381,5 +482,10 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
             "Capture drops: \(drops); conversion failures: \(conversionFailures); composition anomalies: \(compositionAnomalies); VAD skips: \(vadSkips); trimmed samples: \(trimmedSamples); fallback: \(fallbackCount)"
         ]
     }
-    private func percentile(_ values: [Double], p: Double) -> String { guard !values.isEmpty else { return "n/a" }; let sorted = values.sorted(); let index = max(0, Int(ceil(p * Double(sorted.count))) - 1); return String(format: "%.3f", sorted[index]) }
+    private func percentile(_ values: [Double], p: Double) -> String {
+        guard !values.isEmpty else { return "n/a" }
+        let sorted = values.sorted()
+        let index = max(0, Int(ceil(p * Double(sorted.count))) - 1)
+        return String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), sorted[index])
+    }
 }
