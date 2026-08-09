@@ -86,7 +86,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     // session-level finalization/persistence task has completed. Entries are
     // keyed by request and remove themselves when their strong cleanup task
     // finishes.
-    private var pendingCancellations: [UUID: Task<Void, Never>] = [:]
+    private struct PendingCancellation {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    private var pendingCancellations: [UUID: PendingCancellation] = [:]
     private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
     var onEvent: ((RecordingSessionEvent) -> Void)?
@@ -126,8 +130,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         work = Task { @MainActor [weak self] in
             guard let self else { return }
             for cancellation in priorCancellations {
-                await cancellation.value
+                await cancellation.task.value
             }
+            guard !Task.isCancelled, self.owns(id), case .authorizing = self.state.phase else { return }
             let result = await permission.authorizeStart(mode: mode)
             guard self.owns(id), case .authorizing = self.state.phase else { return }
             switch result {
@@ -240,7 +245,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             work = nil
             let cancellations = Array(pendingCancellations.values)
             for cancellation in cancellations {
-                await cancellation.value
+                await cancellation.task.value
             }
             engine.recordingActivityChanged(false)
             engineActivityActive = false
@@ -262,16 +267,21 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             // terminal report.
             if let session {
                 let cleanup = session.requestCancelStart()
-                await cleanup.wait()
+                let cancelledWork = work
+                cancelOwnedWork(request.id)
+                registerCancellation(requestID: request.id, work: cancelledWork, cleanup: cleanup)
+                // Invalidate coordinator callbacks before awaiting the joined
+                // cancellation task; retain the request until all cleanup
+                // side effects finish.
+                transition(.idle, requestID: nil, mode: nil, selection: nil)
+            } else {
+                cancelOwnedWork(request.id)
+                transition(.idle, requestID: nil, mode: nil, selection: nil)
             }
-            // Invalidate coordinator callbacks before cancelling the start
-            // task; retain the request until all cleanup side effects finish.
-            transition(.idle, requestID: nil, mode: nil, selection: nil)
-            cancelOwnedWork(request.id)
         }
         let cancellations = Array(pendingCancellations.values)
         for cancellation in cancellations {
-            await cancellation.value
+            await cancellation.task.value
         }
         output.cancel()
         self.request = nil
@@ -402,20 +412,38 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         // closes the window where a canceled start could publish success.
         let session = request?.session
         let cleanup = session?.requestCancelStart()
+        let cancelledWork = work
         cancelOwnedWork(id)
         if let cleanup {
-            let requestID = id
-            pendingCancellations[requestID] = Task { @MainActor [weak self, cleanup] in
-                await cleanup.wait()
-                guard let self else { return }
-                if self.pendingCancellations[requestID] != nil {
-                    self.pendingCancellations.removeValue(forKey: requestID)
-                }
-            }
+            registerCancellation(
+                requestID: id,
+                work: cancelledWork,
+                cleanup: cleanup
+            )
         }
         output.cancel()
         request = nil
         transition(.idle, requestID: nil, mode: nil, selection: nil)
+    }
+
+    private func registerCancellation(
+        requestID: UUID,
+        work: Task<Void, Never>?,
+        cleanup: SessionCleanup
+    ) {
+        let token = UUID()
+        let task = Task { @MainActor [weak self, work, cleanup] in
+            // Await both sides of cancellation. In particular, a cancelled
+            // coordinator task may still be suspended inside session.start;
+            // releasing its strong reference before it exits permits a
+            // replacement request to race the old session's finalization.
+            await work?.value
+            await cleanup.wait()
+            guard let self,
+                  self.pendingCancellations[requestID]?.token == token else { return }
+            self.pendingCancellations.removeValue(forKey: requestID)
+        }
+        pendingCancellations[requestID] = PendingCancellation(token: token, task: task)
     }
 
     private func cancelOwnedWork(_ id: UUID) {

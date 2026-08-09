@@ -369,6 +369,7 @@ final class TranscriptionController: @unchecked Sendable {
     private let appStream: AudioMixer.Stream
     private let engine: any ASREngine
     private let metricsStore: any PipelineMetricsStoring
+    private let observability: PipelineObservabilityEmitter
     private let batteryModeSnapshot: Bool
     private struct SessionLifecycle {
         let recorder: PipelineSessionRecorder
@@ -384,7 +385,15 @@ final class TranscriptionController: @unchecked Sendable {
     // Every terminal path claims the same per-session task. Keeping ownership
     // in a lock-protected registry prevents timer/cleanup/replacement races
     // without ever awaiting while the lock is held.
-    private let finalizationTasks = OSAllocatedUnfairLock(initialState: [UUID: Task<Void, Never>]())
+    private struct FinalizationEntry {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    private struct FinalizationClaim {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    private let finalizationTasks = OSAllocatedUnfairLock(initialState: [UUID: FinalizationEntry]())
     private let levelMonitor = MultiChannelLevelMonitor()
     private let audioSessionGate = AudioSessionGate()
     /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
@@ -460,6 +469,7 @@ final class TranscriptionController: @unchecked Sendable {
         settings: AppSettings = .shared,
         scheduler: any TranscriptionScheduler = DispatchTranscriptionScheduler(),
         metricsStore: any PipelineMetricsStoring = PipelineMetricsStore.shared,
+        observability: PipelineObservabilityEmitter = .live,
         batteryModeSnapshot: Bool = false,
         maxFinalAudioSamples: Int = 9_600_000,
         finalAudioTrimMarginSamples: Int = 160_000
@@ -487,6 +497,7 @@ final class TranscriptionController: @unchecked Sendable {
         self.appStream = mixer.makeStream()
         self.engine = engine
         self.metricsStore = metricsStore
+        self.observability = observability
         self.batteryModeSnapshot = batteryModeSnapshot
         self.maxFinalAudioSamples = max(1, maxFinalAudioSamples)
         self.finalAudioTrimMarginSamples = max(1, finalAudioTrimMarginSamples)
@@ -518,33 +529,39 @@ final class TranscriptionController: @unchecked Sendable {
     private func claimFinalization(
         sessionID: UUID,
         operation: @escaping @Sendable () async -> Void
-    ) -> Task<Void, Never> {
+    ) -> FinalizationClaim {
         finalizationTasks.withLock { tasks in
-            if let existing = tasks[sessionID] { return existing }
+            if let existing = tasks[sessionID] {
+                return FinalizationClaim(token: existing.token, task: existing.task)
+            }
+            let token = UUID()
             let task = Task { await operation() }
-            tasks[sessionID] = task
-            return task
+            tasks[sessionID] = FinalizationEntry(token: token, task: task)
+            return FinalizationClaim(token: token, task: task)
         }
     }
 
     private func existingFinalization(sessionID: UUID) -> Task<Void, Never>? {
-        finalizationTasks.withLock { $0[sessionID] }
+        finalizationTasks.withLock { $0[sessionID]?.task }
     }
 
-    private func pruneFinalization(sessionID: UUID, task: Task<Void, Never>) {
-        // A session ID is never reused. The task argument documents the
-        // completion boundary; removal is therefore token-safe by construction.
-        _ = task
-        finalizationTasks.withLock { $0.removeValue(forKey: sessionID) }
+    private func pruneFinalization(sessionID: UUID, token: UUID) {
+        // A completed waiter may be stale if a replacement claimed the same
+        // session ID before that waiter resumed. Only the current token may
+        // remove the registry entry.
+        finalizationTasks.withLock { tasks in
+            guard tasks[sessionID]?.token == token else { return }
+            tasks.removeValue(forKey: sessionID)
+        }
     }
 
     private func awaitFinalization(
         sessionID: UUID,
         operation: @escaping @Sendable () async -> Void
     ) async {
-        let task = claimFinalization(sessionID: sessionID, operation: operation)
-        await task.value
-        pruneFinalization(sessionID: sessionID, task: task)
+        let claim = claimFinalization(sessionID: sessionID, operation: operation)
+        await claim.task.value
+        pruneFinalization(sessionID: sessionID, token: claim.token)
     }
 
     private func reserveStartGeneration(sessionID: UUID) -> StartGeneration {
@@ -627,7 +644,7 @@ final class TranscriptionController: @unchecked Sendable {
             lifecycles[sessionID] = SessionLifecycle(recorder: recorder, signpostID: signpostID, microphoneDropBaseline: nil)
         }
         recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
-        PipelineSignposts.beginSession(signpostID)
+        observability.beginSession(signpostID, context: context)
     }
 
     private func publishMicrophoneDropBaseline(for sessionID: UUID) {
@@ -663,10 +680,11 @@ final class TranscriptionController: @unchecked Sendable {
         let baseline = lifecycle.microphoneStarted ? (lifecycle.microphoneDropBaseline ?? 0) : capture.microphoneDroppedBuffers
         capture.microphoneDroppedBuffers = lifecycle.microphoneStarted ? (capture.microphoneDroppedBuffers >= baseline ? capture.microphoneDroppedBuffers - baseline : 0) : 0
         let report = lifecycle.recorder.finish(outcome: outcome, capture: capture, composition: composition ?? audioCompositionMetrics)
-        PipelineSignposts.endSession(lifecycle.signpostID)
         // Controlled terminal paths await persistence before reporting lifecycle
-        // completion. This is best-effort only for deinit (see deinit below).
+        // completion. The summary is emitted only after this durable boundary.
         await metricsStore.record(report)
+        observability.endSession(lifecycle.signpostID, context: report.context)
+        observability.persistedSummary(report)
     }
 
     deinit {
@@ -678,8 +696,11 @@ final class TranscriptionController: @unchecked Sendable {
         for lifecycle in lifecycles {
             lifecycle.recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
             let report = lifecycle.recorder.finish(outcome: .cancelled, capture: captureSession.healthSnapshot, composition: audioCompositionMetrics)
-            PipelineSignposts.endSession(lifecycle.signpostID)
-            Task { [metricsStore] in await metricsStore.record(report) }
+            Task { [metricsStore, observability] in
+                await metricsStore.record(report)
+                observability.endSession(lifecycle.signpostID, context: report.context)
+                observability.persistedSummary(report)
+            }
         }
     }
 
@@ -949,8 +970,8 @@ final class TranscriptionController: @unchecked Sendable {
                 await self.completeStopping(sessionID: sessionID)
             }
             Task { [weak self] in
-                await finalization.value
-                self?.pruneFinalization(sessionID: sessionID, task: finalization)
+                await finalization.task.value
+                self?.pruneFinalization(sessionID: sessionID, token: finalization.token)
             }
         }
         installScheduledStop(task, token: token)
@@ -1029,17 +1050,17 @@ final class TranscriptionController: @unchecked Sendable {
     func requestCancelStart() -> SessionCleanup {
         cancelScheduledStop()
         let sessionID = invalidateCurrentStart()
-        let task = claimFinalization(sessionID: sessionID) { [weak self] in
+        let claim = claimFinalization(sessionID: sessionID) { [weak self] in
             guard let self else { return }
             await self.captureSession.stopAndWait()
             await self.cancelPendingChunkTasks(sessionID: sessionID)
             await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
         }
         Task { [weak self] in
-            await task.value
-            self?.pruneFinalization(sessionID: sessionID, task: task)
+            await claim.task.value
+            self?.pruneFinalization(sessionID: sessionID, token: claim.token)
         }
-        return SessionCleanup(task: task, owner: self)
+        return SessionCleanup(task: claim.task, owner: self)
     }
 
     private func invalidateCurrentStart() -> UUID {

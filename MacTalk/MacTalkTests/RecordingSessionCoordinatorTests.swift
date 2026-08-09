@@ -40,6 +40,54 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
     }
 
+    func test_cancelledOriginalStartBlocksReplacementUntilStartExitsAndPersistsOnce() async throws {
+        let harness = RecordingHarness()
+        harness.session.startSuspended = true
+        harness.session.cancelSuspended = true
+        harness.session.persistsMetrics = true
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .starting }
+
+        harness.coordinator.stop()
+        harness.coordinator.requestStart(mode: .micOnly)
+        await Task.yield()
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+        let initialRecordCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(initialRecordCount, 0)
+
+        harness.session.releaseCancel()
+        await Task.yield()
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+        harness.session.releaseStart()
+        await harness.session.metricsStore.waitForRecordStart()
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+        await harness.session.metricsStore.releaseRecord()
+        await harness.waitFor { harness.permission.authorizeCount == 1 }
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        let completedRecordCount = await harness.session.metricsStore.recordCount
+        XCTAssertEqual(completedRecordCount, 1)
+        XCTAssertEqual(harness.session.releasedSessions, 1)
+    }
+
+    func test_delayedCancellationPermissionBarrierRejectsStartStopBeforeAuthorize() async throws {
+        let harness = RecordingHarness()
+        harness.session.startSuspended = true
+        harness.session.cancelSuspended = true
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .starting }
+        harness.coordinator.stop()
+
+        harness.coordinator.requestStart(mode: .micOnly)
+        harness.coordinator.stop()
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+
+        harness.session.releaseCancel()
+        harness.session.releaseStart()
+        await Task.yield()
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+    }
+
     func test_toggleStartsBothShortcutModesUsingRequestedMode() async throws {
         let micHarness = RecordingHarness()
         micHarness.coordinator.toggle(mode: .micOnly)
@@ -351,7 +399,11 @@ private final class RecordingHarness: TranscriptionSessionFactory {
 @MainActor
 private final class RecordingPermissionFake: RecordingPermissionAuthorizing {
     var result: StartPermissionResult = .granted
-    func authorizeStart(mode: TranscriptionController.Mode) async -> StartPermissionResult { result }
+    private(set) var authorizeCount = 0
+    func authorizeStart(mode: TranscriptionController.Mode) async -> StartPermissionResult {
+        authorizeCount += 1
+        return result
+    }
 }
 
 @MainActor

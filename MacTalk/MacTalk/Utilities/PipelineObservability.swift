@@ -299,14 +299,98 @@ final class PipelineSessionRecorder: @unchecked Sendable {
     private func rtf(duration: UInt64, samples: UInt64) -> Double? { guard samples > 0, duration > 0 else { return nil }; return (Double(duration) / 1_000_000_000) / (Double(samples) / 16_000) }
 }
 
-// MARK: - Signposts
+// MARK: - Signposts and unified summary
+
+enum PipelineObservabilityEvent: Sendable, Equatable {
+    case sessionBegin(PipelineSessionContext)
+    case sessionEnd(PipelineSessionContext)
+    case persistedSummary(PipelineSessionReport)
+}
+
+protocol PipelineObservabilityEventSink: Sendable {
+    func emit(_ event: PipelineObservabilityEvent)
+}
+
+struct PipelineObservabilityEmitter: Sendable {
+    static let live = PipelineObservabilityEmitter()
+    private let sink: (any PipelineObservabilityEventSink)?
+
+    init(sink: (any PipelineObservabilityEventSink)? = nil) {
+        self.sink = sink
+    }
+
+    func beginSession(_ id: OSSignpostID, context: PipelineSessionContext) {
+        PipelineSignposts.beginSession(id, context: context)
+        sink?.emit(.sessionBegin(context))
+    }
+
+    func endSession(_ id: OSSignpostID, context: PipelineSessionContext) {
+        PipelineSignposts.endSession(id, context: context)
+        sink?.emit(.sessionEnd(context))
+    }
+
+    func persistedSummary(_ report: PipelineSessionReport) {
+        PipelineSignposts.persistedSummary(report)
+        sink?.emit(.persistedSummary(report))
+    }
+}
 
 enum PipelineSignposts {
     static let log = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "com.mactalk.app", category: "pipeline")
     static func sessionID() -> OSSignpostID { OSSignpostID(log: log) }
     static func inferenceID() -> OSSignpostID { OSSignpostID(log: log) }
-    static func beginSession(_ id: OSSignpostID) { os_signpost(.begin, log: log, name: "TranscriptionSession", signpostID: id) }
-    static func endSession(_ id: OSSignpostID) { os_signpost(.end, log: log, name: "TranscriptionSession", signpostID: id) }
+    static func beginSession(_ id: OSSignpostID, context: PipelineSessionContext) {
+        os_signpost(
+            .begin,
+            log: log,
+            name: "TranscriptionSession",
+            signpostID: id,
+            "provider=%{public}s model=%{public}s captureMode=%{public}s",
+            context.provider.rawValue,
+            context.modelID,
+            context.captureMode.rawValue
+        )
+    }
+    static func endSession(_ id: OSSignpostID, context: PipelineSessionContext) {
+        os_signpost(
+            .end,
+            log: log,
+            name: "TranscriptionSession",
+            signpostID: id,
+            "provider=%{public}s model=%{public}s captureMode=%{public}s",
+            context.provider.rawValue,
+            context.modelID,
+            context.captureMode.rawValue
+        )
+    }
+    static func persistedSummary(_ report: PipelineSessionReport) {
+        let incrementalRTF = report.incrementalInference.realTimeFactor.map { String(format: "%.3f", $0) } ?? "n/a"
+        let finalRTF = report.finalInference.realTimeFactor.map { String(format: "%.3f", $0) } ?? "n/a"
+        let totalMs = report.latency.totalMs.map { String(format: "%.3f", $0) } ?? "n/a"
+        os_log(
+            "pipeline_summary provider=%{public}s model=%{public}s captureMode=%{public}s outcome=%{public}s totalMs=%{public}s incrementalRTF=%{public}s finalRTF=%{public}s micDrops=%{public}llu appLoss=%{public}llu conversionFailures=%{public}llu compositionAnomalies=%{public}llu",
+            log: log,
+            type: .info,
+            report.context.provider.rawValue,
+            report.context.modelID,
+            report.context.captureMode.rawValue,
+            report.outcome.rawValue,
+            totalMs,
+            incrementalRTF,
+            finalRTF,
+            report.capture.microphoneDroppedBuffers,
+            report.capture.applicationLossEvents,
+            report.audio.conversionFailures,
+            UInt64(max(0, report.composition.lateFramesDropped))
+                + UInt64(max(0, report.composition.bufferedOverlapFramesDropped))
+                + UInt64(max(0, report.composition.preAnchorFramesDropped))
+                + UInt64(max(0, report.composition.invalidMicrophoneTimestamps))
+                + UInt64(max(0, report.composition.invalidApplicationTimestamps))
+                + UInt64(max(0, report.composition.discontinuitiesElided))
+                + UInt64(max(0, report.composition.nonFiniteSamplesReplaced))
+                + UInt64(max(0, report.composition.clippedSamples))
+        )
+    }
     static func beginInference(_ id: OSSignpostID, kind: PipelineInferenceKind) { os_signpost(.begin, log: log, name: "Inference", signpostID: id, "%{public}s", kind.rawValue) }
     static func endInference(_ id: OSSignpostID) { os_signpost(.end, log: log, name: "Inference", signpostID: id) }
     static func firstAudio(_ id: OSSignpostID) { os_signpost(.event, log: log, name: "FirstAudio", signpostID: id) }

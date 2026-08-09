@@ -4,6 +4,28 @@ import XCTest
 @testable import MacTalk
 
 final class PipelineObservabilityTests: XCTestCase {
+    func testSessionDimensionsAndPersistedSummaryAreEmittedOnceWithoutSensitiveFields() {
+        let sink = RecordingPipelineObservabilitySink()
+        let emitter = PipelineObservabilityEmitter(sink: sink)
+        let context = PipelineSessionContext(
+            id: UUID(), provider: .whisper, modelID: "whisper-base-q5_1",
+            captureMode: .micOnly, language: "en", batteryMode: false, startedAt: Date()
+        )
+        let recorder = PipelineSessionRecorder(context: context, nowNanoseconds: { 0 })
+        let report = recorder.finish(outcome: .completed, capture: .zero, composition: .init())
+        let signpostID = PipelineSignposts.sessionID()
+
+        emitter.beginSession(signpostID, context: context)
+        emitter.endSession(signpostID, context: context)
+        emitter.persistedSummary(report)
+
+        XCTAssertEqual(sink.events, [.sessionBegin(context), .sessionEnd(context), .persistedSummary(report)])
+        let encoded = String(decoding: try! JSONEncoder().encode(context), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("transcript"))
+        XCTAssertFalse(encoded.contains("target"))
+        XCTAssertFalse(encoded.contains("rawError"))
+    }
+
     func testSchemaOneLegacyLineDefaultsApplicationConversionAndSurvivesNextWrite() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let url = directory.appendingPathComponent("pipeline-metrics.jsonl")
@@ -433,6 +455,18 @@ final class PipelineObservabilityTests: XCTestCase {
         var finalInference = PipelineInferenceMetrics()
         finalInference.realTimeFactor = finalRTF
         return PipelineSessionReport(schemaVersion: 1, context: context, outcome: outcome ?? (index.isMultiple(of: 2) ? .completed : .cancelled), completedAt: Date(), latency: latency, audio: audio, capture: capture, queue: PipelineQueueMetrics(), incrementalInference: incrementalInference, finalInference: finalInference, output: PipelineOutputMetrics(), composition: compositionMetrics ?? .init(lateFramesDropped: Int(compositionAnomalies)), resources: PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil))
+    }
+}
+
+private final class RecordingPipelineObservabilitySink: PipelineObservabilityEventSink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [PipelineObservabilityEvent] = []
+    var events: [PipelineObservabilityEvent] {
+        lock.lock(); defer { lock.unlock() }
+        return storage
+    }
+    func emit(_ event: PipelineObservabilityEvent) {
+        lock.lock(); storage.append(event); lock.unlock()
     }
 }
 
