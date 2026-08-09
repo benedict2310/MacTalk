@@ -258,6 +258,8 @@ final class DeterministicCaptureSession: @unchecked Sendable, TranscriptionCaptu
     private(set) var appSessionIDs: [UUID] = []
     private(set) var stopCount = 0
     private(set) var stopAppAudioCount = 0
+    var healthSnapshotValue = CaptureHealthMetrics.zero
+    var healthSnapshot: CaptureHealthMetrics { healthSnapshotValue }
     var microphoneStartError: Swift.Error?
     var appStartError: Swift.Error?
 

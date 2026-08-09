@@ -305,6 +305,12 @@ final class TranscriptionController: @unchecked Sendable {
         case micPlusAppAudio
     }
 
+    private enum TerminalResult {
+        case noSpeech
+        case completed(OutputResult?)
+        case inferenceFailed
+    }
+
     // MARK: - Properties
 
     private let captureSession: any TranscriptionCaptureSession
@@ -317,9 +323,17 @@ final class TranscriptionController: @unchecked Sendable {
     private let engine: any ASREngine
     private let metricsStore: any PipelineMetricsStoring
     private let batteryModeSnapshot: Bool
-    private let recorderLifecycle = OSAllocatedUnfairLock(initialState: [UUID: PipelineSessionRecorder]())
-    private let sessionSignpostLifecycle = OSAllocatedUnfairLock(initialState: [UUID: OSSignpostID]())
-    private let captureDropBaselines = OSAllocatedUnfairLock(initialState: [UUID: UInt64]())
+    private struct SessionLifecycle {
+        let recorder: PipelineSessionRecorder
+        let signpostID: OSSignpostID
+        var microphoneDropBaseline: UInt64?
+        var cancellationRequested = false
+        var finalizationStarted = false
+    }
+    // Recorder, baseline, signpost, and terminal state are published/taken as
+    // one unit. No asynchronous work or I/O is performed while this lock is held.
+    private let sessionLifecycle = OSAllocatedUnfairLock(initialState: [UUID: SessionLifecycle]())
+    private var pendingFinalizationTask: Task<Void, Never>?
     private let levelMonitor = MultiChannelLevelMonitor()
     private let audioSessionGate = AudioSessionGate()
     /// Separately gates queued ScreenCaptureKit callbacks so app-audio fallback
@@ -419,6 +433,7 @@ final class TranscriptionController: @unchecked Sendable {
         self.metricsStore = metricsStore
         self.batteryModeSnapshot = batteryModeSnapshot
         self.hardwareValidationRecorder = AudioHardwareValidationRecorder.fromEnvironment()
+        self.pendingFinalizationTask = nil
         self.audioState = OSAllocatedUnfairLock(
             initialState: AudioState(chunkDuration: chunkDurationMs, language: "en")
         )
@@ -439,7 +454,14 @@ final class TranscriptionController: @unchecked Sendable {
     }
 
     private func recorder(for sessionID: UUID) -> PipelineSessionRecorder? {
-        recorderLifecycle.withLock { $0[sessionID] }
+        sessionLifecycle.withLock { $0[sessionID]?.recorder }
+    }
+
+    private func isSessionActive(_ sessionID: UUID) -> Bool {
+        sessionLifecycle.withLock { lifecycle in
+            guard let lifecycle = lifecycle[sessionID] else { return false }
+            return !lifecycle.cancellationRequested && !lifecycle.finalizationStarted
+        }
     }
 
     private func installRecorder(for sessionID: UUID, settings: SettingsSnapshot) {
@@ -454,25 +476,56 @@ final class TranscriptionController: @unchecked Sendable {
             startedAt: Date()
         )
         let recorder = PipelineSessionRecorder(context: context, nowNanoseconds: { [timingScheduler] in timingScheduler.nowNanoseconds })
-        recorderLifecycle.withLock { $0[sessionID] = recorder }
-        captureDropBaselines.withLock { $0[sessionID] = captureSession.healthSnapshot.microphoneDroppedBuffers }
         let signpostID = PipelineSignposts.sessionID()
-        sessionSignpostLifecycle.withLock { $0[sessionID] = signpostID }
+        sessionLifecycle.withLock { lifecycles in
+            lifecycles[sessionID] = SessionLifecycle(recorder: recorder, signpostID: signpostID, microphoneDropBaseline: nil)
+        }
         recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
         PipelineSignposts.beginSession(signpostID)
     }
 
-    private func finalizeRecorder(sessionID: UUID, outcome: PipelineSessionOutcome) {
-        guard let recorder = recorderLifecycle.withLock({ $0.removeValue(forKey: sessionID) }) else { return }
-        recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
-        var capture = captureSession.healthSnapshot
-        let baseline = captureDropBaselines.withLock { $0.removeValue(forKey: sessionID) } ?? 0
-        capture.microphoneDroppedBuffers = capture.microphoneDroppedBuffers >= baseline ? capture.microphoneDroppedBuffers - baseline : 0
-        let report = recorder.finish(outcome: outcome, capture: capture, composition: audioCompositionMetrics)
-        if let signpostID = sessionSignpostLifecycle.withLock({ $0.removeValue(forKey: sessionID) }) {
-            PipelineSignposts.endSession(signpostID)
+    private func publishMicrophoneDropBaseline(for sessionID: UUID) {
+        let baseline = captureSession.healthSnapshot.microphoneDroppedBuffers
+        sessionLifecycle.withLock { lifecycles in
+            guard var lifecycle = lifecycles[sessionID], !lifecycle.cancellationRequested else { return }
+            lifecycle.microphoneDropBaseline = baseline
+            lifecycles[sessionID] = lifecycle
         }
-        Task { [metricsStore] in await metricsStore.record(report) }
+    }
+
+    private func takeLifecycle(for sessionID: UUID) -> SessionLifecycle? {
+        sessionLifecycle.withLock { lifecycles in
+            guard var lifecycle = lifecycles.removeValue(forKey: sessionID) else { return nil }
+            lifecycle.finalizationStarted = true
+            return lifecycle
+        }
+    }
+
+    private func finalizeRecorder(sessionID: UUID, outcome: PipelineSessionOutcome, composition: AudioCompositionMetrics? = nil) async {
+        guard let lifecycle = takeLifecycle(for: sessionID) else { return }
+        lifecycle.recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
+        var capture = captureSession.healthSnapshot
+        let baseline = lifecycle.microphoneDropBaseline ?? 0
+        capture.microphoneDroppedBuffers = capture.microphoneDroppedBuffers >= baseline ? capture.microphoneDroppedBuffers - baseline : 0
+        let report = lifecycle.recorder.finish(outcome: outcome, capture: capture, composition: composition ?? audioCompositionMetrics)
+        PipelineSignposts.endSession(lifecycle.signpostID)
+        // Controlled terminal paths await persistence before reporting lifecycle
+        // completion. This is best-effort only for deinit (see deinit below).
+        await metricsStore.record(report)
+    }
+
+    deinit {
+        let lifecycles = sessionLifecycle.withLock { lifecycles -> [SessionLifecycle] in
+            let values = Array(lifecycles.values)
+            lifecycles.removeAll()
+            return values
+        }
+        for lifecycle in lifecycles {
+            lifecycle.recorder.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
+            let report = lifecycle.recorder.finish(outcome: .cancelled, capture: captureSession.healthSnapshot, composition: audioCompositionMetrics)
+            PipelineSignposts.endSession(lifecycle.signpostID)
+            Task { [metricsStore] in await metricsStore.record(report) }
+        }
     }
 
     private func residentMemoryBytes() -> UInt64 {
@@ -492,7 +545,8 @@ final class TranscriptionController: @unchecked Sendable {
         case .axSetValueSuccess: return .inserted
         case .cmdVFallback: return .cmdVScheduledUnverified
         case .permissionDenied: return .permissionDenied
-        case .failed, .skippedTargetChanged: return .failed
+        case .failed: return .failed
+        case .skippedTargetChanged: return .targetChanged
         }
     }
 
@@ -545,11 +599,16 @@ final class TranscriptionController: @unchecked Sendable {
             ])
         }
         let previousSessionID = audioState.withLock { $0.sessionID }
-        let sessionID = audioSessionGate.begin()
-        finalizeRecorder(sessionID: previousSessionID, outcome: .cancelled)
-        captureSession.stop()
-        installRecorder(for: sessionID, settings: recordingSettings)
+        audioSessionGate.stop()
         appAudioGate.stop()
+        captureSession.stop()
+        compositionPipeline.cancel(sessionID: previousSessionID)
+        await cancelPendingChunkTasks(sessionID: previousSessionID)
+        let previousComposition = audioCompositionMetrics
+        await finalizeRecorder(sessionID: previousSessionID, outcome: .cancelled, composition: previousComposition)
+
+        let sessionID = audioSessionGate.begin()
+        installRecorder(for: sessionID, settings: recordingSettings)
 
         // Clear previous state
         micStream.reset()
@@ -582,9 +641,14 @@ final class TranscriptionController: @unchecked Sendable {
         } catch {
             // A microphone start failure must invalidate the session and stop
             // any partially initialized capture before surfacing the error.
-            finalizeRecorder(sessionID: sessionID, outcome: .startFailed)
-            await cancelStartAndWait()
+            await cancelStartAndWait(outcome: .startFailed)
             throw error
+        }
+        publishMicrophoneDropBaseline(for: sessionID)
+        guard audioSessionGate.accepts(sessionID), isSessionActive(sessionID) else {
+            captureSession.stop()
+            await finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+            throw CancellationError()
         }
         DLOG("Mic capture started (pre-roll buffering while engine prepares)")
         print("🎤 Mic capture started (pre-roll buffering while engine prepares)")
@@ -592,8 +656,7 @@ final class TranscriptionController: @unchecked Sendable {
         // Set up app audio capture if needed (also starts immediately)
         if case .micPlusAppAudio = recordingMode {
             guard let source = audioSource else {
-                finalizeRecorder(sessionID: sessionID, outcome: .startFailed)
-                await cancelStartAndWait()
+                await cancelStartAndWait(outcome: .startFailed)
                 throw NSError(domain: "TranscriptionController", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Audio source required for mic+app mode"
                 ])
@@ -621,8 +684,7 @@ final class TranscriptionController: @unchecked Sendable {
                     }
                 )
             } catch {
-                finalizeRecorder(sessionID: sessionID, outcome: .startFailed)
-                await cancelStartAndWait()
+                await cancelStartAndWait(outcome: .startFailed)
                 throw error
             }
         }
@@ -630,14 +692,17 @@ final class TranscriptionController: @unchecked Sendable {
         // Now prepare the engine — audio is already being captured and
         // buffered in audioChunk/allAudio while this runs. If preparation fails,
         // stop captures here so direct callers cannot leave the microphone active.
+        guard isSessionActive(sessionID) else {
+            await cancelStartAndWait()
+            throw CancellationError()
+        }
         recorder(for: sessionID)?.recordPrepareStarted()
         do {
             try await engine.prepare()
             await engine.reset()
             recorder(for: sessionID)?.recordPrepareCompleted()
         } catch {
-            finalizeRecorder(sessionID: sessionID, outcome: .startFailed)
-            await cancelStartAndWait()
+            await cancelStartAndWait(outcome: .startFailed)
             throw error
         }
 
@@ -676,8 +741,14 @@ final class TranscriptionController: @unchecked Sendable {
             Task { [self] in
                 finishAudioStreams(sessionID: sessionID)
                 compositionPipeline.finish(sessionID: sessionID)
-                let producedOutput = await flushFinalChunk(sessionID: sessionID)
-                finalizeRecorder(sessionID: sessionID, outcome: producedOutput ? .completed : .noSpeech)
+                let terminalResult = await flushFinalChunk(sessionID: sessionID)
+                let outcome: PipelineSessionOutcome
+                switch terminalResult {
+                case .noSpeech: outcome = .noSpeech
+                case .completed: outcome = .completed
+                case .inferenceFailed: outcome = .inferenceFailed
+                }
+                await finalizeRecorder(sessionID: sessionID, outcome: outcome)
 
                 audioState.withLock { state in
                     if state.sessionID == sessionID {
@@ -695,18 +766,19 @@ final class TranscriptionController: @unchecked Sendable {
 
     func cancelStart() {
         let sessionID = cancelStartAndReturnSession()
-
-        Task { [weak self] in
+        pendingFinalizationTask?.cancel()
+        pendingFinalizationTask = Task { [weak self] in
             guard let self else { return }
             await self.cancelPendingChunkTasks(sessionID: sessionID)
+            await self.finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
         }
-
         print("Transcription start cancelled")
     }
 
-    private func cancelStartAndWait() async {
+    private func cancelStartAndWait(outcome: PipelineSessionOutcome = .cancelled) async {
         let sessionID = cancelStartAndReturnSession()
         await cancelPendingChunkTasks(sessionID: sessionID)
+        await finalizeRecorder(sessionID: sessionID, outcome: outcome)
         print("Transcription start cancelled")
     }
 
@@ -728,7 +800,11 @@ final class TranscriptionController: @unchecked Sendable {
             return sessionID
         }
         compositionPipeline.cancel(sessionID: sessionID)
-        finalizeRecorder(sessionID: sessionID, outcome: .cancelled)
+        sessionLifecycle.withLock { lifecycles in
+            guard var lifecycle = lifecycles[sessionID] else { return }
+            lifecycle.cancellationRequested = true
+            lifecycles[sessionID] = lifecycle
+        }
         return sessionID
     }
 
@@ -763,13 +839,18 @@ final class TranscriptionController: @unchecked Sendable {
         }
         let conversionStart = timingScheduler.nowNanoseconds
         let samples = micStream.convert(samples: frame.samples, sampleRate: frame.sampleRate)
-        let conversionDuration = timingScheduler.nowNanoseconds >= conversionStart ? timingScheduler.nowNanoseconds - conversionStart : 0
+        let conversionEnd = timingScheduler.nowNanoseconds
+        let conversionDuration = conversionEnd >= conversionStart ? conversionEnd - conversionStart : 0
         guard audioSessionGate.accepts(sessionID) else { return }
         guard let samples else {
             recorder(for: sessionID)?.recordMicrophoneInput(inputSamples: UInt64(frame.samples.count), convertedSamples: 0, conversionNanoseconds: conversionDuration, conversionFailed: true)
             return
         }
-        recorder(for: sessionID)?.recordMicrophoneInput(inputSamples: UInt64(frame.samples.count), convertedSamples: UInt64(samples.count), conversionNanoseconds: conversionDuration)
+        if recorder(for: sessionID)?.recordMicrophoneInput(inputSamples: UInt64(frame.samples.count), convertedSamples: UInt64(samples.count), conversionNanoseconds: conversionDuration) == true {
+            if let signpostID = sessionLifecycle.withLock({ $0[sessionID]?.signpostID }) {
+                PipelineSignposts.firstAudio(signpostID)
+            }
+        }
 
         hardwareValidationRecorder.recordMicrophone(
             sessionID: sessionID,
@@ -819,7 +900,8 @@ final class TranscriptionController: @unchecked Sendable {
         }
         let conversionStart = timingScheduler.nowNanoseconds
         let samples = mixer.convertSampleBuffer(sampleBuffer, using: appStream)
-        let conversionDuration = timingScheduler.nowNanoseconds >= conversionStart ? timingScheduler.nowNanoseconds - conversionStart : 0
+        let conversionEnd = timingScheduler.nowNanoseconds
+        let conversionDuration = conversionEnd >= conversionStart ? conversionEnd - conversionStart : 0
         guard audioSessionGate.accepts(sessionID), appAudioGate.accepts(appGeneration) else {
             return nil
         }
@@ -883,7 +965,10 @@ final class TranscriptionController: @unchecked Sendable {
             return (state.audioChunk.count, samplesPerMs * effectiveDuration, trimmedSamples)
         }
         if let sessionID {
-            recorder(for: sessionID)?.recordComposedOutput(samples: UInt64(samples.count))
+            if recorder(for: sessionID)?.recordComposedOutput(samples: UInt64(samples.count)) == true,
+               let signpostID = sessionLifecycle.withLock({ $0[sessionID]?.signpostID }) {
+                PipelineSignposts.firstAudio(signpostID)
+            }
             if trimmedSamples > 0 { recorder(for: sessionID)?.recordTrimmedAudio(samples: UInt64(trimmedSamples)) }
         }
 
@@ -937,6 +1022,12 @@ final class TranscriptionController: @unchecked Sendable {
             let task = Task.detached(priority: .userInitiated) { [weak self, chunkSamples, sessionID, language, previousTask] in
                 guard let self = self else { return }
                 var succeeded = false
+                _ = await previousTask?.value
+                guard !Task.isCancelled else {
+                    self.recorder(for: sessionID)?.recordInferenceCompleted(id: taskID, succeeded: false)
+                    self.removePendingChunkTask(id: taskID, sessionID: sessionID)
+                    return
+                }
                 let inferenceSignpostID = PipelineSignposts.inferenceID()
                 PipelineSignposts.beginInference(inferenceSignpostID, kind: .incremental)
                 defer {
@@ -944,9 +1035,6 @@ final class TranscriptionController: @unchecked Sendable {
                     self.recorder(for: sessionID)?.recordInferenceCompleted(id: taskID, succeeded: succeeded)
                     self.removePendingChunkTask(id: taskID, sessionID: sessionID)
                 }
-
-                _ = await previousTask?.value
-                guard !Task.isCancelled else { return }
                 self.recorder(for: sessionID)?.recordInferenceStarted(id: taskID)
 
                 do {
@@ -965,7 +1053,11 @@ final class TranscriptionController: @unchecked Sendable {
                             }
                             if didAppend {
                                 let presented = await self.throttledUIUpdate(trimmedText)
-                                if presented { self.recorder(for: sessionID)?.recordPartialPresented() }
+                                if presented,
+                                   self.recorder(for: sessionID)?.recordPartialPresented() == true,
+                                   let signpostID = self.sessionLifecycle.withLock({ $0[sessionID]?.signpostID }) {
+                                    PipelineSignposts.firstPartial(signpostID)
+                                }
                             }
                         }
                     }
@@ -983,7 +1075,7 @@ final class TranscriptionController: @unchecked Sendable {
         }
     }
 
-    private func flushFinalChunk(sessionID: UUID) async -> Bool {
+    private func flushFinalChunk(sessionID: UUID) async -> TerminalResult {
         let snapshot: (audio: [Float], language: String?) = audioState.withLock { state in
             guard state.sessionID == sessionID else { return ([], nil) }
             let audio = state.allAudio
@@ -1003,8 +1095,7 @@ final class TranscriptionController: @unchecked Sendable {
         if rms < silenceThreshold {
             recorder(for: sessionID)?.recordVADSkip()
             print("🔇 Skipping silent final audio (RMS: \(String(format: "%.4f", rms)))")
-            _ = await emitFinalTranscript(sessionID: sessionID)
-            return false
+            return await emitFinalTranscript(sessionID: sessionID)
         }
 
         DLOG("Processing final transcription with ALL audio: samples=\(snapshot.audio.count), RMS=\(String(format: "%.4f", rms))")
@@ -1021,14 +1112,15 @@ final class TranscriptionController: @unchecked Sendable {
         }
         var finalText: String?
 
-        // Transcribe complete audio recording. Final inference is separately
-        // dimensioned from Whisper incremental requests; Parakeet reaches this
-        // path without any incremental requests.
+        // The final request may overlap queued partial work, but its signpost
+        // begins at the actual engine call rather than including queue delay.
         let finalInferenceID = UUID()
-        let finalInferenceSignpostID = PipelineSignposts.inferenceID()
-        PipelineSignposts.beginInference(finalInferenceSignpostID, kind: .final)
         recorder(for: sessionID)?.recordInferenceQueued(id: finalInferenceID, kind: .final, audioSamples: UInt64(snapshot.audio.count))
         recorder(for: sessionID)?.recordInferenceStarted(id: finalInferenceID)
+        let finalInferenceSignpostID = PipelineSignposts.inferenceID()
+        PipelineSignposts.beginInference(finalInferenceSignpostID, kind: .final)
+        var inferenceFailed = false
+        defer { PipelineSignposts.endInference(finalInferenceSignpostID) }
         do {
             let finalSegment = try await engine.finalize(samples: snapshot.audio, language: snapshot.language)
             recorder(for: sessionID)?.recordInferenceCompleted(id: finalInferenceID, succeeded: true)
@@ -1041,15 +1133,16 @@ final class TranscriptionController: @unchecked Sendable {
                 }
             }
         } catch {
+            inferenceFailed = true
             recorder(for: sessionID)?.recordInferenceCompleted(id: finalInferenceID, succeeded: false)
             recorder(for: sessionID)?.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
             DebugLogger.shared.log(.error(description: error.localizedDescription))
         }
 
-        PipelineSignposts.endInference(finalInferenceSignpostID)
         for task in pendingPartialTasks {
             await task.value
         }
+        if inferenceFailed { return .inferenceFailed }
 
         if let finalText {
             audioState.withLock { state in
@@ -1063,7 +1156,7 @@ final class TranscriptionController: @unchecked Sendable {
         return await emitFinalTranscript(sessionID: sessionID)
     }
 
-    private func emitFinalTranscript(sessionID: UUID) async -> Bool {
+    private func emitFinalTranscript(sessionID: UUID) async -> TerminalResult {
         let combined: String? = audioState.withLock { state in
             guard state.sessionID == sessionID else { return nil }
             let result = state.fullTranscript.joined(separator: " ")
@@ -1073,7 +1166,7 @@ final class TranscriptionController: @unchecked Sendable {
 
         guard let combined else {
             DLOG("Final transcript discarded because its recording session is no longer current")
-            return false
+            return .noSpeech
         }
 
         let cleaned = cleanTranscript(combined)
@@ -1083,19 +1176,20 @@ final class TranscriptionController: @unchecked Sendable {
 
         guard !cleaned.isEmpty else {
             DLOG("Final transcription produced no text; clipboard left unchanged")
-            return false
+            return .noSpeech
         }
 
-        guard let onFinal else { return false }
+        guard let onFinal else { return .completed(nil) }
         recorder(for: sessionID)?.recordFinalPresented()
         // The synchronous result is the complete output handoff contract.
         let result = await onFinal(cleaned)
-        guard let result else { return false }
-        recorder(for: sessionID)?.recordOutputHandoff(
-            clipboardWritten: result.clipboardWritten,
-            insertOutcome: pipelineInsertOutcome(result.insertOutcome)
-        )
-        return true
+        if let result {
+            recorder(for: sessionID)?.recordOutputHandoff(
+                clipboardWritten: result.clipboardWritten,
+                insertOutcome: pipelineInsertOutcome(result.insertOutcome)
+            )
+        }
+        return .completed(result)
     }
 
     // MARK: - Text Post-Processing

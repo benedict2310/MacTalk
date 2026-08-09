@@ -11,6 +11,7 @@ enum PipelineInsertOutcome: String, Codable, Sendable {
     case notAttempted
     case inserted
     case permissionDenied
+    case targetChanged
     case failed
     case cmdVScheduledUnverified
 
@@ -57,6 +58,28 @@ struct PipelineAudioMetrics: Codable, Sendable, Equatable {
     var vadSkips: UInt64 = 0
     var trimmedSamples: UInt64 = 0
     var fallbackCount: UInt64 = 0
+
+    private enum CodingKeys: String, CodingKey {
+        case microphoneInputSamples, microphoneConvertedSamples, applicationInputSamples
+        case conversionNanoseconds, applicationConversionNanoseconds, conversionFailures
+        case composedSamples, vadSkips, trimmedSamples, fallbackCount
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        microphoneInputSamples = try values.decodeIfPresent(UInt64.self, forKey: .microphoneInputSamples) ?? 0
+        microphoneConvertedSamples = try values.decodeIfPresent(UInt64.self, forKey: .microphoneConvertedSamples) ?? 0
+        applicationInputSamples = try values.decodeIfPresent(UInt64.self, forKey: .applicationInputSamples) ?? 0
+        conversionNanoseconds = try values.decodeIfPresent(UInt64.self, forKey: .conversionNanoseconds) ?? 0
+        applicationConversionNanoseconds = try values.decodeIfPresent(UInt64.self, forKey: .applicationConversionNanoseconds) ?? 0
+        conversionFailures = try values.decodeIfPresent(UInt64.self, forKey: .conversionFailures) ?? 0
+        composedSamples = try values.decodeIfPresent(UInt64.self, forKey: .composedSamples) ?? 0
+        vadSkips = try values.decodeIfPresent(UInt64.self, forKey: .vadSkips) ?? 0
+        trimmedSamples = try values.decodeIfPresent(UInt64.self, forKey: .trimmedSamples) ?? 0
+        fallbackCount = try values.decodeIfPresent(UInt64.self, forKey: .fallbackCount) ?? 0
+    }
 }
 
 struct PipelineQueueMetrics: Codable, Sendable, Equatable {
@@ -171,10 +194,14 @@ final class PipelineSessionRecorder: @unchecked Sendable {
     }
     private func mark(_ key: inout UInt64?, at time: UInt64) { if key == nil { key = time } }
 
-    func recordMicrophoneInput(inputSamples: UInt64, convertedSamples: UInt64, conversionNanoseconds: UInt64, conversionFailed: Bool = false) {
-        let time = tick(); state.withLock { s in
+    @discardableResult
+    func recordMicrophoneInput(inputSamples: UInt64, convertedSamples: UInt64, conversionNanoseconds: UInt64, conversionFailed: Bool = false) -> Bool {
+        let time = tick()
+        return state.withLock { s in
+            let isFirst = s.firstCapture == nil
             mark(&s.firstCapture, at: time); s.audio.microphoneInputSamples &+= inputSamples; s.audio.microphoneConvertedSamples &+= convertedSamples; s.audio.conversionNanoseconds &+= conversionNanoseconds; if conversionFailed { s.audio.conversionFailures &+= 1 }
             s.capture.microphoneCallbacks &+= 1
+            return isFirst
         }
     }
     func recordApplicationInput(callbacks: UInt64 = 1, samples: UInt64 = 0, lossEvents: UInt64 = 0, conversionNanoseconds: UInt64 = 0, conversionFailed: Bool = false) {
@@ -188,7 +215,15 @@ final class PipelineSessionRecorder: @unchecked Sendable {
         }
     }
     func recordConversionFailure() { state.withLock { $0.audio.conversionFailures &+= 1 } }
-    func recordComposedOutput(samples: UInt64) { let t = tick(); state.withLock { s in mark(&s.firstComposed, at: t); s.audio.composedSamples &+= samples } }
+    @discardableResult
+    func recordComposedOutput(samples: UInt64) -> Bool {
+        let t = tick()
+        return state.withLock { s in
+            let isFirst = s.firstComposed == nil
+            mark(&s.firstComposed, at: t); s.audio.composedSamples &+= samples
+            return isFirst
+        }
+    }
     func recordVADSkip() { state.withLock { $0.audio.vadSkips &+= 1 } }
     func recordTrimmedAudio(samples: UInt64) { state.withLock { $0.audio.trimmedSamples &+= samples } }
     func recordFallback() { state.withLock { $0.audio.fallbackCount &+= 1 } }
@@ -221,7 +256,15 @@ final class PipelineSessionRecorder: @unchecked Sendable {
         }
     }
     func recordInferenceFailed(id: UUID) { recordInferenceCompleted(id: id, succeeded: false) }
-    func recordPartialPresented() { let t = tick(); state.withLock { mark(&$0.partial, at: t) } }
+    @discardableResult
+    func recordPartialPresented() -> Bool {
+        let t = tick()
+        return state.withLock { s in
+            let isFirst = s.partial == nil
+            mark(&s.partial, at: t)
+            return isFirst
+        }
+    }
     func recordStopRequested() { let t = tick(); state.withLock { mark(&$0.stop, at: t) } }
     func recordFinalPresented() { let t = tick(); state.withLock { mark(&$0.final, at: t) } }
     func recordOutputHandoff(clipboardWritten: Bool, insertOutcome: PipelineInsertOutcome) { let t = tick(); state.withLock { s in mark(&s.output, at: t); s.outputMetrics = PipelineOutputMetrics(clipboardWritten: clipboardWritten, insertOutcome: insertOutcome, insertCompleted: insertOutcome.completed) } }

@@ -212,7 +212,11 @@ final class AudioCapture: NSObject, @unchecked Sendable {
         engine.reset()
     }
 
-    var droppedBufferCount: UInt64 { deliveryCoordinator?.droppedBufferCount ?? 0 }
+    var droppedBufferCount: UInt64 {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return deliveryCoordinator?.droppedBufferCount ?? 0
+    }
 
     func getCurrentLevel() -> Float {
         engine.inputNode.volume

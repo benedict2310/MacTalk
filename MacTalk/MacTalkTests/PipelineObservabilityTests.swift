@@ -4,6 +4,32 @@ import XCTest
 @testable import MacTalk
 
 final class PipelineObservabilityTests: XCTestCase {
+    func testSchemaOneLegacyLineDefaultsApplicationConversionAndSurvivesNextWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("pipeline-metrics.jsonl")
+        let legacy = makeReport(index: 1)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        var audio = try XCTUnwrap(object["audio"] as? [String: Any])
+        audio.removeValue(forKey: "applicationConversionNanoseconds")
+        object["audio"] = audio
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        try JSONDecoder().decode(PipelineSessionReport.self, from: legacyData)
+        try legacyData.write(to: url)
+        chmod(url.path, 0o600)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([10]))
+        try handle.close()
+
+        let store = PipelineMetricsStore(fileURL: url)
+        await store.record(makeReport(index: 2))
+        let reports = await store.reports(limit: 10)
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertEqual(reports.first?.context.modelID, "model-1")
+        XCTAssertEqual(reports.first?.audio.applicationConversionNanoseconds, 0)
+    }
+
     func testRecorderCalculatesDistinctCaptureAndCompositionLatencies() {
         let clock = TestPipelineClock()
         let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .whisper, modelID: "base", captureMode: .micOnly, language: "en", batteryMode: false, startedAt: Date()), nowNanoseconds: { clock.now })
