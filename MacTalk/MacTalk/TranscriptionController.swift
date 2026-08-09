@@ -357,8 +357,8 @@ final class TranscriptionController: @unchecked Sendable {
     private let chunkDurationMs: Int = 3000  // 3 seconds for better context
     private let firstChunkDurationMs: Int = 1500  // 1.5 seconds for fast first result
     private let samplesPerMs = 16  // 16kHz sample rate
-    private let maxFinalAudioSamples = 9_600_000  // 10 minutes at 16kHz mono
-    private let finalAudioTrimMarginSamples = 160_000  // Trim in 10s chunks to reduce churn
+    private let maxFinalAudioSamples: Int
+    private let finalAudioTrimMarginSamples: Int
     private let tailDrainMs: Int = 100
     private let diagnosticsQueue = DispatchQueue(label: "com.mactalk.audio.diagnostics", qos: .utility)
     private let audioDiagnosticsEnabled = false
@@ -419,7 +419,9 @@ final class TranscriptionController: @unchecked Sendable {
         settings: AppSettings = .shared,
         scheduler: any TranscriptionScheduler = DispatchTranscriptionScheduler(),
         metricsStore: any PipelineMetricsStoring = PipelineMetricsStore.shared,
-        batteryModeSnapshot: Bool = false
+        batteryModeSnapshot: Bool = false,
+        maxFinalAudioSamples: Int = 9_600_000,
+        finalAudioTrimMarginSamples: Int = 160_000
     ) {
         let mixer = AudioMixer()
         self.captureSession = captureSession
@@ -432,6 +434,8 @@ final class TranscriptionController: @unchecked Sendable {
         self.engine = engine
         self.metricsStore = metricsStore
         self.batteryModeSnapshot = batteryModeSnapshot
+        self.maxFinalAudioSamples = max(1, maxFinalAudioSamples)
+        self.finalAudioTrimMarginSamples = max(1, finalAudioTrimMarginSamples)
         self.hardwareValidationRecorder = AudioHardwareValidationRecorder.fromEnvironment()
         self.pendingFinalizationTask = nil
         self.audioState = OSAllocatedUnfairLock(
@@ -585,6 +589,9 @@ final class TranscriptionController: @unchecked Sendable {
         let recordingMode: Mode = settingsSnapshot.map {
             $0.captureMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
         } ?? mode
+        let recorderSettings = settingsSnapshot ?? recordingSettings.withCaptureMode(
+            recordingMode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
+        )
         DLOG("Transcription start requested: mode=\(recordingMode)")
 
         // Invalidate callbacks from any previous capture before resetting the
@@ -608,7 +615,7 @@ final class TranscriptionController: @unchecked Sendable {
         await finalizeRecorder(sessionID: previousSessionID, outcome: .cancelled, composition: previousComposition)
 
         let sessionID = audioSessionGate.begin()
-        installRecorder(for: sessionID, settings: recordingSettings)
+        installRecorder(for: sessionID, settings: recorderSettings)
 
         // Clear previous state
         micStream.reset()

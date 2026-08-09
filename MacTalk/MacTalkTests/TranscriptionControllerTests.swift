@@ -285,7 +285,8 @@ final class TranscriptionControllerTests: XCTestCase {
         let capture = DeterministicCaptureSession()
         capture.microphoneStartError = DeterministicCaptureSession.Error.microphoneStart
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
 
         do {
             try await controller.start(mode: .micOnly)
@@ -295,13 +296,17 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
     }
 
     func test_applicationCaptureStartFailureCleansUpBeforeSurfacing() async throws {
         let capture = DeterministicCaptureSession()
         capture.appStartError = DeterministicCaptureSession.Error.appStart
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
         let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
 
         do {
@@ -312,6 +317,157 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
+    }
+
+    func test_missingApplicationSourcePersistsExactlyOneStartFailureReport() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+
+        do {
+            try await controller.start(mode: .micPlusAppAudio)
+            XCTFail("Expected missing source failure")
+        } catch { }
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports[0].outcome, .startFailed)
+        XCTAssertEqual(reports[0].context.captureMode, .micPlusAppAudio)
+    }
+
+    func test_duplicateStopPersistsExactlyOneReport() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        controller.stop()
+        controller.stop()
+        await advanceStopScheduler()
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 10)
+        XCTAssertEqual(reports.count, 1)
+    }
+
+    func testStopThenRestartBeforeTailDrainKeepsReportsAndRejectsStaleMicrophoneCallback() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        let oldCallback = capture.microphoneCallbacks[0]
+        let oldID = capture.microphoneSessionIDs[0]
+        oldCallback(oldID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        controller.stop()
+        try await controller.start(mode: .micOnly)
+        await store.waitForCount(1)
+        let newCallback = capture.microphoneCallbacks[1]
+        let newID = capture.microphoneSessionIDs[1]
+        oldCallback(oldID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        newCallback(newID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        await controller.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertNotEqual(reports[0].context.id, reports[1].context.id)
+        XCTAssertEqual(reports.map { $0.audio.microphoneInputSamples }, [1, 1])
+    }
+
+    func testReplacementStartPersistsCancelledOldAndNewReportsExactlyOnce() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        try await controller.start(mode: .micOnly)
+        await store.waitForCount(1)
+        await controller.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 3)
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertEqual(reports.map(\.outcome), [.cancelled, .cancelled])
+        XCTAssertNotEqual(reports[0].context.id, reports[1].context.id)
+    }
+
+    func testApplicationLossFallbackIsPersistedAndStaleErrorCannotMutateReplacement() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let fallback = expectation(description: "fallback")
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let oldError = capture.errorCallbacks[0]
+        let oldID = capture.appSessionIDs[0]
+        capture.emitAppError(at: 0)
+        await fulfillment(of: [fallback], timeout: 1)
+        oldError(oldID, NSError(domain: "stale", code: 1))
+        capture.emitMicrophone(AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        await stopAndAdvance(controller)
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.capture.applicationLossEvents, 1)
+        XCTAssertEqual(report.audio.fallbackCount, 1)
+    }
+
+    func testFinalTrimLiveDropAndCompositionSnapshotArePersistedTogether() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: LifecycleTestEngine(), captureSession: capture, scheduler: scheduler, metricsStore: store,
+            maxFinalAudioSamples: 64, finalAudioTrimMarginSamples: 16
+        )
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(samples: [0.2], sampleRate: 16_000, firstSampleHostTime: 0))
+        capture.emitMicrophone(AudioCaptureFrame(samples: [Float](repeating: 0.2, count: 81), sampleRate: 16_000))
+        capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 7)
+        await stopAndAdvance(controller)
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertGreaterThan(report.audio.trimmedSamples, 0)
+        XCTAssertEqual(report.capture.microphoneDroppedBuffers, 7)
+        XCTAssertEqual(report.composition.invalidMicrophoneTimestamps, 1)
+    }
+
+    func testReportsPreserveExactProviderModelModeAndBatteryAttribution() async throws {
+        let store = BarrierPipelineMetricsStore()
+        let whisperCapture = DeterministicCaptureSession()
+        let whisper = TranscriptionController(
+            engine: DeterministicASREngine(provider: .whisper), captureSession: whisperCapture, scheduler: scheduler,
+            metricsStore: store, batteryModeSnapshot: true
+        )
+        let whisperSettings = SettingsSnapshot(provider: .whisper, whisperModelID: "whisper-test", language: "en", captureMode: .micOnly, showNotifications: true, autoPaste: false)
+        try await whisper.start(mode: .micOnly, settingsSnapshot: whisperSettings)
+        await whisper.cancelStart()
+        await store.waitForCount(1)
+
+        let parakeetCapture = DeterministicCaptureSession()
+        let parakeet = TranscriptionController(
+            engine: DeterministicASREngine(provider: .parakeet), captureSession: parakeetCapture, scheduler: scheduler,
+            metricsStore: store, batteryModeSnapshot: false
+        )
+        let parakeetSettings = SettingsSnapshot(provider: .parakeet, whisperModelID: "ignored", language: nil, captureMode: .micPlusAppAudio, showNotifications: true, autoPaste: false)
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await parakeet.start(mode: .micPlusAppAudio, audioSource: source, settingsSnapshot: parakeetSettings)
+        await parakeet.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.map { $0.context.provider }, [.whisper, .parakeet])
+        XCTAssertEqual(reports.map { $0.context.modelID }, ["whisper-test", "parakeet"])
+        XCTAssertEqual(reports.map { $0.context.captureMode }, [.micOnly, .micPlusAppAudio])
+        XCTAssertEqual(reports.map { $0.context.batteryMode }, [true, false])
     }
 
     func test_partialFinalAndLifecycleCallbacksSerializeAdversarialInferenceCompletion() async throws {
@@ -382,7 +538,8 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_startPreparationFailureStopsCaptureAndReportsError() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(prepareError: .prepare))
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
 
         do {
             try await controller.start(mode: .micOnly)
@@ -392,12 +549,16 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [.prepare])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
     }
 
     func test_deterministicSilenceDoesNotInvokeIncrementalOrFinalInference() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
         try await controller.start(mode: .micOnly)
         capture.emitMicrophone(AudioCaptureFrame(
             samples: DeterministicAudioFixtures.silence(count: 24_000),
@@ -408,6 +569,10 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertTrue(engine.processCalls.isEmpty)
         XCTAssertTrue(engine.finalizeCalls.isEmpty)
         XCTAssertEqual(engine.events.filter { $0 == .prepare || $0 == .reset }, [.prepare, .reset])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .noSpeech)
+        XCTAssertEqual(reports.first?.audio.vadSkips, 1)
     }
 
     func test_whisperUsesIncrementalChunkProcessing() {
