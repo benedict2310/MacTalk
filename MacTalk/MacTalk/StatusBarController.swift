@@ -128,6 +128,15 @@ final class StatusBarController {
         render()
     }
 
+    @objc func copyPerformanceReport() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !(await dependencies.pipelineDiagnostics.copyPerformanceReport()) {
+                NSSound.beep()
+            }
+        }
+    }
+
     @objc func checkPermissions() {
         StatusBarAlertPresenter.showPermissions(dependencies.permissionFlow.statusReport())
     }
