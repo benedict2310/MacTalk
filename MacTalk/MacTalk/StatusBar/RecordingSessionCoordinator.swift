@@ -1,18 +1,19 @@
 import Foundation
 
 final class SessionCleanup: @unchecked Sendable {
-    private let task: Task<Void, Never>
+    private let task: Task<Void, Error>
     // Keeps the session/controller alive until the terminal persistence task
     // has completed. The owner is released with this handle.
     private let owner: AnyObject
 
-    init(task: Task<Void, Never>, owner: AnyObject) {
+    init(task: Task<Void, Error>, owner: AnyObject) {
         self.task = task
         self.owner = owner
     }
 
-    func wait() async {
-        await task.value
+    func wait() async throws {
+        _ = owner
+        try await task.value
     }
 }
 
@@ -33,7 +34,7 @@ protocol TranscriptionSession: AnyObject {
         settingsSnapshot: SettingsSnapshot
     ) async throws
     func stop()
-    func stopAndWait() async
+    func stopAndWait() async throws
     /// Invalidates start synchronously and returns a strong durability handle.
     func requestCancelStart() -> SessionCleanup
 }
@@ -53,7 +54,7 @@ protocol RecordingSessionCoordinating: AnyObject {
     func provideAudioSource(requestID: UUID, source: AppPickerWindowController.AudioSource?)
     func respondToDownloadPrompt(requestID: UUID, approved: Bool)
     func stop()
-    func cleanup() async
+    func cleanup() async throws
 }
 
 /// Owns the complete lifecycle of one recording request. Every asynchronous
@@ -88,7 +89,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     // finishes.
     private struct PendingCancellation {
         let token: UUID
-        let task: Task<Void, Never>
+        let session: any TranscriptionSession
+        let startWork: Task<Void, Never>?
+        let cleanup: SessionCleanup
     }
     private var pendingCancellations: [UUID: PendingCancellation] = [:]
     private var engineActivityActive = false
@@ -114,7 +117,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     }
 
     func requestStart(mode: TranscriptionController.Mode) {
-        guard state.phase == .idle else { return }
+        guard state.phase == .idle, request == nil else { return }
         let snapshot = settingsSnapshot().withCaptureMode(
             mode == .micPlusAppAudio ? .micPlusAppAudio : .micOnly
         )
@@ -125,14 +128,28 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
             settings: snapshot,
             target: output.captureTarget()
         )
-        transition(.authorizing)
-        let priorCancellations = Array(pendingCancellations.values)
+        let priorCancellationIDs = Array(pendingCancellations.keys)
+        if priorCancellationIDs.isEmpty {
+            transition(.authorizing)
+        }
         work = Task { @MainActor [weak self] in
             guard let self else { return }
-            for cancellation in priorCancellations {
-                await cancellation.task.value
+            do {
+                for cancellationID in priorCancellationIDs {
+                    try await self.awaitPendingCancellation(cancellationID)
+                }
+            } catch {
+                guard self.owns(id) else { return }
+                self.work = nil
+                self.request = nil
+                self.transition(.idle, requestID: nil, mode: nil, selection: nil)
+                return
             }
-            guard !Task.isCancelled, self.owns(id), case .authorizing = self.state.phase else { return }
+            guard !Task.isCancelled, self.owns(id) else { return }
+            if case .idle = self.state.phase {
+                self.transition(.authorizing)
+            }
+            guard case .authorizing = self.state.phase else { return }
             let result = await permission.authorizeStart(mode: mode)
             guard self.owns(id), case .authorizing = self.state.phase else { return }
             switch result {
@@ -223,7 +240,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     func stop() {
         guard let request else { return }
         switch state.phase {
-        case .idle, .finalizing:
+        case .idle:
+            abort(request.id)
+        case .finalizing:
             return
         case .recording:
             work?.cancel()
@@ -239,13 +258,13 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         }
     }
 
-    func cleanup() async {
+    func cleanup() async throws {
         guard let request else {
             work?.cancel()
             work = nil
-            let cancellations = Array(pendingCancellations.values)
-            for cancellation in cancellations {
-                await cancellation.task.value
+            let cancellations = Array(pendingCancellations.keys)
+            for cancellationID in cancellations {
+                try await awaitPendingCancellation(cancellationID)
             }
             engine.recordingActivityChanged(false)
             engineActivityActive = false
@@ -256,11 +275,18 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         // Keep the request/session retained until the session has completed its
         // terminal metrics write. Cleanup is an explicit async durability
         // boundary; deinit remains best effort in TranscriptionController.
+        if pendingCancellations[request.id] != nil {
+            try await awaitPendingCancellation(request.id)
+            output.cancel()
+            self.request = nil
+            transition(.idle, requestID: nil, mode: nil, selection: nil)
+            return
+        }
         let session = request.session
         switch state.phase {
         case .recording, .finalizing:
             cancelOwnedWork(request.id)
-            await session?.stopAndWait()
+            try await session?.stopAndWait()
         default:
             // Let the session invalidate its own start operation first. This
             // avoids dropping a suspended start task before it can persist its
@@ -269,19 +295,18 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
                 let cleanup = session.requestCancelStart()
                 let cancelledWork = work
                 cancelOwnedWork(request.id)
-                registerCancellation(requestID: request.id, work: cancelledWork, cleanup: cleanup)
-                // Invalidate coordinator callbacks before awaiting the joined
-                // cancellation task; retain the request until all cleanup
-                // side effects finish.
-                transition(.idle, requestID: nil, mode: nil, selection: nil)
+                registerCancellation(requestID: request.id, work: cancelledWork, session: session, cleanup: cleanup)
+                // Invalidate coordinator callbacks through the cancelled work,
+                // but retain request/session identity until the joined cleanup
+                // and terminal persistence have completed.
             } else {
                 cancelOwnedWork(request.id)
                 transition(.idle, requestID: nil, mode: nil, selection: nil)
             }
         }
-        let cancellations = Array(pendingCancellations.values)
-        for cancellation in cancellations {
-            await cancellation.task.value
+        let cancellations = Array(pendingCancellations.keys)
+        for cancellationID in cancellations {
+            try await awaitPendingCancellation(cancellationID)
         }
         output.cancel()
         self.request = nil
@@ -411,13 +436,14 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         // Invalidate the session before cancelling coordinator work. This
         // closes the window where a canceled start could publish success.
         let session = request?.session
-        let cleanup = session?.requestCancelStart()
         let cancelledWork = work
         cancelOwnedWork(id)
-        if let cleanup {
+        if let session {
+            let cleanup = session.requestCancelStart()
             registerCancellation(
                 requestID: id,
                 work: cancelledWork,
+                session: session,
                 cleanup: cleanup
             )
         }
@@ -429,21 +455,38 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private func registerCancellation(
         requestID: UUID,
         work: Task<Void, Never>?,
+        session: any TranscriptionSession,
         cleanup: SessionCleanup
     ) {
-        let token = UUID()
-        let task = Task { @MainActor [weak self, work, cleanup] in
-            // Await both sides of cancellation. In particular, a cancelled
-            // coordinator task may still be suspended inside session.start;
-            // releasing its strong reference before it exits permits a
-            // replacement request to race the old session's finalization.
-            await work?.value
-            await cleanup.wait()
-            guard let self,
-                  self.pendingCancellations[requestID]?.token == token else { return }
-            self.pendingCancellations.removeValue(forKey: requestID)
+        pendingCancellations[requestID] = PendingCancellation(
+            token: UUID(),
+            session: session,
+            startWork: work,
+            cleanup: cleanup
+        )
+    }
+
+    private func awaitPendingCancellation(_ requestID: UUID) async throws {
+        while let pending = pendingCancellations[requestID] {
+            await pending.startWork?.value
+            do {
+                try await pending.cleanup.wait()
+                guard let current = pendingCancellations[requestID] else { return }
+                guard current.token == pending.token else { continue }
+                pendingCancellations.removeValue(forKey: requestID)
+                return
+            } catch {
+                if pendingCancellations[requestID]?.token == pending.token {
+                    pendingCancellations[requestID] = PendingCancellation(
+                        token: UUID(),
+                        session: pending.session,
+                        startWork: pending.startWork,
+                        cleanup: pending.session.requestCancelStart()
+                    )
+                }
+                throw error
+            }
         }
-        pendingCancellations[requestID] = PendingCancellation(token: token, task: task)
     }
 
     private func cancelOwnedWork(_ id: UUID) {

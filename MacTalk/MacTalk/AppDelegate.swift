@@ -73,7 +73,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // callers use the async cleanup contract; termination remains best
         // effort because AppKit does not await this callback.
         Task { @MainActor [weak self] in
-            await self?.statusBarController?.cleanup()
+            do {
+                try await self?.statusBarController?.cleanup()
+            } catch {
+                DLOG("Capture cleanup failed; retirement not proven")
+            }
         }
     }
 

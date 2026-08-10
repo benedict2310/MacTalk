@@ -301,6 +301,17 @@ final class PipelineSessionRecorder: @unchecked Sendable {
 
 // MARK: - Signposts and unified summary
 
+enum PipelineLog {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mactalk.app",
+        category: "pipeline"
+    )
+
+    static func captureRetirementFailed() {
+        logger.error("capture_retirement_failed")
+    }
+}
+
 enum PipelineObservabilityEvent: Sendable, Equatable {
     case sessionBegin(PipelineSessionContext)
     case sessionEnd(PipelineSessionContext)

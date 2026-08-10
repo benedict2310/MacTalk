@@ -257,7 +257,10 @@ final class DeterministicCaptureSession: @unchecked Sendable, TranscriptionCaptu
     private(set) var microphoneSessionIDs: [UUID] = []
     private(set) var appSessionIDs: [UUID] = []
     private(set) var stopCount = 0
+    private(set) var stopAndWaitCount = 0
     private(set) var stopAppAudioCount = 0
+    var stopAndWaitFailuresRemaining = 0
+    var stopAndWaitHook: (@Sendable () async -> Void)?
     var healthSnapshotValue = CaptureHealthMetrics.zero
     var healthSnapshot: CaptureHealthMetrics { healthSnapshotValue }
     var microphoneStartError: Swift.Error?
@@ -282,6 +285,14 @@ final class DeterministicCaptureSession: @unchecked Sendable, TranscriptionCaptu
     }
 
     func stop() { stopCount += 1 }
+    func stopAndWait() async throws {
+        stopAndWaitCount += 1
+        await stopAndWaitHook?()
+        if stopAndWaitFailuresRemaining > 0 {
+            stopAndWaitFailuresRemaining -= 1
+            throw ScreenCaptureLifecycleError.stopFailed
+        }
+    }
     func stopAppAudio() { stopAppAudioCount += 1 }
 
     func emitMicrophone(_ frame: AudioCaptureFrame, at index: Int = -1) {

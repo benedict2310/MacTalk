@@ -50,18 +50,53 @@ protocol ScreenCaptureStreamDriver: AnyObject, Sendable {
     func stopCapture(_ stream: Stream) async throws
 }
 
-/// Owns one start task and every stream produced by that task. `requestStop`
-/// only performs synchronous retirement bookkeeping and may be called from a
-/// callback/hot path. `stopAndWait` is the durable async boundary used by
-/// replacement and explicit cleanup.
+enum ScreenCaptureLifecycleError: Error, Equatable, Sendable {
+    case stopFailed
+}
+
+/// Owns one generation and every stream produced by that generation.
+/// `requestStop` only performs synchronous retirement bookkeeping and may be
+/// called from a callback/hot path. `stopAndWait` is the durable async
+/// boundary used by replacement and explicit cleanup.
 final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecked Sendable {
+    private final class Completion: @unchecked Sendable {
+        private let lock = NSLock()
+        private var result: Result<Void, Error>?
+        private var waiters: [CheckedContinuation<Void, Error>] = []
+
+        func resolve(_ result: Result<Void, Error>) -> Bool {
+            let (continuations, didResolve) = lock.withLock { () -> ([CheckedContinuation<Void, Error>], Bool) in
+                guard self.result == nil else { return ([], false) }
+                self.result = result
+                defer { waiters.removeAll() }
+                return (waiters, true)
+            }
+            for continuation in continuations {
+                continuation.resume(with: result)
+            }
+            return didResolve
+        }
+
+        func wait() async throws {
+            try await withCheckedThrowingContinuation { continuation in
+                let immediateResult = lock.withLock { () -> Result<Void, Error>? in
+                    if let result { return result }
+                    waiters.append(continuation)
+                    return nil
+                }
+                if let immediateResult { continuation.resume(with: immediateResult) }
+            }
+        }
+    }
+
     private final class Operation: @unchecked Sendable {
         let generation: UInt64
         let sessionID: UUID
+        let startCompletion = Completion()
         var retired = false
         var stream: Driver.Stream?
-        var startTask: Task<Void, Error>?
-        var stopTask: Task<Void, Never>?
+        var stopTask: Task<Void, Error>?
+        var stopToken: UInt64 = 0
         var active = false
 
         init(generation: UInt64, sessionID: UUID) {
@@ -90,46 +125,66 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
         onStreamError: @escaping @Sendable (UUID, Error) -> Void
     ) async throws {
         let (operation, previous) = reserveOperation(sessionID: sessionID)
-        if let previous {
-            issueStopIfStreamExists(previous)
-            await awaitRetirement(previous)
-        }
-        guard lock.withLock({ current === operation && !operation.retired }) else {
-            throw CancellationError()
-        }
-
-        let task = Task { [self] in
-            try await run(
-                operation,
-                request: request,
-                sessionID: sessionID,
-                onAudioSampleBuffer: onAudioSampleBuffer,
-                onStreamError: onStreamError
-            )
-        }
-        lock.withLock { operation.startTask = task }
-
         do {
-            try await task.value
+            if let previous {
+                do {
+                    try await awaitRetirement(previous)
+                } catch {
+                    // A replacement is not allowed to hide a generation whose
+                    // shutdown is unproven. Restore it as current so a later
+                    // stopAndWait can retry the same protected stream.
+                    lock.withLock {
+                        if current === operation { current = previous }
+                    }
+                    throw error
+                }
+            }
+            guard lock.withLock({ current === operation && !operation.retired }) else {
+                operation.startCompletion.resolve(.failure(CancellationError()))
+                throw CancellationError()
+            }
+
+            do {
+                try await run(
+                    operation,
+                    request: request,
+                    sessionID: sessionID,
+                    onAudioSampleBuffer: onAudioSampleBuffer,
+                    onStreamError: onStreamError
+                )
+                operation.startCompletion.resolve(.success(()))
+                if isRetired(operation) {
+                    try await stopIfNeeded(operation)
+                    clearIfCurrent(operation)
+                    throw CancellationError()
+                }
+            } catch {
+                let wasStartFailure = operation.startCompletion.resolve(.failure(error))
+                if wasStartFailure {
+                    try await stopIfNeeded(operation)
+                    clearIfCurrent(operation)
+                }
+                throw error
+            }
         } catch {
-            await stopIfNeeded(operation)
-            clearIfCurrent(operation)
+            operation.startCompletion.resolve(.failure(error))
             throw error
         }
     }
 
     /// Retires the current generation before any await. A late discovery
-    /// continuation therefore cannot publish a stream as active.
+    /// continuation therefore cannot publish a stream as active. It does not
+    /// issue a premature stop: only the durable boundary may do that.
     func requestStop() {
-        guard let operation = retireCurrent() else { return }
-        issueStopIfStreamExists(operation)
+        _ = retireCurrent()
     }
 
-    /// Waits for the retired start task, then waits for the one and only stop
-    /// operation for every stream that task produced.
-    func stopAndWait() async {
+    /// Waits for the generation's explicit start completion, then performs and
+    /// awaits the single-flight shutdown. Failed shutdown retains ownership so
+    /// the next call can retry it.
+    func stopAndWait() async throws {
         guard let operation = retireCurrent() else { return }
-        await awaitRetirement(operation)
+        try await awaitRetirement(operation)
     }
 
     private func reserveOperation(sessionID: UUID) -> (Operation, Operation?) {
@@ -164,68 +219,73 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
             onAudioSampleBuffer: onAudioSampleBuffer,
             onStreamError: onStreamError
         )
-        let canStart = lock.withLock { () -> Bool in
-            guard current === operation, !operation.retired else { return false }
+        lock.withLock {
             operation.stream = stream
-            return true
-        }
-        guard canStart else {
-            await stopIfNeeded(operation, stream: stream)
-            throw CancellationError()
-        }
-
-        try await driver.startCapture(stream)
-        let canPublish = lock.withLock { () -> Bool in
-            guard current === operation, !operation.retired else { return false }
+            // Conservatively retain ownership before start returns: a driver
+            // may have activated hardware before reporting a partial failure.
             operation.active = true
-            return true
         }
-        guard canPublish else {
-            await stopIfNeeded(operation, stream: stream)
-            throw CancellationError()
-        }
+        try await driver.startCapture(stream)
     }
 
-    private func awaitRetirement(_ operation: Operation) async {
-        if let startTask = lock.withLock({ operation.startTask }) {
-            _ = await startTask.result
+    private func isRetired(_ operation: Operation) -> Bool {
+        lock.withLock { operation.retired }
+    }
+
+    private func awaitRetirement(_ operation: Operation) async throws {
+        do {
+            try await operation.startCompletion.wait()
+        } catch {
+            do {
+                try await stopIfNeeded(operation)
+                clearIfCurrent(operation)
+            } catch {
+                throw error
+            }
+            throw error
         }
-        await stopIfNeeded(operation)
+        try await stopIfNeeded(operation)
         clearIfCurrent(operation)
     }
 
-    private func issueStopIfStreamExists(_ operation: Operation) {
-        let stream = lock.withLock { operation.stream }
-        guard let stream else { return }
-        let driver = self.driver
-        lock.withLock {
-            guard operation.stopTask == nil else { return }
-            operation.stopTask = Task {
-                do { try await driver.stopCapture(stream) } catch { }
+    private func stopIfNeeded(_ operation: Operation) async throws {
+        let (task, token): (Task<Void, Error>?, UInt64) = lock.withLock {
+            guard let stream = operation.stream else { return (nil, operation.stopToken) }
+            if let stopTask = operation.stopTask {
+                return (stopTask, operation.stopToken)
             }
-        }
-    }
-
-    private func stopIfNeeded(_ operation: Operation, stream: Driver.Stream? = nil) async {
-        let stopTask: Task<Void, Never>? = lock.withLock {
-            if let stream, operation.stream == nil {
-                operation.stream = stream
-            }
-            guard let stream = operation.stream else { return operation.stopTask }
-            if let stopTask = operation.stopTask { return stopTask }
+            operation.stopToken &+= 1
+            let token = operation.stopToken
             let driver = self.driver
-            let stopTask = Task {
-                do { try await driver.stopCapture(stream) } catch { }
-            }
+            let stopTask = Task { try await driver.stopCapture(stream) }
             operation.stopTask = stopTask
-            return stopTask
+            return (stopTask, token)
         }
-        await stopTask?.value
+        guard let task else {
+            clearIfCurrent(operation)
+            return
+        }
+        do {
+            try await task.value
+        } catch {
+            lock.withLock {
+                guard operation.stopToken == token else { return }
+                operation.stopTask = nil
+            }
+            throw ScreenCaptureLifecycleError.stopFailed
+        }
+        lock.withLock {
+            guard operation.stopToken == token else { return }
+            operation.stopTask = nil
+            operation.active = false
+            operation.stream = nil
+        }
     }
 
     private func clearIfCurrent(_ operation: Operation) {
         lock.withLock {
-            if current === operation { current = nil }
+            guard current === operation, operation.stream == nil else { return }
+            current = nil
         }
     }
 }
@@ -394,8 +454,8 @@ final class ScreenAudioCapture: NSObject, @unchecked Sendable {
         lifecycle.requestStop()
     }
 
-    func stopAndWait() async {
-        await lifecycle.stopAndWait()
+    func stopAndWait() async throws {
+        try await lifecycle.stopAndWait()
     }
 
     func stop() {

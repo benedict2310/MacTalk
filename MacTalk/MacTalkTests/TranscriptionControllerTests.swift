@@ -181,6 +181,86 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertEqual(storedCount, 1)
     }
 
+    func test_explicitCleanupRetriesFailedCaptureRetirementBeforeCompleting() async throws {
+        let capture = DeterministicCaptureSession()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        let retirementBaseline = capture.stopAndWaitCount
+        capture.stopAndWaitFailuresRemaining = 1
+        controller.stop()
+        await advanceStopScheduler()
+        for _ in 0..<100 {
+            if capture.stopAndWaitCount == retirementBaseline + 1 { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 1)
+        let firstRecordCount = await metricsStore.count
+        XCTAssertEqual(firstRecordCount, 0)
+
+        try await controller.stopAndWait()
+        await metricsStore.waitForCount(1)
+
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 2)
+        let completedRecordCount = await metricsStore.count
+        XCTAssertEqual(completedRecordCount, 1)
+    }
+
+    func test_concurrentExplicitCleanupWaitersShareRetirementFailureUntilSuccessfulRetry() async throws {
+        let capture = DeterministicCaptureSession()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        let retirementBaseline = capture.stopAndWaitCount
+        capture.stopAndWaitFailuresRemaining = 1
+        controller.stop()
+        await advanceStopScheduler()
+        for _ in 0..<100 where capture.stopAndWaitCount < retirementBaseline + 1 {
+            await Task.yield()
+        }
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 1)
+        XCTAssertEqual(metricsStore.count, 0)
+
+        let gate = AsyncSuspensionGate()
+        capture.stopAndWaitFailuresRemaining = 1
+        capture.stopAndWaitHook = { await gate.suspend() }
+        let first = Task { try await controller.stopAndWait() }
+        let second = Task { try await controller.stopAndWait() }
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        var failureCount = 0
+        for waiter in [first, second] {
+            do {
+                try await waiter.value
+            } catch is ScreenCaptureLifecycleError {
+                failureCount += 1
+            }
+        }
+        XCTAssertEqual(failureCount, 2)
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 2)
+        XCTAssertEqual(metricsStore.count, 0)
+
+        capture.stopAndWaitHook = nil
+        try await controller.stopAndWait()
+        await metricsStore.waitForCount(1)
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 3)
+        XCTAssertEqual(metricsStore.count, 1)
+    }
+
     func test_finalizationCompletionAwaitsDelayedMetricsPersistence() async throws {
         let capture = DeterministicCaptureSession()
         let store = DelayedPipelineMetricsStore()
@@ -1072,6 +1152,33 @@ final class TranscriptionControllerTests: XCTestCase {
             throw NSError(domain: "TranscriptionControllerTests", code: Int(setStatus))
         }
         return sampleBuffer
+    }
+}
+
+private actor AsyncSuspensionGate {
+    private var entered = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            releaseWaiter = continuation
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            enteredWaiter = continuation
+        }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
 
