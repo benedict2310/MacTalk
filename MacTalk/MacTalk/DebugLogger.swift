@@ -15,7 +15,7 @@ enum DebugLogMessage: Sendable {
     case event(String)
     case transcriptCompleted(characterCount: Int)
     case clipboardUpdated(characterCount: Int)
-    case error(description: String)
+    case operationFailed
 
     var rendered: String {
         switch self {
@@ -25,8 +25,7 @@ enum DebugLogMessage: Sendable {
             return "transcription.completed chars=\(characterCount)"
         case .clipboardUpdated(let characterCount):
             return "clipboard.updated chars=\(characterCount)"
-        case .error:
-            // Error descriptions can contain transcript or clipboard data.
+        case .operationFailed:
             return "operation.failed"
         }
     }

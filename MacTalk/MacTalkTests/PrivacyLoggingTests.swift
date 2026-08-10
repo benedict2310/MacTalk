@@ -13,12 +13,28 @@ final class PrivacyLoggingTests: XCTestCase {
 
         logger.log(.transcriptCompleted(characterCount: transcript.count))
         logger.log(.clipboardUpdated(characterCount: clipboard.count))
-        logger.log(.error(description: error.localizedDescription))
+        logger.log(.operationFailed)
 
         let output = sink.messages.joined(separator: "\n")
         XCTAssertFalse(output.contains(transcript))
         XCTAssertFalse(output.contains(clipboard))
         XCTAssertFalse(output.contains(error.localizedDescription))
+    }
+
+    func test_pipelineDiagnosticsSourcesNeverPassLocalizedErrors() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURLs = [
+            testsDirectory.appendingPathComponent("../MacTalk/TranscriptionController.swift"),
+            testsDirectory.appendingPathComponent("../MacTalk/Audio/AudioHardwareValidationRecorder.swift"),
+            testsDirectory.appendingPathComponent("../MacTalk/DebugLogger.swift")
+        ]
+
+        for sourceURL in sourceURLs {
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            XCTAssertFalse(source.contains("error.localizedDescription"), "raw error in \(sourceURL.lastPathComponent)")
+        }
+        let controller = try String(contentsOf: sourceURLs[0], encoding: .utf8)
+        XCTAssertFalse(controller.contains("recordApplicationLoss(sessionID: sessionID, error:"))
     }
 
     func test_whisperBridgeGuardRejectsGenericVariableArguments() {

@@ -32,6 +32,7 @@
 		324D5DEB6A98DBF07FCE11C9 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF01E16D9F042ED0D5426CE5 /* Permissions.swift */; };
 		36BE7A849EAF97B712375786 /* StatusMenuPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FF9AD343E04BC2892622DA6 /* StatusMenuPresenter.swift */; };
 		37407C0F05057C1A5732BF2F /* VerifiedParakeetModelLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EC92E3B0E1A975F4EABECA /* VerifiedParakeetModelLoaderTests.swift */; };
+		3BE94AEA79AD604E9D785F35 /* AudioHardwareValidationRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE4CE10A44865EAC09F17C7C /* AudioHardwareValidationRecorderTests.swift */; };
 		3DC3B37AAA1125B354C6348F /* ParakeetLegacyCompiledCleanerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62D1940C92BEB0A193A7B55D /* ParakeetLegacyCompiledCleanerTests.swift */; };
 		40548D0E1CD2E94BB6EBAC8E /* ParakeetModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 858BDA8AE1364136FC78E82D /* ParakeetModelDownloader.swift */; };
 		40A85464FD5592824995E7ED /* NotificationManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */; };
@@ -264,6 +265,7 @@
 		C657766293ADBF02FDD74B36 /* AppPickerWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPickerWindowController.swift; sourceTree = "<group>"; };
 		CC13B415ED06C97834D8484E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		CDABAA799E48D4CA3D9D1764 /* ModelDownloadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadCoordinator.swift; sourceTree = "<group>"; };
+		CE4CE10A44865EAC09F17C7C /* AudioHardwareValidationRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHardwareValidationRecorderTests.swift; sourceTree = "<group>"; };
 		CE4ECEB815513716AF71BF94 /* AutoInsertManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoInsertManager.swift; sourceTree = "<group>"; };
 		D07CC2CA70BBF14E6AFCB181 /* NotificationManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManagerTests.swift; sourceTree = "<group>"; };
 		D16C4E018975F87D9DE6D45F /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
@@ -391,6 +393,7 @@
 				6E02C702E7A93C3C3EB66EC4 /* AppSettingsTests.swift */,
 				98501838F29AF7863AE8C6B7 /* AudioCaptureIntegrationTests.swift */,
 				6E1D05DC2005455D469C9D44 /* AudioCompositionTests.swift */,
+				CE4CE10A44865EAC09F17C7C /* AudioHardwareValidationRecorderTests.swift */,
 				02D5003AF706F6B2915203FC /* AudioLevelMonitorTests.swift */,
 				99BBEB159A75AC4718D50B49 /* AudioMixerTests.swift */,
 				E50295A8423A63C0C24A987E /* BoundedModelDownloadTransportTests.swift */,
@@ -837,6 +840,7 @@
 				4E3418A79136E93D144D1A3E /* AppSettingsTests.swift in Sources */,
 				0804E7DC8A6B15ABA6101DAB /* AudioCaptureIntegrationTests.swift in Sources */,
 				0B067F0E48F672266A45B3B2 /* AudioCompositionTests.swift in Sources */,
+				3BE94AEA79AD604E9D785F35 /* AudioHardwareValidationRecorderTests.swift in Sources */,
 				C155E813AAF79117C800B508 /* AudioLevelMonitorTests.swift in Sources */,
 				F723E50096B1DF47CDE135DE /* AudioMixerTests.swift in Sources */,
 				092DD0079ED5006082CEBF9C /* BoundedModelDownloadTransportTests.swift in Sources */,

@@ -1508,7 +1508,7 @@ final class TranscriptionController: @unchecked Sendable {
                         }
                     }
                 } catch {
-                    DebugLogger.shared.log(.error(description: error.localizedDescription))
+                    DebugLogger.shared.log(.operationFailed)
                 }
             }
 
@@ -1583,7 +1583,7 @@ final class TranscriptionController: @unchecked Sendable {
             inferenceFailed = true
             recorder(for: sessionID)?.recordInferenceCompleted(id: finalInferenceID, succeeded: false)
             recorder(for: sessionID)?.recordResourceCheckpoint(residentMemoryBytes: residentMemoryBytes())
-            DebugLogger.shared.log(.error(description: error.localizedDescription))
+            DebugLogger.shared.log(.operationFailed)
         }
 
         // A partial result is still useful when final inference fails. Wait for
@@ -1664,13 +1664,10 @@ final class TranscriptionController: @unchecked Sendable {
 
     private func handleAppAudioError(_ error: Error, sessionID: UUID) {
         guard audioSessionGate.accepts(sessionID) else { return }
-        DebugLogger.shared.log(.error(description: error.localizedDescription))
+        DebugLogger.shared.log(.operationFailed)
         recorder(for: sessionID)?.recordApplicationLoss()
         recorder(for: sessionID)?.recordFallback()
-        hardwareValidationRecorder.recordApplicationLoss(
-            sessionID: sessionID,
-            error: error.localizedDescription
-        )
+        hardwareValidationRecorder.recordApplicationLoss(sessionID: sessionID)
 
         // Notify that app audio was lost
         if let onAppAudioLost {
