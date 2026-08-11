@@ -256,11 +256,25 @@ final class DeterministicCaptureSession: @unchecked Sendable, TranscriptionCaptu
     private(set) var errorCallbacks: [@Sendable (UUID, Swift.Error) -> Void] = []
     private(set) var microphoneSessionIDs: [UUID] = []
     private(set) var appSessionIDs: [UUID] = []
+    private struct StopAndWaitState {
+        var count = 0
+        var failuresRemaining = 0
+        var hook: (@Sendable () async -> Void)?
+    }
+
     private(set) var stopCount = 0
-    private(set) var stopAndWaitCount = 0
     private(set) var stopAppAudioCount = 0
-    var stopAndWaitFailuresRemaining = 0
-    var stopAndWaitHook: (@Sendable () async -> Void)?
+    private let stopAndWaitLock = NSLock()
+    private var stopAndWaitState = StopAndWaitState()
+    var stopAndWaitCount: Int { stopAndWaitLock.withLock { stopAndWaitState.count } }
+    var stopAndWaitFailuresRemaining: Int {
+        get { stopAndWaitLock.withLock { stopAndWaitState.failuresRemaining } }
+        set { stopAndWaitLock.withLock { stopAndWaitState.failuresRemaining = newValue } }
+    }
+    var stopAndWaitHook: (@Sendable () async -> Void)? {
+        get { stopAndWaitLock.withLock { stopAndWaitState.hook } }
+        set { stopAndWaitLock.withLock { stopAndWaitState.hook = newValue } }
+    }
     var healthSnapshotValue = CaptureHealthMetrics.zero
     var healthSnapshot: CaptureHealthMetrics { healthSnapshotValue }
     var microphoneStartError: Swift.Error?
@@ -286,12 +300,17 @@ final class DeterministicCaptureSession: @unchecked Sendable, TranscriptionCaptu
 
     func stop() { stopCount += 1 }
     func stopAndWait() async throws {
-        stopAndWaitCount += 1
-        await stopAndWaitHook?()
-        if stopAndWaitFailuresRemaining > 0 {
-            stopAndWaitFailuresRemaining -= 1
-            throw ScreenCaptureLifecycleError.stopFailed
+        let hook = stopAndWaitLock.withLock { () -> (@Sendable () async -> Void)? in
+            stopAndWaitState.count += 1
+            return stopAndWaitState.hook
         }
+        await hook?()
+        let shouldFail = stopAndWaitLock.withLock { () -> Bool in
+            guard stopAndWaitState.failuresRemaining > 0 else { return false }
+            stopAndWaitState.failuresRemaining -= 1
+            return true
+        }
+        if shouldFail { throw ScreenCaptureLifecycleError.stopFailed }
     }
     func stopAppAudio() { stopAppAudioCount += 1 }
 
