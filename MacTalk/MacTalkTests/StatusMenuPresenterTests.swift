@@ -18,6 +18,7 @@ final class StatusMenuPresenterTests: XCTestCase {
             StatusMenuPresenter.ItemID.model,
             StatusMenuPresenter.ItemID.progress,
             "",
+            StatusMenuPresenter.ItemID.performanceReport,
             StatusMenuPresenter.ItemID.settings,
             StatusMenuPresenter.ItemID.permissions,
             "",
@@ -28,7 +29,16 @@ final class StatusMenuPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.menu.items[1].action, #selector(StatusBarController.startMicPlusApp))
         XCTAssertEqual(presenter.menu.items[2].action, #selector(StatusBarController.stopRecording))
         XCTAssertEqual(presenter.menu.items[4].keyEquivalent, "p")
-        XCTAssertEqual(presenter.menu.items[9].keyEquivalent, ",")
+        XCTAssertEqual(presenter.menu.items[9].action, #selector(StatusBarController.copyPerformanceReport))
+        XCTAssertEqual(
+            presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.title,
+            "Copy Performance Report"
+        )
+        XCTAssertEqual(
+            presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.action,
+            #selector(StatusBarController.copyPerformanceReport)
+        )
+        XCTAssertEqual(presenter.menu.items[10].keyEquivalent, ",")
     }
 
     func test_renderUpdatesEnablementChecksAndShortcutTitles() {

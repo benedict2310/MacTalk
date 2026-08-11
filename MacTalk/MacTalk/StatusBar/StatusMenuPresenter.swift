@@ -12,6 +12,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         static let model = "engine.model"
         static let parakeet = "engine.parakeet"
         static let progress = "engine.downloadProgress"
+        static let performanceReport = "application.performanceReport"
         static let settings = "application.settings"
         static let permissions = "application.permissions"
         static let about = "application.about"
@@ -63,6 +64,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         menu.addItem(modelItem)
         menu.addItem(progressItem)
         menu.addItem(.separator())
+        menu.addItem(Self.item(id: ItemID.performanceReport, title: "Copy Performance Report", action: #selector(StatusBarController.copyPerformanceReport), target: target))
         menu.addItem(Self.item(id: ItemID.settings, title: "Settings...", action: #selector(StatusBarController.showSettings), target: target, keyEquivalent: ","))
         menu.addItem(Self.item(id: ItemID.permissions, title: "Check Permissions", action: #selector(StatusBarController.checkPermissions), target: target))
         menu.addItem(.separator())

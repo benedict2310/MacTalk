@@ -41,6 +41,29 @@ protocol NotificationSubmitting: AnyObject {
 }
 
 @MainActor
+protocol PipelineDiagnosticsClient: AnyObject {
+    func copyPerformanceReport() async -> Bool
+}
+
+@MainActor
+final class SystemPipelineDiagnosticsClient: PipelineDiagnosticsClient {
+    private let store: any PipelineMetricsStoring
+    private let clipboard: any ClipboardWriting
+
+    init(
+        store: any PipelineMetricsStoring = PipelineMetricsStore.shared,
+        clipboard: any ClipboardWriting = SystemClipboardWriter()
+    ) {
+        self.store = store
+        self.clipboard = clipboard
+    }
+
+    func copyPerformanceReport() async -> Bool {
+        clipboard.write(await store.formattedReport(limit: 20))
+    }
+}
+
+@MainActor
 protocol StatusBarSettingsReading: AnyObject {
     var snapshot: SettingsSnapshot { get }
     func setAutoPaste(_ enabled: Bool)
@@ -221,6 +244,7 @@ struct StatusBarDependencies {
     let download: any (ModelDownloadCoordinating & ModelRequirementDownloading)
     let sessions: any TranscriptionSessionFactory
     let permissionClient: any PermissionClient
+    let pipelineDiagnostics: any PipelineDiagnosticsClient
 
     init(
         settings: any StatusBarSettingsReading,
@@ -231,7 +255,8 @@ struct StatusBarDependencies {
         engine: any EngineLifecycleCoordinating,
         download: any (ModelDownloadCoordinating & ModelRequirementDownloading),
         sessions: any TranscriptionSessionFactory,
-        permissionClient: any PermissionClient
+        permissionClient: any PermissionClient,
+        pipelineDiagnostics: any PipelineDiagnosticsClient
     ) {
         self.settings = settings
         self.permissionFlow = permissionFlow
@@ -242,6 +267,7 @@ struct StatusBarDependencies {
         self.download = download
         self.sessions = sessions
         self.permissionClient = permissionClient
+        self.pipelineDiagnostics = pipelineDiagnostics
     }
 
     static func live(notificationManager: NotificationManager) -> StatusBarDependencies {
@@ -279,7 +305,8 @@ struct StatusBarDependencies {
             engine: engine,
             download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
             sessions: ProductionTranscriptionSessionFactory(),
-            permissionClient: permissionClient
+            permissionClient: permissionClient,
+            pipelineDiagnostics: SystemPipelineDiagnosticsClient()
         )
     }
 }

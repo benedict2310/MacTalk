@@ -8,7 +8,7 @@
 import Foundation
 @preconcurrency import AVFoundation
 
-enum ASRProvider: String, CaseIterable, Sendable {
+enum ASRProvider: String, CaseIterable, Codable, Sendable {
     case whisper
     case parakeet
 

@@ -80,7 +80,7 @@ struct AudioCompositionConfiguration: Sendable, Equatable {
     }
 }
 
-struct AudioCompositionMetrics: Sendable, Equatable {
+struct AudioCompositionMetrics: Codable, Sendable, Equatable {
     var lateFramesDropped = 0
     var bufferedOverlapFramesDropped = 0
     var preAnchorFramesDropped = 0

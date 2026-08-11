@@ -142,6 +142,37 @@ this store. `StatusBarController` observes the notification on the main queue;
 engine lifecycle receives an immutable snapshot and prewarms only while idle.
 The HUD receives controller partial/final and level callbacks on MainActor.
 
+## Pipeline observability
+
+`PipelineSessionRecorder` owns one metadata-only report per session. Its
+session dimensions include provider, model ID, capture mode, language, and
+battery mode. Typed terminal outcomes are `completed`, `noSpeech`, `cancelled`,
+`startFailed`, and `inferenceFailed`; transcript content is never part of a
+report.
+
+Capture and composition are separate boundaries: the first accepted capture
+callback identifies capture arrival, while the first composed audio frame
+identifies timestamp-aligned mixed output. Session timing also marks prepare,
+queue, incremental inference, final inference, first partial, stop-to-final,
+and output-handoff boundaries. Real-time factor is inference duration divided
+by audio duration, using 16,000 samples per second for the normalized stream.
+
+`PipelineMetricsStore` writes bounded JSONL locally to
+`~/Library/Logs/MacTalk/pipeline-metrics.jsonl`, retaining at most 100 records
+and 512 KiB. The privacy boundary contains no transcript text, audio samples, target
+application identity, or raw errors. The status-bar action **Copy
+Performance Report** copies this metadata-only report only on explicit user
+request.
+
+The typed `com.mactalk.app` / `pipeline` logger and signposts
+`TranscriptionSession`, `Inference`, `FirstAudio`, `FirstComposedAudio`, and
+`FirstPartial` provide local diagnostics. CPU and GPU figures are Instruments
+measurements, not continuously collected runtime metrics. Hardware validation
+is bounded asynchronous hardware validation: opt-in, asynchronous, bounded,
+and metadata-only. Deterministic tests use injected dependencies, while the
+hosted Thread Sanitizer lane checks race safety. No flaky absolute hosted
+performance threshold is enforced.
+
 ## Build evidence
 
 The reproducible configuration is in `project.yml`: macOS 26.0 deployment,
