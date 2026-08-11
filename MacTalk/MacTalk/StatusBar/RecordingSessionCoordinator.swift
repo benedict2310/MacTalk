@@ -96,6 +96,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private var pendingCancellations: [UUID: PendingCancellation] = [:]
     private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
+    var hasPendingRequest: Bool { request != nil }
     var onEvent: ((RecordingSessionEvent) -> Void)?
 
     init(

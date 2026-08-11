@@ -201,7 +201,7 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
 
         harness.coordinator.requestStart(mode: .micOnly)
         await harness.waitFor { harness.session.asyncCancelStarts == 2 }
-        await Task.yield()
+        await harness.waitFor { !harness.coordinator.hasPendingRequest }
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
         XCTAssertNil(harness.coordinator.state.requestID)
         XCTAssertEqual(harness.permission.authorizeCount, 0)
