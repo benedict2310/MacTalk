@@ -55,7 +55,12 @@ not own a concrete Whisper-only API.
 
 State transitions are serialized at their ownership boundary. A provider/model
 change while recording is deferred until idle; a failed app-audio stream
-preserves committed microphone timeline and falls back to mic-only.
+preserves committed microphone timeline and falls back to mic-only. Before
+changing a concurrency-sensitive boundary, define its generation identity,
+linearization point, waiter semantics, resource-retention boundary, and
+adversarial replacement/stop/failure traces in the lifecycle contract required
+by [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md). Generation checks alone do not prove
+exactly-once terminal delivery or cleanup isolation.
 
 ## Audio timeline and concurrency
 

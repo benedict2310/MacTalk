@@ -32,6 +32,7 @@ Core technical documentation for developers
 
 - **[ARCHITECTURE.md](development/ARCHITECTURE.md)** - System architecture, components, and data flow
 - **[SETUP.md](development/SETUP.md)** - Development environment setup guide
+- **[AGENT_WORKFLOW.md](development/AGENT_WORKFLOW.md)** - Lifecycle contracts, review gates, worker budgets, and risk-based validation
 - **Historical: [XCODE_BUILD.md](development/XCODE_BUILD.md)** - Superseded Xcode project configuration and build settings; use [SETUP.md](development/SETUP.md) for current instructions
 
 ### ✨ [Features](features/)

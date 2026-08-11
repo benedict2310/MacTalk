@@ -883,12 +883,16 @@ smallest production change that makes them pass.
 
 ### 16.6 Required verification after implementation changes
 
-- Run focused tests during each red/green cycle.
-- Run the complete deterministic unit lane.
-- Run the TSan-compatible lane for concurrency-sensitive storage and session changes.
-- Run `./build.sh run` after every edit so the running application reflects the
-  current source.
+- Run focused tests during each red/green cycle and the complete deterministic
+  unit lane before merging production changes.
+- Run the TSan-compatible lane for concurrency-sensitive storage and session
+  changes; it is not required for documentation, test-only, or routine UI work.
+- Run `./build.sh run` once for a coherent runtime batch when manual app
+  validation is needed; documentation, test-only, and CI-only edits do not
+  require app restart.
 - Run the real-model quality lane when vocabulary hinting changes.
+- Follow the lifecycle-contract, review, worker-budget, and validation rules in
+  [`AGENT_WORKFLOW.md`](../development/AGENT_WORKFLOW.md).
 
 ---
 
