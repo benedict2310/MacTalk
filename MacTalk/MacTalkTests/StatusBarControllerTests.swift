@@ -33,6 +33,17 @@ final class StatusBarControllerTests: XCTestCase {
         XCTAssertEqual(permissionFlow.autoPasteCallCount, 0)
     }
 
+    func test_finalizingKeepsStopEnabledForExplicitRetirementRetry() {
+        let state = StatusBarViewStateReducer.reduce(
+            recording: RecordingSessionState(phase: .finalizing, requestID: UUID(), mode: .micOnly, selection: nil),
+            settings: SettingsSnapshot(provider: .whisper, whisperModelID: "model", language: "en", captureMode: .micOnly, showNotifications: false, autoPaste: false),
+            permission: PermissionViewState(microphone: .granted, screenRecordingGranted: true, accessibilityTrusted: true, effectiveAutoPaste: false),
+            download: .idle,
+            shortcuts: .empty
+        )
+        XCTAssertTrue(state.stopEnabled)
+    }
+
     func test_statusBarIntentsAreStableTypedValues() {
         XCTAssertEqual(StatusBarIntent.startMicOnly, .startMicOnly)
         XCTAssertNotEqual(StatusBarIntent.startMicOnly, .startMicPlusAppAudio)

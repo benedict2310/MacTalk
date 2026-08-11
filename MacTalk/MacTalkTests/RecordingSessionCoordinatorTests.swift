@@ -133,16 +133,41 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(appHarness.session.starts.first?.source?.name, "System")
     }
 
-    func test_toggleDuringFinalizationLeavesFinalizationToOwnIdleTransition() async throws {
+    func test_toggleDuringFinalizationRetriesCleanupAndReturnsIdle() async throws {
         let harness = RecordingHarness()
         harness.coordinator.toggle(mode: .micOnly)
         await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.session.stopSuspended = true
         harness.coordinator.stop()
 
         harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.session.stopAndWaitStarted }
+        harness.session.releaseStopAndWait()
+        await harness.waitFor { harness.coordinator.state.phase == .idle }
 
-        XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
         XCTAssertEqual(harness.session.stopCount, 1)
+        XCTAssertEqual(harness.session.stopAndWaitCount, 1)
+    }
+
+    func test_staleFinalizationRetryCannotTearDownReplacementRecording() async throws {
+        let harness = RecordingHarness()
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.session.stopSuspended = true
+        harness.coordinator.stop()
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.waitFor { harness.session.stopAndWaitStarted }
+
+        harness.session.emitFinalizationComplete()
+        await harness.waitFor { harness.coordinator.state.phase == .idle }
+        let cancelBaseline = harness.output.cancelCount
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+
+        harness.session.releaseStopAndWait()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(harness.coordinator.state.phase, .recording)
+        XCTAssertEqual(harness.output.cancelCount, cancelBaseline)
     }
 
     func test_cleanupAwaitsCancelledStartBeforeReleasingSession() async throws {

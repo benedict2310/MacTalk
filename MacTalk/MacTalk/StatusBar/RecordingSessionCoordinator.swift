@@ -94,6 +94,12 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         let cleanup: SessionCleanup
     }
     private var pendingCancellations: [UUID: PendingCancellation] = [:]
+    private struct FinalizationRetry {
+        let requestID: UUID
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+    private var finalizationRetry: FinalizationRetry?
     private var engineActivityActive = false
     private(set) var state: RecordingSessionState = .idle
     var hasPendingRequest: Bool { request != nil }
@@ -183,9 +189,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
              .downloadingModel, .resolvingEngine, .starting, .recording:
             stop()
         case .finalizing:
-            // Finalization owns the transition back to idle; a second toggle
-            // cannot legally stop or start another request in this phase.
-            return
+            if let request { requestFinalizationRetry(request.id) }
         }
     }
 
@@ -377,6 +381,36 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
                 self?.fail(id, message: error.localizedDescription)
             }
         }
+    }
+
+    private func requestFinalizationRetry(_ requestID: UUID) {
+        guard owns(requestID), finalizationRetry?.requestID != requestID,
+              let session = request?.session else { return }
+        let token = UUID()
+        let task = Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            do {
+                try await session.stopAndWait()
+            } catch {
+                self.clearFinalizationRetry(requestID: requestID, token: token)
+                return
+            }
+            guard self.owns(requestID), self.state.phase == .finalizing else {
+                self.clearFinalizationRetry(requestID: requestID, token: token)
+                return
+            }
+            self.output.cancel()
+            self.request = nil
+            self.transition(.idle, requestID: nil, mode: nil, selection: nil)
+            self.clearFinalizationRetry(requestID: requestID, token: token)
+        }
+        finalizationRetry = FinalizationRetry(requestID: requestID, token: token, task: task)
+    }
+
+    private func clearFinalizationRetry(requestID: UUID, token: UUID) {
+        guard finalizationRetry?.requestID == requestID,
+              finalizationRetry?.token == token else { return }
+        finalizationRetry = nil
     }
 
     private func wire(session: any TranscriptionSession, requestID: UUID) {

@@ -171,9 +171,11 @@ final class PipelineObservabilityTests: XCTestCase {
         recorder.recordInferenceQueued(id: failedID, kind: .final, audioSamples: 8_000)
         recorder.recordInferenceFailed(id: failedID)
         let report = recorder.finish(outcome: .inferenceFailed, capture: .zero, composition: .init())
-        XCTAssertEqual(report.finalInference.failedCount, 1)
-        XCTAssertEqual(report.finalInference.completedCount, 2)
-        XCTAssertEqual(report.finalInference.realTimeFactor!, 2.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(report.queue.failedCount, 1)
+        XCTAssertEqual(report.finalInference.failedCount, 0)
+        XCTAssertEqual(report.finalInference.completedCount, 1)
+        XCTAssertEqual(report.finalInference.audioSamples, 16_000)
+        XCTAssertEqual(report.finalInference.realTimeFactor!, 1.0, accuracy: 0.001)
     }
 
     func testFormatterIsolatesStatisticsByProviderModelAndModeDimension() async {

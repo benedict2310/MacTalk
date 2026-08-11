@@ -256,8 +256,9 @@ final class PipelineSessionRecorder: @unchecked Sendable {
     func recordInferenceCompleted(id: UUID, succeeded: Bool) {
         let t = tick(); state.withLock { s in
             guard let item = s.inference.removeValue(forKey: id) else { return }
-            let duration = item.startedAt.map { delta(t, $0) } ?? 0
             s.queue.completedCount &+= 1; if !succeeded { s.queue.failedCount &+= 1 }; s.pending = s.pending > 0 ? s.pending - 1 : 0
+            guard let startedAt = item.startedAt else { return }
+            let duration = delta(t, startedAt)
             switch item.kind {
             case .incremental: s.incrementalDuration &+= duration; s.incrementalAudio &+= item.audioSamples; s.incrementalCompleted &+= 1; if succeeded { s.incrementalSucceeded &+= 1 } else { s.incrementalFailed &+= 1 }
             case .final: s.finalDuration &+= duration; s.finalAudio &+= item.audioSamples; s.finalCompleted &+= 1; if succeeded { s.finalSucceeded &+= 1 } else { s.finalFailed &+= 1 }

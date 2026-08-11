@@ -190,8 +190,9 @@ struct StatusBarViewStateReducer {
         let startEnabled = recording.phase == .idle && !blockingDownload
         let stopEnabled: Bool = switch recording.phase {
         case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
-             .downloadingModel, .resolvingEngine, .starting, .recording: true
-        case .idle, .finalizing: false
+             .downloadingModel, .resolvingEngine, .starting, .recording,
+             .finalizing: true
+        case .idle: false
         }
         return StatusBarViewState(
             recordingPhase: recording.phase,
