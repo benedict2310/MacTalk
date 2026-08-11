@@ -92,6 +92,7 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
     private final class Operation: @unchecked Sendable {
         let generation: UInt64
         let sessionID: UUID
+        let predecessor: Operation?
         let startCompletion = Completion()
         var retired = false
         var stream: Driver.Stream?
@@ -99,9 +100,10 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
         var stopToken: UInt64 = 0
         var active = false
 
-        init(generation: UInt64, sessionID: UUID) {
+        init(generation: UInt64, sessionID: UUID, predecessor: Operation?) {
             self.generation = generation
             self.sessionID = sessionID
+            self.predecessor = predecessor
         }
     }
 
@@ -116,6 +118,10 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
 
     var hasActiveStream: Bool {
         lock.withLock { current?.active == true && current?.retired == false }
+    }
+
+    var currentGeneration: UInt64? {
+        lock.withLock { current?.generation }
     }
 
     func start(
@@ -192,7 +198,7 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
             let previous = current
             previous?.retired = true
             nextGeneration &+= 1
-            let operation = Operation(generation: nextGeneration, sessionID: sessionID)
+            let operation = Operation(generation: nextGeneration, sessionID: sessionID, predecessor: previous)
             current = operation
             return (operation, previous)
         }
@@ -233,19 +239,19 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
     }
 
     private func awaitRetirement(_ operation: Operation) async throws {
-        do {
-            try await operation.startCompletion.wait()
-        } catch {
+        var candidate: Operation? = operation
+        var firstStartFailure: Error?
+        while let currentCandidate = candidate {
             do {
-                try await stopIfNeeded(operation)
-                clearIfCurrent(operation)
+                try await currentCandidate.startCompletion.wait()
             } catch {
-                throw error
+                if firstStartFailure == nil { firstStartFailure = error }
             }
-            throw error
+            try await stopIfNeeded(currentCandidate)
+            candidate = currentCandidate.predecessor
         }
-        try await stopIfNeeded(operation)
         clearIfCurrent(operation)
+        if let firstStartFailure { throw firstStartFailure }
     }
 
     private func stopIfNeeded(_ operation: Operation) async throws {
@@ -261,10 +267,7 @@ final class ScreenCaptureLifecycle<Driver: ScreenCaptureStreamDriver>: @unchecke
             operation.stopTask = stopTask
             return (stopTask, token)
         }
-        guard let task else {
-            clearIfCurrent(operation)
-            return
-        }
+        guard let task else { return }
         do {
             try await task.value
         } catch {

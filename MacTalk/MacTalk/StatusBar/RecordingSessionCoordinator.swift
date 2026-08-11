@@ -173,7 +173,11 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     func toggle(mode: TranscriptionController.Mode) {
         switch state.phase {
         case .idle:
-            requestStart(mode: mode)
+            if let request {
+                abort(request.id)
+            } else {
+                requestStart(mode: mode)
+            }
         case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
              .downloadingModel, .resolvingEngine, .starting, .recording:
             stop()

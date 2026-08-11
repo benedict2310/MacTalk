@@ -91,6 +91,29 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.state.phase, .idle)
     }
 
+    func test_toggleCancelsStartQueuedBehindPendingRetirement() async throws {
+        let harness = RecordingHarness()
+        harness.session.startSuspended = true
+        harness.session.cancelSuspended = true
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .starting }
+        harness.permission.resetAuthorizeCount()
+        harness.coordinator.stop()
+
+        harness.coordinator.requestStart(mode: .micOnly)
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        harness.coordinator.toggle(mode: .micOnly)
+        await harness.session.waitForCancelStart()
+        harness.session.releaseCancel()
+        harness.session.releaseStart()
+        await harness.waitFor { harness.session.releasedSessions == 1 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(harness.permission.authorizeCount, 0)
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        XCTAssertNil(harness.coordinator.state.requestID)
+    }
+
     func test_toggleStartsBothShortcutModesUsingRequestedMode() async throws {
         let micHarness = RecordingHarness()
         micHarness.coordinator.toggle(mode: .micOnly)

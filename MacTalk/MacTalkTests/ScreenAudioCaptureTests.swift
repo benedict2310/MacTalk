@@ -104,6 +104,33 @@ final class ScreenAudioCaptureTests: XCTestCase {
         try await lifecycle.stopAndWait()
     }
 
+    func test_overlappingReplacementsRetainOldFailedRetirementForRetry() async throws {
+        let driver = StatefulScreenStreamDriver()
+        let lifecycle = ScreenCaptureLifecycle(driver: driver)
+        _ = try await start(lifecycle, request: "first")
+        driver.pauseStop = true
+        driver.stopFailuresRemaining = 3
+
+        let second = Task {
+            try await lifecycle.start(request: "second", sessionID: UUID(), onAudioSampleBuffer: { _, _ in }, onStreamError: { _, _ in })
+        }
+        await driver.waitForStop()
+        let third = Task {
+            try await lifecycle.start(request: "third", sessionID: UUID(), onAudioSampleBuffer: { _, _ in }, onStreamError: { _, _ in })
+        }
+        await waitUntil { lifecycle.currentGeneration == 3 }
+
+        driver.pauseStop = false
+        driver.resumeStop()
+        _ = try? await second.value
+        _ = try? await third.value
+        _ = try? await lifecycle.stopAndWait()
+        _ = try? await lifecycle.stopAndWait()
+
+        XCTAssertEqual(driver.stopCount, 4)
+        XCTAssertFalse(driver.isActive)
+    }
+
     func test_startFailureAfterPartialActivationStillStops() async throws {
         let driver = StatefulScreenStreamDriver()
         driver.failStartAfterActivation = true
