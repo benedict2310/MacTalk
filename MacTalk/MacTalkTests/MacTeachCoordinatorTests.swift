@@ -34,7 +34,7 @@ final class MacTeachCoordinatorTests: XCTestCase {
         XCTAssertEqual(delivered.text, "MacTalk.")
         XCTAssertEqual(delivered.replacementEdits.count, 1)
 
-        try await fixture.coordinator.persist(
+        let persistence = try await fixture.coordinator.persist(
             delivered,
             session: session,
             selection: EngineSelection(
@@ -44,12 +44,39 @@ final class MacTeachCoordinatorTests: XCTestCase {
             ),
             insertionSucceeded: true
         )
+        XCTAssertEqual(persistence.diagnosticOutcome, .inserted)
         let records = try await fixture.history.search(HistorySearchQuery())
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(records[0].rawASRText, "mac talk")
         XCTAssertEqual(records[0].cleanedText, "Mac Talk.")
         XCTAssertEqual(records[0].deliveredText, "MacTalk.")
         XCTAssertEqual(records[0].sourceBundleID, "com.apple.TextEdit")
+    }
+
+    func test_persistPublishesHistoryChangeOnlyAfterDurableInsert() async throws {
+        let fixture = try makeFixture()
+        let settings = makeSettings()
+        let session = await fixture.coordinator.captureSession(settings: settings, target: nil)
+        let terminal = TerminalTranscription(
+            sessionID: UUID(),
+            provider: .whisper,
+            rawASRText: "hello",
+            cleanedText: "Hello."
+        )
+        let delivered = fixture.coordinator.deliver(terminal, session: session)
+        let changed = expectation(forNotification: .macTalkHistoryDidChange, object: fixture.coordinator)
+
+        let outcome = try await fixture.coordinator.persist(
+            delivered,
+            session: session,
+            selection: EngineSelection(provider: .whisper, modelID: "model", revision: "revision"),
+            insertionSucceeded: nil
+        )
+
+        await fulfillment(of: [changed], timeout: 1)
+        XCTAssertEqual(outcome.diagnosticOutcome, .inserted)
+        let records = try await fixture.history.search(HistorySearchQuery())
+        XCTAssertEqual(records.count, 1)
     }
 
     func test_teachCreatesVocabularyAndRecomputesCorrectedHistoryFromCleanedText() async throws {

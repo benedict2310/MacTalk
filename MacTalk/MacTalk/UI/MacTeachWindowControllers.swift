@@ -24,9 +24,25 @@ final class HistoryViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let coordinator: MacTeachCoordinator
+    private nonisolated(unsafe) var historyObserver: NSObjectProtocol?
 
     init(coordinator: MacTeachCoordinator) {
         self.coordinator = coordinator
+        self.historyObserver = NotificationCenter.default.addObserver(
+            forName: .macTalkHistoryDidChange,
+            object: coordinator,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.load()
+            }
+        }
+    }
+
+    deinit {
+        if let historyObserver {
+            NotificationCenter.default.removeObserver(historyObserver)
+        }
     }
 
     var selectedRecord: HistoryRecord? {

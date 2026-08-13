@@ -385,6 +385,81 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.engine.activityChanges, [true, false])
     }
 
+    func test_structuredTerminalPersistsHistoryBeforeFinalizationCompletes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RecordingHistory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("MacTeach.sqlite")
+        let history = try HistoryStore(
+            databaseURL: database,
+            audioDirectoryURL: root.appendingPathComponent("HistoryAudio", isDirectory: true)
+        )
+        let vocabulary = try PersonalVocabularyStore(databaseURL: database)
+        let harness = RecordingHarness()
+        harness.macTeach = MacTeachCoordinator(historyStore: history, vocabularyStore: vocabulary)
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.coordinator.stop()
+
+        let delivery = await harness.session.emitTerminal(TerminalTranscription(
+            sessionID: UUID(),
+            provider: .whisper,
+            rawASRText: "hello",
+            cleanedText: "Hello."
+        ))
+
+        XCTAssertEqual(delivery?.historyPersistence, .inserted)
+        XCTAssertEqual(harness.output.finalTexts, ["Hello."])
+        let records = try await history.search(HistorySearchQuery())
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
+        harness.session.emitFinalizationComplete()
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+    }
+
+    func test_suspendedHistoryPersistenceRetainsFinalizingOwnership() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RecordingHistoryGate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("MacTeach.sqlite")
+        let history = try HistoryStore(
+            databaseURL: database,
+            audioDirectoryURL: root.appendingPathComponent("HistoryAudio", isDirectory: true)
+        )
+        let vocabulary = try PersonalVocabularyStore(databaseURL: database)
+        let delayed = DelayedMacTeachCoordinator(
+            base: MacTeachCoordinator(historyStore: history, vocabularyStore: vocabulary)
+        )
+        let harness = RecordingHarness()
+        harness.macTeach = delayed
+        harness.coordinator.requestStart(mode: .micOnly)
+        await harness.waitFor { harness.coordinator.state.phase == .recording }
+        harness.coordinator.stop()
+        let delivery = Task { @MainActor in
+            await harness.session.emitTerminal(TerminalTranscription(
+                sessionID: UUID(),
+                provider: .whisper,
+                rawASRText: "hello",
+                cleanedText: "Hello."
+            ))
+        }
+        await delayed.waitForPersistenceStart()
+
+        harness.session.emitFinalizationComplete()
+        harness.coordinator.requestStart(mode: .micOnly)
+
+        XCTAssertEqual(harness.coordinator.state.phase, .finalizing)
+        XCTAssertEqual(delayed.persistCount, 1)
+        delayed.releasePersistence()
+        let delivered = await delivery.value
+        XCTAssertEqual(delivered?.historyPersistence, .inserted)
+        XCTAssertEqual(harness.coordinator.state.phase, .idle)
+        let records = try await history.search(HistorySearchQuery())
+        XCTAssertEqual(records.count, 1)
+    }
+
     func test_providerMismatchFailsBeforeSessionCreation() async {
         let harness = RecordingHarness()
         harness.engine.result = .ready(harness.engine.engine)
@@ -514,9 +589,10 @@ private final class RecordingHarness: TranscriptionSessionFactory {
     let session = RecordingSessionFake(provider: .whisper)
     let output = RecordingOutputFake()
     var snapshot = SettingsSnapshot(provider: .whisper, whisperModelID: "whisper-large-v3-turbo-q5_0", language: "en", captureMode: .micOnly, showNotifications: true, autoPaste: false)
+    var macTeach: (any MacTeachCoordinating)?
     var effects: [StatusBarEffect] = []
     lazy var coordinator: RecordingSessionCoordinator = {
-        let coordinator = RecordingSessionCoordinator(permission: permission, engine: engine, download: download, sessions: self, output: output, settingsSnapshot: { [weak self] in self!.snapshot })
+        let coordinator = RecordingSessionCoordinator(permission: permission, engine: engine, download: download, sessions: self, output: output, settingsSnapshot: { [weak self] in self!.snapshot }, macTeach: macTeach)
         coordinator.onEvent = { [weak self] event in
             if case let .effect(effect) = event { self?.effects.append(effect) }
         }
@@ -531,6 +607,54 @@ private final class RecordingHarness: TranscriptionSessionFactory {
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
         XCTFail("condition did not become true")
+    }
+}
+
+@MainActor
+private final class DelayedMacTeachCoordinator: MacTeachCoordinating {
+    private let base: MacTeachCoordinator
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private(set) var persistCount = 0
+    private var persistenceStarted = false
+
+    init(base: MacTeachCoordinator) { self.base = base }
+
+    func captureSession(settings: SettingsSnapshot, target: ApplicationIdentity?) async -> MacTeachSessionSnapshot {
+        await base.captureSession(settings: settings, target: target)
+    }
+
+    func deliver(_ terminal: TerminalTranscription, session: MacTeachSessionSnapshot) -> MacTeachDeliveredTranscript {
+        base.deliver(terminal, session: session)
+    }
+
+    func persist(
+        _ delivered: MacTeachDeliveredTranscript,
+        session: MacTeachSessionSnapshot,
+        selection: EngineSelection,
+        insertionSucceeded: Bool?
+    ) async throws -> HistoryPersistenceOutcome {
+        persistCount += 1
+        persistenceStarted = true
+        startWaiter?.resume()
+        startWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+        return try await base.persist(
+            delivered,
+            session: session,
+            selection: selection,
+            insertionSucceeded: insertionSucceeded
+        )
+    }
+
+    func waitForPersistenceStart() async {
+        if persistenceStarted { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func releasePersistence() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
 
@@ -577,12 +701,13 @@ private final class RecordingOutputFake: OutputCoordinating {
 }
 
 @MainActor
-private final class RecordingSessionFake: TranscriptionSession {
+private final class RecordingSessionFake: StructuredTranscriptionSession {
     struct Start { let snapshot: SettingsSnapshot; let source: AppPickerWindowController.AudioSource? }
     var providerValue: ASRProvider
     var provider: ASRProvider { providerValue }
     var onPartial: (@Sendable @MainActor (String) -> Void)?
     var onFinal: (@Sendable @MainActor (String) -> OutputResult?)?
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> TerminalDeliveryResult?)?
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?
@@ -603,6 +728,7 @@ private final class RecordingSessionFake: TranscriptionSession {
     let metricsStore = DelayedCoordinatorMetricsStore()
     var releasedSessions = 0
     var lastRequestID: UUID?
+    var requestContext = ASRRequestContext()
     private var continuation: CheckedContinuation<Void, Error>?
     private var startWaiter: CheckedContinuation<Void, Never>?
     private var startEntered = false
@@ -620,6 +746,7 @@ private final class RecordingSessionFake: TranscriptionSession {
         if startSuspended { try await withCheckedThrowingContinuation { continuation = $0 } }
     }
     func stop() { stopCount += 1 }
+    func configure(requestContext: ASRRequestContext) { self.requestContext = requestContext }
     func requestCancelStart() -> SessionCleanup {
         cancelStarts += 1
         return SessionCleanup(task: Task { try await self.cancelStart() }, owner: self)
@@ -664,6 +791,9 @@ private final class RecordingSessionFake: TranscriptionSession {
     func releaseStopAndWait() { stopContinuation?.resume(); stopContinuation = nil }
     @discardableResult
     func emitFinal(_ value: String) -> OutputResult? { onFinal?(value) ?? nil }
+    func emitTerminal(_ value: TerminalTranscription) async -> TerminalDeliveryResult? {
+        await onTerminalResult?(value)
+    }
     func emitFinalizationComplete() { onFinalizationComplete?() }
 }
 

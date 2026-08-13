@@ -169,6 +169,12 @@ application identity, or raw errors. The status-bar action **Copy
 Performance Report** copies this metadata-only report only on explicit user
 request.
 
+Schema version 2 includes a privacy-safe History persistence outcome. A
+structured terminal callback owns output and the single History attempt;
+recording finalization retains request ownership until that attempt completes.
+Successful inserts publish an in-process History change notification so an
+already-open History window reloads immediately.
+
 The typed `com.mactalk.app` / `pipeline` logger and signposts
 `TranscriptionSession`, `Inference`, `FirstAudio`, `FirstComposedAudio`, and
 `FirstPartial` provide local diagnostics. CPU and GPU figures are Instruments

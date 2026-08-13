@@ -43,6 +43,11 @@ struct TerminalTranscription: Equatable, Sendable {
     }
 }
 
+struct TerminalDeliveryResult: Equatable, Sendable {
+    let output: OutputResult?
+    let historyPersistence: PipelineHistoryPersistenceOutcome
+}
+
 /// Identifies the currently accepted audio-capture session.
 ///
 /// Capture callbacks can arrive after ScreenCaptureKit has been asked to stop.
@@ -494,7 +499,7 @@ final class TranscriptionController: @unchecked Sendable {
 
     var onPartial: (@Sendable @MainActor (String) -> Void)?
     var onFinal: (@Sendable @MainActor (String) -> OutputResult?)?
-    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> Void)?
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> TerminalDeliveryResult?)?
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)?
     var onAppAudioLost: (@Sendable @MainActor () -> Void)?  // Callback when app audio is lost
@@ -1689,7 +1694,8 @@ final class TranscriptionController: @unchecked Sendable {
         }
 
         if let onTerminalResult {
-            await onTerminalResult(TerminalTranscription(
+            recorder(for: sessionID)?.recordFinalPresented()
+            let delivery = await onTerminalResult(TerminalTranscription(
                 sessionID: sessionID,
                 provider: engine.provider,
                 rawASRText: combined,
@@ -1699,6 +1705,27 @@ final class TranscriptionController: @unchecked Sendable {
                 durationMilliseconds: Int64(terminal.audio.count * 1_000 / 16_000),
                 audioSamples: terminal.audio
             ))
+            if let delivery {
+                if let result = delivery.output {
+                    recorder(for: sessionID)?.recordOutputHandoff(
+                        clipboardWritten: result.clipboardWritten,
+                        insertOutcome: pipelineInsertOutcome(result.insertOutcome)
+                    )
+                } else {
+                    recorder(for: sessionID)?.recordOutputHandoff(
+                        clipboardWritten: false,
+                        insertOutcome: .rejected
+                    )
+                }
+                recorder(for: sessionID)?.recordHistoryPersistence(delivery.historyPersistence)
+                return .completed(delivery.output)
+            }
+            recorder(for: sessionID)?.recordOutputHandoff(
+                clipboardWritten: false,
+                insertOutcome: .rejected
+            )
+            recorder(for: sessionID)?.recordHistoryPersistence(.notAttempted)
+            return .completed(nil)
         } else if let onFinal {
             // Preserve the legacy callback for embedders that have not adopted
             // structured terminal provenance yet.

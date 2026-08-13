@@ -299,6 +299,13 @@ struct StatusBarDependencies {
                 }
             }
         )
+        let macTeach: MacTeachCoordinator?
+        do {
+            macTeach = try MacTeachCoordinator.makeDefault()
+        } catch {
+            macTeach = nil
+            PipelineLog.historyPersistence(.failedStorageUnavailable)
+        }
         return StatusBarDependencies(
             settings: settings,
             permissionFlow: permissionFlow,
@@ -309,7 +316,7 @@ struct StatusBarDependencies {
             download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
             sessions: ProductionTranscriptionSessionFactory(),
             permissionClient: permissionClient,
-            macTeach: try? MacTeachCoordinator.makeDefault(),
+            macTeach: macTeach,
             pipelineDiagnostics: SystemPipelineDiagnosticsClient()
         )
     }

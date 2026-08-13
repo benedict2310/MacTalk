@@ -30,6 +30,9 @@ normalized mono Float32 stream; it is not wall-clock recording duration.
 Reports are bounded JSONL records written locally at
 `~/Library/Logs/MacTalk/pipeline-metrics.jsonl`. The store retains at most 100
 records and 512 KiB. Writes are best effort and do not block audio capture.
+Schema version 2 also records the privacy-safe History outcome for every
+terminal session: inserted, already recorded, intentionally skipped, or a
+whitelisted storage failure category.
 
 The report contains **no transcript text, audio samples, target application identity, or raw errors**. It is never copied automatically and is not routed through auto-paste or a network service.
 

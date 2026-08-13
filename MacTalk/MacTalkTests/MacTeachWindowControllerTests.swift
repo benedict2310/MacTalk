@@ -1,8 +1,11 @@
 import XCTest
+import Combine
 @testable import MacTalk
 
 @MainActor
 final class MacTeachWindowControllerTests: XCTestCase {
+    private var cancellables: Set<AnyCancellable> = []
+
     func test_historyAndVocabularyWindowsHaveStableAccessibleConfiguration() throws {
         let fixture = try makeFixture()
         let history = HistoryWindowController(coordinator: fixture.coordinator)
@@ -28,6 +31,30 @@ final class MacTeachWindowControllerTests: XCTestCase {
         XCTAssertEqual(controller.viewModel.selectedRecordID, newer)
         XCTAssertTrue(controller.viewModel.isTeaching)
         XCTAssertEqual(controller.viewModel.heardForm, "Talk")
+    }
+
+    func test_openHistoryReloadsWhenRecordingPersistenceCompletes() async throws {
+        let fixture = try makeFixture()
+        let controller = HistoryWindowController(coordinator: fixture.coordinator)
+        await controller.viewModel.load()
+        XCTAssertTrue(controller.viewModel.records.isEmpty)
+        let reloaded = expectation(description: "History view reloads")
+        var didFulfill = false
+        controller.viewModel.$records
+            .dropFirst()
+            .sink { records in
+                if records.count == 1, !didFulfill {
+                    didFulfill = true
+                    reloaded.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+        _ = try await insertHistory(in: fixture.history, completedAt: Date())
+
+        NotificationCenter.default.post(name: .macTalkHistoryDidChange, object: fixture.coordinator)
+
+        await fulfillment(of: [reloaded], timeout: 1)
+        XCTAssertEqual(controller.viewModel.records.count, 1)
     }
 
     func test_keyboardVocabularySelectionLoadsTheSelectedEntryIntoEditor() async throws {

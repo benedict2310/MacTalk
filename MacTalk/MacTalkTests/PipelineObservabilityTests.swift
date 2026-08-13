@@ -77,6 +77,22 @@ final class PipelineObservabilityTests: XCTestCase {
         XCTAssertEqual(report.queue.maximumDelayMs!, 25, accuracy: 0.001)
     }
 
+    func testHistoryPersistenceOutcomeIsRecordedWithoutTranscriptOrRawError() throws {
+        let recorder = PipelineSessionRecorder(
+            context: .init(id: UUID(), provider: .whisper, modelID: "base", captureMode: .micOnly, language: "en", batteryMode: false, startedAt: Date()),
+            nowNanoseconds: { 0 }
+        )
+        recorder.recordHistoryPersistence(.inserted)
+
+        let report = recorder.finish(outcome: .completed, capture: .zero, composition: .init())
+
+        XCTAssertEqual(report.historyPersistence, .inserted)
+        XCTAssertEqual(report.schemaVersion, 2)
+        let json = String(decoding: try JSONEncoder().encode(report), as: UTF8.self)
+        XCTAssertFalse(json.contains("transcript"))
+        XCTAssertFalse(json.contains("rawError"))
+    }
+
     func testFinishIsIdempotentAndClockBackwardsSaturates() {
         let clock = TestPipelineClock()
         let recorder = PipelineSessionRecorder(context: .init(id: UUID(), provider: .parakeet, modelID: "parakeet", captureMode: .micPlusAppAudio, language: nil, batteryMode: true, startedAt: Date()), nowNanoseconds: { clock.now })
@@ -354,7 +370,7 @@ final class PipelineObservabilityTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("pipeline-metrics.jsonl")
         let formatted = await PipelineMetricsStore(fileURL: url).formattedReport(limit: 10)
         XCTAssertTrue(formatted.contains("No completed sessions"))
-        XCTAssertTrue(formatted.contains("Schema version: 1"))
+        XCTAssertTrue(formatted.contains("Schema version: 2"))
     }
 
     func testRecorderHotPathDoesNotPersistUntilStoreRecord() async throws {

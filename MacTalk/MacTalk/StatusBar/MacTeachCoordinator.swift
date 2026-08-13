@@ -21,7 +21,35 @@ struct MacTeachDeliveredTranscript: Sendable, Equatable {
 }
 
 @MainActor
-final class MacTeachCoordinator {
+protocol MacTeachCoordinating: AnyObject {
+    func captureSession(settings: SettingsSnapshot, target: ApplicationIdentity?) async -> MacTeachSessionSnapshot
+    func deliver(_ terminal: TerminalTranscription, session: MacTeachSessionSnapshot) -> MacTeachDeliveredTranscript
+    func persist(
+        _ delivered: MacTeachDeliveredTranscript,
+        session: MacTeachSessionSnapshot,
+        selection: EngineSelection,
+        insertionSucceeded: Bool?
+    ) async throws -> HistoryPersistenceOutcome
+}
+
+extension Notification.Name {
+    static let macTalkHistoryDidChange = Notification.Name("MacTalkHistoryDidChange")
+}
+
+extension HistoryPersistenceOutcome {
+    var diagnosticOutcome: PipelineHistoryPersistenceOutcome {
+        switch self {
+        case .inserted: return .inserted
+        case .alreadyRecorded: return .alreadyRecorded
+        case .skipped(.historyDisabled): return .skippedHistoryDisabled
+        case .skipped(.cancelled): return .skippedCancelled
+        case .skipped(.emptyTranscript): return .skippedEmptyTranscript
+        }
+    }
+}
+
+@MainActor
+final class MacTeachCoordinator: MacTeachCoordinating {
     private struct RecentAudio {
         let samples: [Float]
         let expiresAt: Date
@@ -136,7 +164,7 @@ final class MacTeachCoordinator {
         session: MacTeachSessionSnapshot,
         selection: EngineSelection,
         insertionSucceeded: Bool?
-    ) async throws {
+    ) async throws -> HistoryPersistenceOutcome {
         self.pruneExpiredRecentAudio()
         if !delivered.terminal.audioSamples.isEmpty {
             recentAudio[delivered.recordID] = RecentAudio(
@@ -182,8 +210,9 @@ final class MacTeachCoordinator {
         case let .inserted(inserted), let .alreadyRecorded(inserted):
             record = inserted
         case .skipped:
-            return
+            return outcome
         }
+        NotificationCenter.default.post(name: .macTalkHistoryDidChange, object: self)
         if session.settings.macTeach.keepRecordings,
            !record.hasRetainedAudio,
            !delivered.terminal.audioSamples.isEmpty {
@@ -199,6 +228,7 @@ final class MacTeachCoordinator {
         }
 
         try? await self.applyRetention(settings: session.settings, timestamp: delivered.completedAt)
+        return outcome
     }
 
     func teach(

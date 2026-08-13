@@ -17,7 +17,7 @@ final class ProductionTranscriptionSession: StructuredTranscriptionSession {
         get { controller.onFinal }
         set { controller.onFinal = newValue }
     }
-    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> Void)? {
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> TerminalDeliveryResult?)? {
         get { controller.onTerminalResult }
         set { controller.onTerminalResult = newValue }
     }

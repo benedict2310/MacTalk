@@ -41,7 +41,7 @@ protocol TranscriptionSession: AnyObject {
 
 @MainActor
 protocol StructuredTranscriptionSession: TranscriptionSession {
-    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> Void)? { get set }
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> TerminalDeliveryResult?)? { get set }
     func configure(requestContext: ASRRequestContext)
 }
 
@@ -79,6 +79,9 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         var macTeachSession: MacTeachSessionSnapshot? = nil
         var didStopSession = false
         var didOutputFinal = false
+        var didAttemptTerminal = false
+        var terminalPersistenceComplete = false
+        var sessionFinalizationComplete = false
     }
 
     private let permission: any RecordingPermissionAuthorizing
@@ -88,7 +91,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
     private let output: any OutputCoordinating
     private let audioSources: (any AppAudioSourceCoordinating)?
     private let settingsSnapshot: @MainActor () -> SettingsSnapshot
-    private let macTeach: MacTeachCoordinator?
+    private let macTeach: (any MacTeachCoordinating)?
     private var request: RequestContext?
     private var work: Task<Void, Never>?
     // Cancellation is initiated synchronously, then retained until its
@@ -121,7 +124,7 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         output: any OutputCoordinating,
         settingsSnapshot: @escaping @MainActor () -> SettingsSnapshot,
         audioSources: (any AppAudioSourceCoordinating)? = nil,
-        macTeach: MacTeachCoordinator? = nil
+        macTeach: (any MacTeachCoordinating)? = nil
     ) {
         self.permission = permission
         self.engine = engine
@@ -467,9 +470,8 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         }
         session.onFinalizationComplete = { [weak self] in
             guard let self, self.owns(requestID), self.state.phase == .finalizing else { return }
-            self.work = nil
-            self.request = nil
-            self.transition(.idle, requestID: nil, mode: nil, selection: nil)
+            self.request?.sessionFinalizationComplete = true
+            self.maybeCompleteFinalization(requestID: requestID)
         }
     }
 
@@ -478,6 +480,8 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         guard owns(requestID), state.phase == .finalizing,
               request?.didOutputFinal == false,
               let context = request else { return nil }
+        request?.didAttemptTerminal = true
+        request?.terminalPersistenceComplete = true
         request?.didOutputFinal = true
         emit(.finalText(text))
         let result = output.handleFinal(
@@ -492,15 +496,21 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
         return result
     }
 
-    private func receiveTerminal(_ terminal: TerminalTranscription, requestID: UUID) async {
+    private func receiveTerminal(_ terminal: TerminalTranscription, requestID: UUID) async -> TerminalDeliveryResult? {
         guard owns(requestID), state.phase == .finalizing,
               request?.didOutputFinal == false,
-              let context = request,
-              let selection = context.selection,
+              let context = request else { return nil }
+        request?.didAttemptTerminal = true
+        guard let selection = context.selection,
               let macTeachSession = context.macTeachSession,
               let macTeach else {
-            receiveFinal(terminal.cleanedText, requestID: requestID)
-            return
+            let result = receiveFinal(terminal.cleanedText, requestID: requestID)
+            request?.terminalPersistenceComplete = true
+            maybeCompleteFinalization(requestID: requestID)
+            return TerminalDeliveryResult(
+                output: result,
+                historyPersistence: .failedStorageUnavailable
+            )
         }
         request?.didOutputFinal = true
         let delivered = macTeach.deliver(terminal, session: macTeachSession)
@@ -517,19 +527,36 @@ final class RecordingSessionCoordinator: RecordingSessionCoordinating {
 
         let insertionSucceeded: Bool? = switch result.insertOutcome {
         case .axSetValueSuccess, .cmdVFallback: true
-        case .permissionDenied, .failed, .skippedTargetChanged: false
+        case .permissionDenied, .failed, .skippedTargetChanged, .rejected: false
         case .notAttempted: nil
         }
+        let persistence: PipelineHistoryPersistenceOutcome
         do {
-            try await macTeach.persist(
+            let outcome = try await macTeach.persist(
                 delivered,
                 session: macTeachSession,
                 selection: selection,
                 insertionSucceeded: insertionSucceeded
             )
+            persistence = outcome.diagnosticOutcome
         } catch {
-            DebugLogger.shared.log(.error(description: "MacTeach history persistence failed"))
+            DebugLogger.shared.log(.operationFailed)
+            persistence = .failedDatabase
         }
+        guard owns(requestID) else { return nil }
+        request?.terminalPersistenceComplete = true
+        maybeCompleteFinalization(requestID: requestID)
+        return TerminalDeliveryResult(output: result, historyPersistence: persistence)
+    }
+
+    private func maybeCompleteFinalization(requestID: UUID) {
+        guard owns(requestID), state.phase == .finalizing,
+              let request,
+              request.sessionFinalizationComplete,
+              !request.didAttemptTerminal || request.terminalPersistenceComplete else { return }
+        work = nil
+        self.request = nil
+        transition(.idle, requestID: nil, mode: nil, selection: nil)
     }
 
     private func fail(_ id: UUID, message: String) {
