@@ -57,6 +57,29 @@ final class MacTeachWindowControllerTests: XCTestCase {
         XCTAssertEqual(controller.viewModel.records.count, 1)
     }
 
+    func test_openVocabularyReloadsWhenMacTeachMeasurementsChange() async throws {
+        let fixture = try makeFixture()
+        let viewModel = PersonalVocabularyViewModel(coordinator: fixture.coordinator)
+        await viewModel.load()
+        XCTAssertTrue(viewModel.entries.isEmpty)
+        let reloaded = expectation(description: "Personal Vocabulary view reloads")
+        var didFulfill = false
+        viewModel.$entries
+            .dropFirst()
+            .sink { entries in
+                if entries.count == 1, !didFulfill {
+                    didFulfill = true
+                    reloaded.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        try await fixture.coordinator.saveVocabularyEntry(PersonalVocabularyEntry(writtenForm: "MacTalk"))
+
+        await fulfillment(of: [reloaded], timeout: 1)
+        XCTAssertEqual(viewModel.entries.map(\.writtenForm), ["MacTalk"])
+    }
+
     func test_keyboardVocabularySelectionLoadsTheSelectedEntryIntoEditor() async throws {
         let fixture = try makeFixture()
         let entry = PersonalVocabularyEntry(
@@ -76,6 +99,27 @@ final class MacTeachWindowControllerTests: XCTestCase {
         XCTAssertEqual(controller.viewModel.wrongForms, "a pie")
         XCTAssertEqual(controller.viewModel.spokenForm, "A P I")
         XCTAssertEqual(controller.viewModel.priority, .important)
+    }
+
+    func test_vocabularyEffectivenessSummaryDistinguishesRecognitionFromRepair() throws {
+        let fixture = try makeFixture()
+        let controller = PersonalVocabularyWindowController(coordinator: fixture.coordinator)
+        let measured = PersonalVocabularyEntry(
+            writtenForm: "MacTalk",
+            applicationCount: 2,
+            correctionCount: 1,
+            directRecognitionCount: 5
+        )
+        let unobserved = PersonalVocabularyEntry(writtenForm: "Codex")
+
+        XCTAssertEqual(
+            controller.viewModel.effectivenessSummary(for: measured),
+            "Recognized directly 5 times · Repaired 2 times · Taught once"
+        )
+        XCTAssertEqual(
+            controller.viewModel.effectivenessSummary(for: unobserved),
+            "No later uses observed yet"
+        )
     }
 
     private struct Fixture {

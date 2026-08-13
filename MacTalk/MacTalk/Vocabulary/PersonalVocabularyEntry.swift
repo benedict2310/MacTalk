@@ -23,7 +23,7 @@ struct PersonalVocabularyWrongForm: Identifiable, Codable, Equatable, Hashable, 
 }
 
 struct PersonalVocabularyEntry: Identifiable, Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let id: UUID
     let writtenForm: String
@@ -42,6 +42,8 @@ struct PersonalVocabularyEntry: Identifiable, Codable, Equatable, Sendable {
     let applicationCount: Int
     let correctionCount: Int
     let lastAppliedAt: Date?
+    let directRecognitionCount: Int
+    let lastRecognizedAt: Date?
     let schemaVersion: Int
 
     init(
@@ -62,6 +64,8 @@ struct PersonalVocabularyEntry: Identifiable, Codable, Equatable, Sendable {
         applicationCount: Int = 0,
         correctionCount: Int = 0,
         lastAppliedAt: Date? = nil,
+        directRecognitionCount: Int = 0,
+        lastRecognizedAt: Date? = nil,
         schemaVersion: Int = PersonalVocabularyEntry.currentSchemaVersion
     ) {
         self.id = id
@@ -81,6 +85,8 @@ struct PersonalVocabularyEntry: Identifiable, Codable, Equatable, Sendable {
         self.applicationCount = applicationCount
         self.correctionCount = correctionCount
         self.lastAppliedAt = lastAppliedAt
+        self.directRecognitionCount = directRecognitionCount
+        self.lastRecognizedAt = lastRecognizedAt
         self.schemaVersion = schemaVersion
     }
 }
@@ -130,6 +136,7 @@ struct PersonalVocabularyValidationIssue: Equatable, Sendable {
         case applicationBundleID(String)
         case applicationCount
         case correctionCount
+        case directRecognitionCount
     }
 
     let code: PersonalVocabularyValidationCode
@@ -207,6 +214,13 @@ enum PersonalVocabularyValidator {
         }
         if entry.correctionCount < 0 {
             issues.append(.init(code: .invalidCount, field: .correctionCount, message: "Correction count cannot be negative."))
+        }
+        if entry.directRecognitionCount < 0 {
+            issues.append(.init(
+                code: .invalidCount,
+                field: .directRecognitionCount,
+                message: "Direct recognition count cannot be negative."
+            ))
         }
         return issues
     }

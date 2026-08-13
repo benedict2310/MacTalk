@@ -4,8 +4,10 @@
 **Feature:** History and Personal Vocabulary  
 **Working name:** MacTeach  
 **Version:** 1.0  
-**Status:** Proposed  
-**Last updated:** 2026-08-09  
+**Status:** In implementation
+
+**Last updated:** 2026-08-13
+
 **Target platform:** macOS 26.0 or later
 
 ---
@@ -144,6 +146,9 @@ replacement behavior immediately.
 
 Vocabulary prompting can over-bias a decoder. Each stage must be evaluated for
 both improved recall and false-positive substitutions on a representative corpus.
+In-product observations may show whether a selected hint was recognized in its
+exact preferred written form or whether a deterministic repair was needed. They
+must not infer a "miss" merely because a vocabulary term is absent from a transcript.
 
 ---
 
@@ -633,7 +638,9 @@ vocabulary_entries
   id, written_form, spoken_form, language
   priority, hint_enabled, replacement_enabled, enabled
   source, source_history_id
-  created_at, updated_at, application_count, last_applied_at
+  created_at, updated_at
+  correction_count, application_count, last_applied_at
+  direct_recognition_count, last_recognized_at
   schema_version
 
 vocabulary_wrong_forms
@@ -793,6 +800,20 @@ need to wait for the next recording.
 
 ## 15. Quality measurement
 
+MacTalk records two local, per-entry observational signals after a durable terminal
+History insert:
+
+- **Recognized directly:** the entry was included in the session's bounded hint set
+  and its exact, case-sensitive preferred written form appeared at whole-phrase
+  boundaries in cleaned ASR output before deterministic replacement.
+- **Repaired:** one or more known wrong forms for the entry required deterministic
+  replacement in that recording. This is the existing `application_count` signal.
+
+Each counter advances at most once per entry per recording. Personal Vocabulary
+shows both counts and the explicit teaching count, and refreshes while its window is
+open. These observations help users see the mechanism being used, but they are not
+ground-truth accuracy labels and do not replace the controlled corpus below.
+
 Before enabling recognition hinting in production, build a local, consented quality
 corpus with:
 
@@ -861,6 +882,9 @@ smallest production change that makes them pass.
 - Disabled and replacement-only entries are excluded.
 - Session snapshot does not change during recording.
 - No raw term text enters production diagnostics.
+- Direct recognition is counted only for exact preferred forms actually sent in the
+  session hint set; case errors, substrings, and unhinted entries are excluded.
+- Existing databases add measurement columns without losing vocabulary data.
 
 ### 16.4 Engine tests
 

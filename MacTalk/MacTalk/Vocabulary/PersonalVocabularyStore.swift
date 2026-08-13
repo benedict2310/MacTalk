@@ -19,6 +19,7 @@ protocol PersonalVocabularyStoring: Sendable {
     @discardableResult func saveAll(_ entries: [PersonalVocabularyEntry]) async throws -> [PersonalVocabularyEntry]
     @discardableResult func setEnabled(_ isEnabled: Bool, id: UUID, modifiedAt: Date) async throws -> PersonalVocabularyEntry
     func recordApplications(entryIDs: Set<UUID>, appliedAt: Date) async throws
+    func recordDirectRecognitions(entryIDs: Set<UUID>, recognizedAt: Date) async throws
     func delete(id: UUID) async throws
     @discardableResult func deleteAll() async throws -> Int
 }
@@ -31,6 +32,10 @@ extension PersonalVocabularyStoring {
 
     func recordApplications(entryIDs: Set<UUID>) async throws {
         try await self.recordApplications(entryIDs: entryIDs, appliedAt: Date())
+    }
+
+    func recordDirectRecognitions(entryIDs: Set<UUID>) async throws {
+        try await self.recordDirectRecognitions(entryIDs: entryIDs, recognizedAt: Date())
     }
 }
 
@@ -160,6 +165,27 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
         }
     }
 
+    func recordDirectRecognitions(entryIDs: Set<UUID>, recognizedAt: Date) throws {
+        guard !entryIDs.isEmpty else { return }
+        try self.withTransaction {
+            let database = try self.requireDatabase()
+            let statement = try self.prepare(
+                "UPDATE vocabulary_entries SET direct_recognition_count = direct_recognition_count + 1, last_recognized_at = ? WHERE id = ?"
+            )
+            defer { sqlite3_finalize(statement) }
+            var changed = false
+            for id in entryIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                try self.bind(recognizedAt.timeIntervalSince1970, at: 1, to: statement)
+                try self.bind(id.uuidString.lowercased(), at: 2, to: statement)
+                try self.step(statement)
+                if sqlite3_changes(database) > 0 { changed = true }
+            }
+            if changed { try self.advanceRevision() }
+        }
+    }
+
     func delete(id: UUID) throws {
         try self.withTransaction {
             let statement = try self.prepare("DELETE FROM vocabulary_entries WHERE id = ?")
@@ -194,8 +220,9 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
                 id, written_form, spoken_form, language, priority,
                 hint_enabled, replacement_enabled, enabled, source,
                 source_history_id, created_at, updated_at, application_count,
-                correction_count, last_applied_at, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                correction_count, last_applied_at, direct_recognition_count,
+                last_recognized_at, schema_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 written_form = excluded.written_form,
                 spoken_form = excluded.spoken_form,
@@ -211,6 +238,8 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
                 application_count = excluded.application_count,
                 correction_count = excluded.correction_count,
                 last_applied_at = excluded.last_applied_at,
+                direct_recognition_count = excluded.direct_recognition_count,
+                last_recognized_at = excluded.last_recognized_at,
                 schema_version = excluded.schema_version
             """
         let statement = try self.prepare(sql)
@@ -222,6 +251,7 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
             .optionalText(entry.sourceHistoryRecordID?.uuidString.lowercased()), .real(entry.createdAt.timeIntervalSince1970),
             .real(entry.updatedAt.timeIntervalSince1970), .integer(Int64(entry.applicationCount)),
             .integer(Int64(entry.correctionCount)), .optionalReal(entry.lastAppliedAt?.timeIntervalSince1970),
+            .integer(Int64(entry.directRecognitionCount)), .optionalReal(entry.lastRecognizedAt?.timeIntervalSince1970),
             .integer(Int64(entry.schemaVersion)),
         ]
         for (offset, value) in values.enumerated() { try self.bind(value, at: Int32(offset + 1), to: statement) }
@@ -270,7 +300,8 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
             SELECT id, written_form, spoken_form, language, priority,
                    hint_enabled, replacement_enabled, enabled, source,
                    source_history_id, created_at, updated_at, application_count,
-                   correction_count, last_applied_at, schema_version
+                   correction_count, last_applied_at, direct_recognition_count,
+                   last_recognized_at, schema_version
             FROM vocabulary_entries
             """
         if id != nil { sql += " WHERE id = ?" }
@@ -303,7 +334,9 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
                 recognitionHintEnabled: row.hintEnabled, replacementEnabled: row.replacementEnabled,
                 isEnabled: row.isEnabled, source: row.source, sourceHistoryRecordID: row.sourceHistoryRecordID,
                 createdAt: row.createdAt, updatedAt: row.updatedAt, applicationCount: row.applicationCount,
-                correctionCount: row.correctionCount, lastAppliedAt: row.lastAppliedAt, schemaVersion: row.schemaVersion
+                correctionCount: row.correctionCount, lastAppliedAt: row.lastAppliedAt,
+                directRecognitionCount: row.directRecognitionCount, lastRecognizedAt: row.lastRecognizedAt,
+                schemaVersion: row.schemaVersion
             )
         }
     }
@@ -332,7 +365,9 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
             applicationCount: Int(sqlite3_column_int64(statement, 12)),
             correctionCount: Int(sqlite3_column_int64(statement, 13)),
             lastAppliedAt: sqlite3_column_type(statement, 14) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 14)),
-            schemaVersion: Int(sqlite3_column_int(statement, 15))
+            directRecognitionCount: Int(sqlite3_column_int64(statement, 15)),
+            lastRecognizedAt: sqlite3_column_type(statement, 16) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 16)),
+            schemaVersion: Int(sqlite3_column_int(statement, 17))
         )
     }
 
@@ -390,7 +425,8 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
             replacementEnabled: entry.replacementEnabled, isEnabled: isEnabled, source: entry.source,
             sourceHistoryRecordID: entry.sourceHistoryRecordID, createdAt: entry.createdAt, updatedAt: updatedAt,
             applicationCount: entry.applicationCount, correctionCount: entry.correctionCount,
-            lastAppliedAt: entry.lastAppliedAt, schemaVersion: entry.schemaVersion
+            lastAppliedAt: entry.lastAppliedAt, directRecognitionCount: entry.directRecognitionCount,
+            lastRecognizedAt: entry.lastRecognizedAt, schemaVersion: entry.schemaVersion
         )
     }
 
@@ -469,9 +505,25 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
                     application_count INTEGER NOT NULL,
                     correction_count INTEGER NOT NULL,
                     last_applied_at REAL,
+                    direct_recognition_count INTEGER NOT NULL DEFAULT 0,
+                    last_recognized_at REAL,
                     schema_version INTEGER NOT NULL
                 )
                 """)
+            let entryColumns = try self.columnNames(database, table: "vocabulary_entries")
+            if !entryColumns.contains("direct_recognition_count") {
+                try self.execute(
+                    database,
+                    sql: "ALTER TABLE vocabulary_entries ADD COLUMN direct_recognition_count INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+            if !entryColumns.contains("last_recognized_at") {
+                try self.execute(database, sql: "ALTER TABLE vocabulary_entries ADD COLUMN last_recognized_at REAL")
+            }
+            try self.execute(
+                database,
+                sql: "UPDATE vocabulary_entries SET schema_version = \(PersonalVocabularyEntry.currentSchemaVersion) WHERE schema_version < \(PersonalVocabularyEntry.currentSchemaVersion)"
+            )
             try self.execute(database, sql: """
                 CREATE TABLE IF NOT EXISTS vocabulary_wrong_forms (
                     id TEXT PRIMARY KEY NOT NULL,
@@ -506,6 +558,29 @@ actor PersonalVocabularyStore: PersonalVocabularyStoring {
     private static func execute(_ database: OpaquePointer, sql: String) throws {
         let result = sqlite3_exec(database, sql, nil, nil, nil)
         guard result == SQLITE_OK else { throw PersonalVocabularyStoreError.databaseFailure(code: result) }
+    }
+
+    private static func columnNames(_ database: OpaquePointer, table: String) throws -> Set<String> {
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(database, "PRAGMA table_info(\(table))", -1, &statement, nil)
+        guard prepared == SQLITE_OK, let statement else {
+            throw PersonalVocabularyStoreError.databaseFailure(code: prepared)
+        }
+        defer { sqlite3_finalize(statement) }
+        var names: Set<String> = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let rawName = sqlite3_column_text(statement, 1) else {
+                    throw PersonalVocabularyStoreError.malformedRecord
+                }
+                names.insert(String(cString: rawName))
+            case SQLITE_DONE:
+                return names
+            default:
+                throw PersonalVocabularyStoreError.databaseFailure(code: sqlite3_errcode(database))
+            }
+        }
     }
 
     private static func createPrivateDirectory(at url: URL, fileManager: FileManager) throws {
@@ -543,6 +618,8 @@ private struct EntryRow {
     let applicationCount: Int
     let correctionCount: Int
     let lastAppliedAt: Date?
+    let directRecognitionCount: Int
+    let lastRecognizedAt: Date?
     let schemaVersion: Int
 }
 

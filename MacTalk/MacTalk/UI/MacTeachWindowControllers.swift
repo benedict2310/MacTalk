@@ -394,9 +394,25 @@ final class PersonalVocabularyViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let coordinator: MacTeachCoordinator
+    private nonisolated(unsafe) var vocabularyObserver: NSObjectProtocol?
 
     init(coordinator: MacTeachCoordinator) {
         self.coordinator = coordinator
+        self.vocabularyObserver = NotificationCenter.default.addObserver(
+            forName: .macTalkVocabularyDidChange,
+            object: coordinator,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.load()
+            }
+        }
+    }
+
+    deinit {
+        if let vocabularyObserver {
+            NotificationCenter.default.removeObserver(vocabularyObserver)
+        }
     }
 
     var filteredEntries: [PersonalVocabularyEntry] {
@@ -407,6 +423,28 @@ final class PersonalVocabularyViewModel: ObservableObject {
                 || entry.wrongForms.contains { VocabularyNormalization.text($0.text).contains(query) }
                 || entry.spokenForm.map { VocabularyNormalization.text($0).contains(query) } == true
         }
+    }
+
+    var selectedEntry: PersonalVocabularyEntry? {
+        entries.first { $0.id == selectedEntryID }
+    }
+
+    func effectivenessSummary(for entry: PersonalVocabularyEntry) -> String {
+        guard entry.directRecognitionCount + entry.applicationCount > 0 else {
+            return "No later uses observed yet"
+        }
+        var parts = [
+            "Recognized directly \(Self.times(entry.directRecognitionCount))",
+            "Repaired \(Self.times(entry.applicationCount))",
+        ]
+        if entry.correctionCount > 0 {
+            parts.append(entry.correctionCount == 1 ? "Taught once" : "Taught \(entry.correctionCount) times")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func times(_ count: Int) -> String {
+        count == 1 ? "once" : "\(count) times"
     }
 
     func load() async {
@@ -468,7 +506,9 @@ final class PersonalVocabularyViewModel: ObservableObject {
             updatedAt: timestamp,
             applicationCount: existing?.applicationCount ?? 0,
             correctionCount: existing?.correctionCount ?? 0,
-            lastAppliedAt: existing?.lastAppliedAt
+            lastAppliedAt: existing?.lastAppliedAt,
+            directRecognitionCount: existing?.directRecognitionCount ?? 0,
+            lastRecognizedAt: existing?.lastRecognizedAt
         )
         do {
             try await coordinator.saveVocabularyEntry(entry)
@@ -572,6 +612,9 @@ private struct PersonalVocabularyRootView: View {
                             Text(entry.wrongForms.map(\.text).joined(separator: ", "))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text(viewModel.effectivenessSummary(for: entry))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
                         Spacer()
                         Toggle("Enabled", isOn: Binding(
@@ -584,7 +627,8 @@ private struct PersonalVocabularyRootView: View {
                     .accessibilityLabel(
                         "\(entry.writtenForm), heard forms \(entry.wrongForms.map(\.text).joined(separator: ", ")), "
                         + "\(entry.applicationBundleIDs.isEmpty ? "all applications" : entry.applicationBundleIDs.sorted().joined(separator: ", ")), "
-                        + "priority \(entry.priority.rawValue), \(entry.isEnabled ? "enabled" : "disabled"), source \(entry.source.rawValue)"
+                        + "priority \(entry.priority.rawValue), \(entry.isEnabled ? "enabled" : "disabled"), source \(entry.source.rawValue), "
+                        + viewModel.effectivenessSummary(for: entry)
                     )
                 }
                 .onChange(of: viewModel.selectedEntryID) { viewModel.selectEntry(id: viewModel.selectedEntryID) }
@@ -617,6 +661,9 @@ private struct PersonalVocabularyRootView: View {
                 }
                 Toggle("Improve recognition", isOn: $viewModel.recognitionHintEnabled)
                 Toggle("Always replace known wrong forms", isOn: $viewModel.replacementEnabled)
+                if let selectedEntry = viewModel.selectedEntry {
+                    LabeledContent("Effectiveness", value: viewModel.effectivenessSummary(for: selectedEntry))
+                }
                 HStack {
                     Button("Save") { Task { await viewModel.save() } }
                         .keyboardShortcut(.defaultAction)

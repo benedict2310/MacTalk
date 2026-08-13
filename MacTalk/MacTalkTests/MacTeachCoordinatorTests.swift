@@ -79,6 +79,71 @@ final class MacTeachCoordinatorTests: XCTestCase {
         XCTAssertEqual(records.count, 1)
     }
 
+    func test_persistRecordsExactDirectRecognitionForHintedVocabulary() async throws {
+        let fixture = try makeFixture()
+        let entry = PersonalVocabularyEntry(
+            writtenForm: "MacTalk",
+            wrongForms: [PersonalVocabularyWrongForm(text: "Mac Talk")],
+            priority: .important
+        )
+        try await fixture.vocabulary.save(entry)
+        let session = await fixture.coordinator.captureSession(settings: makeSettings(), target: nil)
+        let terminal = TerminalTranscription(
+            sessionID: UUID(),
+            provider: .whisper,
+            rawASRText: "MacTalk works",
+            cleanedText: "MacTalk works."
+        )
+
+        let delivered = fixture.coordinator.deliver(terminal, session: session)
+        XCTAssertEqual(delivered.directRecognitionEntryIDs, [entry.id])
+        XCTAssertTrue(delivered.replacementEdits.isEmpty)
+
+        _ = try await fixture.coordinator.persist(
+            delivered,
+            session: session,
+            selection: EngineSelection(provider: .whisper, modelID: "model", revision: "revision"),
+            insertionSucceeded: true
+        )
+
+        let loadedMeasured = try await fixture.vocabulary.entry(id: entry.id)
+        let measured = try XCTUnwrap(loadedMeasured)
+        XCTAssertEqual(measured.directRecognitionCount, 1)
+        XCTAssertEqual(
+            try XCTUnwrap(measured.lastRecognizedAt).timeIntervalSince1970,
+            delivered.completedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(measured.applicationCount, 0)
+    }
+
+    func test_deliveryDoesNotClaimCaseIncorrectOrUnhintedTextWasRecognized() async throws {
+        let fixture = try makeFixture()
+        let hinted = PersonalVocabularyEntry(writtenForm: "MacTalk")
+        let unhinted = PersonalVocabularyEntry(writtenForm: "Codex", recognitionHintEnabled: false)
+        try await fixture.vocabulary.saveAll([hinted, unhinted])
+        let session = await fixture.coordinator.captureSession(settings: makeSettings(), target: nil)
+        let terminal = TerminalTranscription(
+            sessionID: UUID(),
+            provider: .whisper,
+            rawASRText: "mactalk and Codex",
+            cleanedText: "mactalk and Codex."
+        )
+
+        let delivered = fixture.coordinator.deliver(terminal, session: session)
+
+        XCTAssertTrue(delivered.directRecognitionEntryIDs.isEmpty)
+
+        let substringTerminal = TerminalTranscription(
+            sessionID: UUID(),
+            provider: .whisper,
+            rawASRText: "MacTalker",
+            cleanedText: "MacTalker."
+        )
+        let substringDelivery = fixture.coordinator.deliver(substringTerminal, session: session)
+        XCTAssertTrue(substringDelivery.directRecognitionEntryIDs.isEmpty)
+    }
+
     func test_teachCreatesVocabularyAndRecomputesCorrectedHistoryFromCleanedText() async throws {
         let fixture = try makeFixture()
         let recordID = UUID()

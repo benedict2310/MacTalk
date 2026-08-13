@@ -18,6 +18,7 @@ struct MacTeachDeliveredTranscript: Sendable, Equatable {
     let terminal: TerminalTranscription
     let text: String
     let replacementEdits: [VocabularyReplacementEdit]
+    let directRecognitionEntryIDs: Set<UUID>
 }
 
 @MainActor
@@ -34,6 +35,7 @@ protocol MacTeachCoordinating: AnyObject {
 
 extension Notification.Name {
     static let macTalkHistoryDidChange = Notification.Name("MacTalkHistoryDidChange")
+    static let macTalkVocabularyDidChange = Notification.Name("MacTalkVocabularyDidChange")
 }
 
 extension HistoryPersistenceOutcome {
@@ -155,7 +157,11 @@ final class MacTeachCoordinator: MacTeachCoordinating {
             completedAt: now(),
             terminal: terminal,
             text: replacement.text,
-            replacementEdits: replacement.edits
+            replacementEdits: replacement.edits,
+            directRecognitionEntryIDs: Self.directlyRecognizedEntryIDs(
+                in: terminal.cleanedText,
+                hints: session.requestContext.vocabularyHints
+            )
         )
     }
 
@@ -203,6 +209,16 @@ final class MacTeachCoordinator: MacTeachCoordinating {
                 entryIDs: Set(delivered.replacementEdits.map(\.entryID)),
                 appliedAt: delivered.completedAt
             )
+        }
+        if case .inserted = outcome, !delivered.directRecognitionEntryIDs.isEmpty {
+            try? await vocabularyStore.recordDirectRecognitions(
+                entryIDs: delivered.directRecognitionEntryIDs,
+                recognizedAt: delivered.completedAt
+            )
+        }
+        if case .inserted = outcome,
+           !delivered.replacementEdits.isEmpty || !delivered.directRecognitionEntryIDs.isEmpty {
+            NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
         }
 
         let record: HistoryRecord
@@ -276,7 +292,9 @@ final class MacTeachCoordinator: MacTeachCoordinating {
                 updatedAt: timestamp,
                 applicationCount: existing.applicationCount,
                 correctionCount: existing.correctionCount + 1,
-                lastAppliedAt: existing.lastAppliedAt
+                lastAppliedAt: existing.lastAppliedAt,
+                directRecognitionCount: existing.directRecognitionCount,
+                lastRecognizedAt: existing.lastRecognizedAt
             )
         } else {
             entry = PersonalVocabularyEntry(
@@ -296,6 +314,7 @@ final class MacTeachCoordinator: MacTeachCoordinating {
             )
         }
         let saved = try await vocabularyStore.save(entry)
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
         let updatedSnapshot = try await vocabularyStore.snapshot()
         let replacement = replacementEngine.apply(
             to: history.cleanedText,
@@ -347,22 +366,27 @@ final class MacTeachCoordinator: MacTeachCoordinating {
 
     func saveVocabularyEntry(_ entry: PersonalVocabularyEntry) async throws {
         _ = try await vocabularyStore.save(entry)
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
     }
 
     func importVocabularyEntries(_ entries: [PersonalVocabularyEntry]) async throws {
         _ = try await vocabularyStore.saveAll(entries)
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
     }
 
     func setVocabularyEntryEnabled(_ enabled: Bool, id: UUID) async throws {
         _ = try await vocabularyStore.setEnabled(enabled, id: id)
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
     }
 
     func deleteVocabularyEntry(id: UUID) async throws {
         try await vocabularyStore.delete(id: id)
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
     }
 
     func deleteAllVocabulary() async throws {
         _ = try await vocabularyStore.deleteAll()
+        NotificationCenter.default.post(name: .macTalkVocabularyDidChange, object: self)
     }
 
     func deleteHistoryRecord(id: UUID) async throws {
@@ -431,6 +455,46 @@ final class MacTeachCoordinator: MacTeachCoordinating {
         case nil: return .forever
         default: return .thirtyDays
         }
+    }
+
+    private nonisolated static func directlyRecognizedEntryIDs(
+        in text: String,
+        hints: [ASRVocabularyHint]
+    ) -> Set<UUID> {
+        Set(hints.compactMap { hint in
+            self.containsExactWholePhrase(hint.writtenForm, in: text) ? hint.id : nil
+        })
+    }
+
+    private nonisolated static func containsExactWholePhrase(_ phrase: String, in text: String) -> Bool {
+        guard !phrase.isEmpty, !text.isEmpty else { return false }
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let range = text.range(
+                of: phrase,
+                options: [.literal],
+                range: searchStart..<text.endIndex,
+                locale: VocabularyNormalization.locale
+              ) {
+            let phraseStartsWithWord = phrase.first.map { self.isWordConstituent($0) } ?? false
+            let phraseEndsWithWord = phrase.last.map { self.isWordConstituent($0) } ?? false
+            let startsAtBoundary = range.lowerBound == text.startIndex
+                || !self.isWordConstituent(text[text.index(before: range.lowerBound)])
+                || !phraseStartsWithWord
+            let endsAtBoundary = range.upperBound == text.endIndex
+                || !self.isWordConstituent(text[range.upperBound])
+                || !phraseEndsWithWord
+            if startsAtBoundary, endsAtBoundary { return true }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    private nonisolated static func isWordConstituent(_ character: Character) -> Bool {
+        let constituents = CharacterSet.alphanumerics
+            .union(.nonBaseCharacters)
+            .union(CharacterSet(charactersIn: "_"))
+        return character.unicodeScalars.contains { constituents.contains($0) }
     }
 
     private nonisolated static func writeTemporaryAudio(_ samples: [Float]) throws -> URL {

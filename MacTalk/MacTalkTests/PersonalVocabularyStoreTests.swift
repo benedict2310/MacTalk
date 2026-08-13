@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import MacTalk
 
@@ -15,7 +16,9 @@ final class PersonalVocabularyStoreTests: XCTestCase {
             priority: .important,
             applicationCount: 3,
             correctionCount: 2,
-            lastAppliedAt: Date(timeIntervalSince1970: 90)
+            lastAppliedAt: Date(timeIntervalSince1970: 90),
+            directRecognitionCount: 4,
+            lastRecognizedAt: Date(timeIntervalSince1970: 95)
         )
 
         do {
@@ -81,11 +84,44 @@ final class PersonalVocabularyStoreTests: XCTestCase {
         let appliedSnapshot = try await store.snapshot()
         XCTAssertEqual(appliedSnapshot.version, 3)
 
+        let recognizedAt = Date(timeIntervalSince1970: 400)
+        try await store.recordDirectRecognitions(entryIDs: [id, id], recognizedAt: recognizedAt)
+        let loadedRecognized = try await store.entry(id: id)
+        let recognized = try XCTUnwrap(loadedRecognized)
+        XCTAssertEqual(recognized.directRecognitionCount, 1)
+        XCTAssertEqual(recognized.lastRecognizedAt, recognizedAt)
+        let recognizedSnapshot = try await store.snapshot()
+        XCTAssertEqual(recognizedSnapshot.version, 4)
+
         try await store.delete(id: id)
         let emptyEntries = try await store.entries()
         let deletedSnapshot = try await store.snapshot()
         XCTAssertTrue(emptyEntries.isEmpty)
-        XCTAssertEqual(deletedSnapshot.version, 4)
+        XCTAssertEqual(deletedSnapshot.version, 5)
+    }
+
+    func test_openingLegacyVocabularyDatabaseAddsRecognitionMetricsWithoutLosingEntries() async throws {
+        let fixture = try VocabularyStoreFixture()
+        defer { fixture.remove() }
+        let id = UUID()
+        try createLegacyVocabularyDatabase(at: fixture.databaseURL, entryID: id)
+
+        let store = try PersonalVocabularyStore(databaseURL: fixture.databaseURL)
+        let loadedMigrated = try await store.entry(id: id)
+        let migrated = try XCTUnwrap(loadedMigrated)
+
+        XCTAssertEqual(migrated.writtenForm, "MacTalk")
+        XCTAssertEqual(migrated.applicationCount, 2)
+        XCTAssertEqual(migrated.directRecognitionCount, 0)
+        XCTAssertNil(migrated.lastRecognizedAt)
+        XCTAssertEqual(migrated.schemaVersion, PersonalVocabularyEntry.currentSchemaVersion)
+
+        let recognizedAt = Date(timeIntervalSince1970: 500)
+        try await store.recordDirectRecognitions(entryIDs: [id], recognizedAt: recognizedAt)
+        let loadedUpdated = try await store.entry(id: id)
+        let updated = try XCTUnwrap(loadedUpdated)
+        XCTAssertEqual(updated.directRecognitionCount, 1)
+        XCTAssertEqual(updated.lastRecognizedAt, recognizedAt)
     }
 
     func test_databaseCanCoexistWithHistoryTablesWithoutOwningUserVersion() async throws {
@@ -140,6 +176,31 @@ final class PersonalVocabularyStoreTests: XCTestCase {
         let snapshot = try await store.snapshot()
         XCTAssertTrue(snapshot.entries.isEmpty)
         XCTAssertEqual(snapshot.version, 0)
+    }
+}
+
+private func createLegacyVocabularyDatabase(at url: URL, entryID: UUID) throws {
+    var database: OpaquePointer?
+    guard sqlite3_open(url.path, &database) == SQLITE_OK, let database else {
+        throw PersonalVocabularyStoreError.cannotCreateStorage
+    }
+    defer { sqlite3_close(database) }
+    let sql = """
+        CREATE TABLE vocabulary_entries (
+            id TEXT PRIMARY KEY NOT NULL, written_form TEXT NOT NULL, spoken_form TEXT,
+            language TEXT, priority TEXT NOT NULL, hint_enabled INTEGER NOT NULL,
+            replacement_enabled INTEGER NOT NULL, enabled INTEGER NOT NULL, source TEXT NOT NULL,
+            source_history_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            application_count INTEGER NOT NULL, correction_count INTEGER NOT NULL,
+            last_applied_at REAL, schema_version INTEGER NOT NULL
+        );
+        INSERT INTO vocabulary_entries VALUES (
+            '\(entryID.uuidString.lowercased())', 'MacTalk', NULL, 'en', 'important',
+            1, 1, 1, 'manual', NULL, 10, 20, 2, 1, 30, 1
+        );
+        """
+    guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+        throw PersonalVocabularyStoreError.databaseFailure(code: sqlite3_errcode(database))
     }
 }
 

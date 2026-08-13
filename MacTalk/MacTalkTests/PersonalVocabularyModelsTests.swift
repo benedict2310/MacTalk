@@ -84,7 +84,9 @@ func makeEntry(
     updatedAt: Date = Date(timeIntervalSince1970: 100),
     applicationCount: Int = 0,
     correctionCount: Int = 0,
-    lastAppliedAt: Date? = nil
+    lastAppliedAt: Date? = nil,
+    directRecognitionCount: Int = 0,
+    lastRecognizedAt: Date? = nil
 ) -> PersonalVocabularyEntry {
     PersonalVocabularyEntry(
         id: id,
@@ -103,6 +105,8 @@ func makeEntry(
         updatedAt: updatedAt,
         applicationCount: applicationCount,
         correctionCount: correctionCount,
-        lastAppliedAt: lastAppliedAt
+        lastAppliedAt: lastAppliedAt,
+        directRecognitionCount: directRecognitionCount,
+        lastRecognizedAt: lastRecognizedAt
     )
 }
