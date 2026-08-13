@@ -15,6 +15,12 @@ required_classes=(
   MacTalkTests/WhisperModelDownloadClientTests
 )
 
+required_observability_classes=(
+  MacTalkTests/AudioHardwareValidationRecorderTests
+  MacTalkTests/PipelineObservabilityTests
+  MacTalkTests/ScreenAudioCaptureTests
+)
+
 for required_class in "${required_classes[@]}"; do
   count=0
   for selected_class in "${DETERMINISTIC_TEST_CLASSES[@]}"; do
@@ -35,6 +41,17 @@ for required_class in "${required_classes[@]}"; do
   expected="-only-testing:$required_class"
   if ! printf '%s\n' "${selection_args[@]}" | grep -Fqx -e "$expected"; then
     echo "deterministic test selection omitted $expected" >&2
+    exit 1
+  fi
+done
+
+for required in "${required_observability_classes[@]}"; do
+  if [[ " ${DETERMINISTIC_TEST_CLASSES[*]} " != *" $required "* ]]; then
+    echo "deterministic test selection omitted $required" >&2
+    exit 1
+  fi
+  if [[ " ${TSAN_SUPPORTED_TEST_CLASSES[*]} " != *" $required "* ]]; then
+    echo "TSan test selection omitted $required" >&2
     exit 1
   fi
 done

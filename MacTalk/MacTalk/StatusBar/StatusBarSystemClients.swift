@@ -41,6 +41,29 @@ protocol NotificationSubmitting: AnyObject {
 }
 
 @MainActor
+protocol PipelineDiagnosticsClient: AnyObject {
+    func copyPerformanceReport() async -> Bool
+}
+
+@MainActor
+final class SystemPipelineDiagnosticsClient: PipelineDiagnosticsClient {
+    private let store: any PipelineMetricsStoring
+    private let clipboard: any ClipboardWriting
+
+    init(
+        store: any PipelineMetricsStoring = PipelineMetricsStore.shared,
+        clipboard: any ClipboardWriting = SystemClipboardWriter()
+    ) {
+        self.store = store
+        self.clipboard = clipboard
+    }
+
+    func copyPerformanceReport() async -> Bool {
+        clipboard.write(await store.formattedReport(limit: 20))
+    }
+}
+
+@MainActor
 protocol StatusBarSettingsReading: AnyObject {
     var snapshot: SettingsSnapshot { get }
     func setAutoPaste(_ enabled: Bool)
@@ -222,6 +245,7 @@ struct StatusBarDependencies {
     let sessions: any TranscriptionSessionFactory
     let permissionClient: any PermissionClient
     let macTeach: MacTeachCoordinator?
+    let pipelineDiagnostics: any PipelineDiagnosticsClient
 
     init(
         settings: any StatusBarSettingsReading,
@@ -233,7 +257,8 @@ struct StatusBarDependencies {
         download: any (ModelDownloadCoordinating & ModelRequirementDownloading),
         sessions: any TranscriptionSessionFactory,
         permissionClient: any PermissionClient,
-        macTeach: MacTeachCoordinator? = nil
+        macTeach: MacTeachCoordinator? = nil,
+        pipelineDiagnostics: any PipelineDiagnosticsClient
     ) {
         self.settings = settings
         self.permissionFlow = permissionFlow
@@ -245,6 +270,7 @@ struct StatusBarDependencies {
         self.sessions = sessions
         self.permissionClient = permissionClient
         self.macTeach = macTeach
+        self.pipelineDiagnostics = pipelineDiagnostics
     }
 
     static func live(notificationManager: NotificationManager) -> StatusBarDependencies {
@@ -283,7 +309,8 @@ struct StatusBarDependencies {
             download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
             sessions: ProductionTranscriptionSessionFactory(),
             permissionClient: permissionClient,
-            macTeach: try? MacTeachCoordinator.makeDefault()
+            macTeach: try? MacTeachCoordinator.makeDefault(),
+            pipelineDiagnostics: SystemPipelineDiagnosticsClient()
         )
     }
 }

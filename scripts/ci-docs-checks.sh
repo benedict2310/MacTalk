@@ -182,5 +182,28 @@ for rel in ("README.md", "docs/STATUS.md", "docs/development/ARCHITECTURE.md", "
     text = read(rel)
     if re.search(r"docs/(ARCHITECTURE|TESTING|ROADMAP|PROGRESS)\.md", text):
         fail(f"{rel} contains a stale root-level documentation path")
+
+observability_docs = "\n".join(
+    read(rel) for rel in (
+        "docs/troubleshooting/PROFILING.md",
+        "docs/development/ARCHITECTURE.md",
+        "docs/testing/TESTING.md",
+        "docs/testing/CI.md",
+    )
+)
+for contract in (
+    "~/Library/Logs/MacTalk/pipeline-metrics.jsonl",
+    "Copy Performance Report",
+    "no transcript text, audio samples, target application identity, or raw errors",
+    "monotonic",
+    "real-time factor",
+    "com.mactalk.app",
+    "pipeline",
+    "bounded asynchronous hardware validation",
+    "hosted Thread Sanitizer",
+    "no flaky absolute hosted performance threshold",
+):
+    if contract not in observability_docs:
+        fail(f"pipeline observability documentation contract is missing: {contract}")
 print("blocking documentation checks passed")
 PY

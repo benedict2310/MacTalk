@@ -142,4 +142,47 @@ if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
     exit 1
 fi
 
+observability_contracts=(
+    '~/Library/Logs/MacTalk/pipeline-metrics.jsonl'
+    'Copy Performance Report'
+    'no transcript text, audio samples, target application identity, or raw errors'
+    'monotonic'
+    'real-time factor'
+    'com.mactalk.app'
+    'pipeline'
+    'bounded asynchronous hardware validation'
+    'hosted Thread Sanitizer'
+    'no flaky absolute hosted performance threshold'
+)
+for contract in "${observability_contracts[@]}"; do
+    cp "$ROOT/docs/troubleshooting/PROFILING.md" "$fixture/docs/troubleshooting/PROFILING.md"
+    cp "$ROOT/docs/development/ARCHITECTURE.md" "$fixture/docs/development/ARCHITECTURE.md"
+    cp "$ROOT/docs/testing/TESTING.md" "$fixture/docs/testing/TESTING.md"
+    cp "$ROOT/docs/testing/CI.md" "$fixture/docs/testing/CI.md"
+    python3 - "$fixture" "$contract" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+contract = sys.argv[2]
+paths = [
+    root / "docs/troubleshooting/PROFILING.md",
+    root / "docs/development/ARCHITECTURE.md",
+    root / "docs/testing/TESTING.md",
+    root / "docs/testing/CI.md",
+]
+for path in paths:
+    text = path.read_text()
+    if contract in text:
+        path.write_text(text.replace(contract, "", 1))
+        break
+else:
+    raise SystemExit(f"fixture contract was not present: {contract}")
+PY
+    if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+        echo "docs checker accepted missing observability contract: $contract" >&2
+        exit 1
+    fi
+done
+
 echo "ci-docs-checks negative fixtures passed"

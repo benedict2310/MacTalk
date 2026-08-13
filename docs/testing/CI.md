@@ -29,7 +29,11 @@ do not invoke Xcode.
 
 AppKit/window checks are a separate manual `appkit` lane. Hardware/TCC and
 real-model checks are explicit local lanes requiring their documented
-acknowledgement/path and are never selected by CI automatically.
+acknowledgement/path and are never selected by CI automatically. The
+observability classes `AudioHardwareValidationRecorderTests`,
+`PipelineObservabilityTests`, and `ScreenAudioCaptureTests` are injected,
+metadata-only tests selected by both deterministic and hosted Thread
+Sanitizer arrays.
 
 ## TSan
 
@@ -52,4 +56,8 @@ used by `VerifiedCoreMLByteAssetTests`, and
 `VerifiedParakeetModelLoaderTests` stalls at its first cancellation test. Those
 classes remain blocking in the ordinary macOS 26 unit lane but are excluded
 from the hosted TSan subset; every other deterministic class remains selected.
-An XCTest pass is never reported without the sanitizer runtime checks.
+An XCTest pass is never reported without the sanitizer runtime checks. No
+flaky absolute hosted performance threshold is enforced: hosted Thread
+Sanitizer validates race safety and deterministic behavior, while CPU and GPU
+figures come from Instruments rather than continuously collected runtime
+metrics.

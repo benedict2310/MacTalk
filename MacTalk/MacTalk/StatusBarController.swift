@@ -67,8 +67,8 @@ final class StatusBarController {
         render()
     }
 
-    func cleanup() {
-        recording.cleanup()
+    func cleanup() async throws {
+        try await recording.cleanup()
         dependencies.appAudioSource.cleanup()
         dependencies.shortcut.cleanup()
         dependencies.shortcut.onIntent = nil
@@ -129,6 +129,15 @@ final class StatusBarController {
         dependencies.settings.setProvider(.parakeet)
         dependencies.engine.settingsChanged(to: dependencies.settings.snapshot, recordingActive: recording.state.phase != .idle)
         render()
+    }
+
+    @objc func copyPerformanceReport() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !(await dependencies.pipelineDiagnostics.copyPerformanceReport()) {
+                NSSound.beep()
+            }
+        }
     }
 
     @objc func checkPermissions() {

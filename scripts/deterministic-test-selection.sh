@@ -7,6 +7,9 @@ DETERMINISTIC_TEST_CLASSES=(
   MacTalkTests/AudioCompositionTests
   MacTalkTests/AudioLevelMonitorTests
   MacTalkTests/AudioMixerTests
+  MacTalkTests/AudioHardwareValidationRecorderTests
+  MacTalkTests/PipelineObservabilityTests
+  MacTalkTests/ScreenAudioCaptureTests
   MacTalkTests/ConcurrencyStressTests
   MacTalkTests/DeterministicHarnessTests
   MacTalkTests/EngineLifecycleCoordinatorTests
@@ -52,6 +55,9 @@ TSAN_SUPPORTED_TEST_CLASSES=(
   MacTalkTests/AudioCompositionTests
   MacTalkTests/AudioLevelMonitorTests
   MacTalkTests/AudioMixerTests
+  MacTalkTests/AudioHardwareValidationRecorderTests
+  MacTalkTests/PipelineObservabilityTests
+  MacTalkTests/ScreenAudioCaptureTests
   MacTalkTests/ConcurrencyStressTests
   MacTalkTests/DeterministicHarnessTests
   MacTalkTests/EngineLifecycleCoordinatorTests

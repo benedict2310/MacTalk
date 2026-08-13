@@ -17,13 +17,17 @@ with code signing disabled, and applies the explicit selection from
 ASR engines, clocks, schedulers, downloaders, and network traps. The lane does
 not use TCC, audio hardware, provider networks, or a real model.
 
-The explicit selection includes bounded transport, provenance/integrity,
-Parakeet source preparation/materialization/snapshot, verified byte loading,
-bootstrap generation ownership, source-only availability, and legacy compiled
-cleanup suites. `scripts/ci-security-checks.sh` also runs offline provenance
-negative fixtures and `scripts/tests/test_model_security_source_guard.sh`, which
-mutates a temporary source copy to prove that path-loading, unverified loading,
-and unbounded production-transport regressions are rejected.
+The explicit selection includes pipeline observability suites
+(`AudioHardwareValidationRecorderTests`, `PipelineObservabilityTests`, and
+`ScreenAudioCaptureTests`) alongside bounded transport,
+provenance/integrity, Parakeet source preparation/materialization/snapshot,
+verified byte loading, bootstrap generation ownership, source-only
+availability, and legacy compiled cleanup suites. These observability tests
+use injected drivers and sinks; they do not access TCC, windows, hardware,
+models, or the network. `scripts/ci-security-checks.sh` also runs offline
+provenance negative fixtures and `scripts/tests/test_model_security_source_guard.sh`,
+which mutates a temporary source copy to prove that path-loading, unverified
+loading, and unbounded production-transport regressions are rejected.
 
 The 2026-07-18 run executed **203 tests, 0 failures, 0 skips**. At model-security
 closure checkout `72762ed` on 2026-07-26, the expanded selection executed
@@ -80,13 +84,24 @@ completed every earlier deterministic class but `ParakeetStoreFileLockTests`
 subprocesses exited with status 15, CoreML rejected the version-10 fixture in
 `VerifiedCoreMLByteAssetTests`, and `VerifiedParakeetModelLoaderTests` stalled.
 Only those three classes are omitted from TSan; the ordinary macOS 26 unit lane
-continues to run them.
+continues to run them. The three pipeline observability classes are included in
+both deterministic and hosted Thread Sanitizer arrays. Hosted TSan has no flaky
+absolute performance threshold: it checks race safety and deterministic test
+behavior, while performance figures require Instruments.
 
 On the baseline host, the standalone clang ThreadSanitizer binary segfaulted
 (signal 11), so the lane stopped with `TSAN/UNAVAILABLE` before XCTest. No local
 TSan pass is claimed. The blocker is the Apple/host sanitizer runtime, not
 evidence that the tests pass or fail under TSan; hosted CI uses the compatible
 `macos-15` runtime with the same pinned Xcode 26.0.1 toolchain.
+
+## Pipeline diagnostics and hardware validation
+
+Pipeline reports are bounded metadata-only JSONL records. They contain no
+transcript text, audio samples, target application identity, or raw errors.
+Hardware validation is opt-in, bounded asynchronous hardware validation and
+never writes audio samples. The report can be copied only through the explicit
+status-bar **Copy Performance Report** action.
 
 ## Build and signing lanes
 

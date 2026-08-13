@@ -15,6 +15,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         static let history = "macteach.history"
         static let vocabulary = "macteach.vocabulary"
         static let correctLast = "macteach.correctLast"
+        static let performanceReport = "application.performanceReport"
         static let settings = "application.settings"
         static let permissions = "application.permissions"
         static let about = "application.about"
@@ -77,6 +78,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         menu.addItem(Self.item(id: ItemID.vocabulary, title: "Personal Vocabulary…", action: #selector(StatusBarController.showPersonalVocabulary), target: target))
         menu.addItem(correctLastItem)
         menu.addItem(.separator())
+        menu.addItem(Self.item(id: ItemID.performanceReport, title: "Copy Performance Report", action: #selector(StatusBarController.copyPerformanceReport), target: target))
         menu.addItem(Self.item(id: ItemID.settings, title: "Settings...", action: #selector(StatusBarController.showSettings), target: target, keyEquivalent: ","))
         menu.addItem(Self.item(id: ItemID.permissions, title: "Check Permissions", action: #selector(StatusBarController.checkPermissions), target: target))
         menu.addItem(.separator())

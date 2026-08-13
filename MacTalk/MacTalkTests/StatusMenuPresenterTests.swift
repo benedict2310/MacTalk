@@ -22,6 +22,7 @@ final class StatusMenuPresenterTests: XCTestCase {
             StatusMenuPresenter.ItemID.vocabulary,
             StatusMenuPresenter.ItemID.correctLast,
             "",
+            StatusMenuPresenter.ItemID.performanceReport,
             StatusMenuPresenter.ItemID.settings,
             StatusMenuPresenter.ItemID.permissions,
             "",
@@ -35,7 +36,15 @@ final class StatusMenuPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.menu.items[10].action, #selector(StatusBarController.showPersonalVocabulary))
         XCTAssertEqual(presenter.menu.items[11].action, #selector(StatusBarController.correctLastTranscription))
         XCTAssertEqual(presenter.menu.items[4].keyEquivalent, "p")
-        XCTAssertEqual(presenter.menu.items[13].keyEquivalent, ",")
+        XCTAssertEqual(
+            presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.title,
+            "Copy Performance Report"
+        )
+        XCTAssertEqual(
+            presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.action,
+            #selector(StatusBarController.copyPerformanceReport)
+        )
+        XCTAssertEqual(presenter.menu.items[14].keyEquivalent, ",")
     }
 
     func test_renderUpdatesEnablementChecksAndShortcutTitles() {

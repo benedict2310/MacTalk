@@ -47,7 +47,8 @@ final class TranscriptionControllerTests: XCTestCase {
         engine.onEvent = { event in
             if case .process = event { processStarted.fulfill() }
         }
-        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings, scheduler: scheduler)
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, settings: settings, scheduler: scheduler, metricsStore: metricsStore)
         controller.language = "en"
 
         let finalExpectation = expectation(description: "final callback")
@@ -55,6 +56,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { text in
             finalText.set(text)
             finalExpectation.fulfill()
+            return nil
         }
 
         try await controller.start(mode: .micOnly)
@@ -78,6 +80,12 @@ final class TranscriptionControllerTests: XCTestCase {
         await stopAndAdvance(controller)
         await fulfillment(of: [finalExpectation], timeout: 2)
         XCTAssertEqual(finalText.get(), "Final result.")
+        await metricsStore.waitForCount(1)
+        let reports = await metricsStore.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .completed)
+        XCTAssertEqual(report.output.insertOutcome, .rejected)
+        XCTAssertNotNil(report.latency.finalOutputHandoffMs)
         XCTAssertEqual(engine.finalizeCalls.map(\.samples), [samples + samples])
         XCTAssertEqual(engine.events.compactMap { event -> String? in
             switch event {
@@ -137,6 +145,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { text in
             finalText.set(text)
             finalExpectation.fulfill()
+            return nil
         }
 
         try await controller.start(mode: .micOnly)
@@ -181,11 +190,231 @@ final class TranscriptionControllerTests: XCTestCase {
         )
     }
 
+    func test_controllerPersistsExactlyOneReportThroughInjectedMetricsStore() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: engine,
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        await controller.cancelStart()
+        await metricsStore.waitForCount(1)
+        let storedCount = await metricsStore.count
+        XCTAssertEqual(storedCount, 1)
+    }
+
+    func test_explicitCleanupRetriesFailedCaptureRetirementBeforeCompleting() async throws {
+        let capture = DeterministicCaptureSession()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        let retirementBaseline = capture.stopAndWaitCount
+        capture.stopAndWaitFailuresRemaining = 1
+        controller.stop()
+        await advanceStopScheduler()
+        for _ in 0..<100 {
+            if capture.stopAndWaitCount == retirementBaseline + 1 { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 1)
+        let firstRecordCount = await metricsStore.count
+        XCTAssertEqual(firstRecordCount, 0)
+
+        try await controller.stopAndWait()
+        await metricsStore.waitForCount(1)
+
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 2)
+        let completedRecordCount = await metricsStore.count
+        XCTAssertEqual(completedRecordCount, 1)
+    }
+
+    func test_concurrentExplicitCleanupWaitersShareRetirementFailureUntilSuccessfulRetry() async throws {
+        let capture = DeterministicCaptureSession()
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+
+        try await controller.start(mode: .micOnly)
+        let retirementBaseline = capture.stopAndWaitCount
+        capture.stopAndWaitFailuresRemaining = 1
+        controller.stop()
+        await advanceStopScheduler()
+        for _ in 0..<100 where capture.stopAndWaitCount < retirementBaseline + 1 {
+            await Task.yield()
+        }
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 1)
+        XCTAssertEqual(metricsStore.count, 0)
+
+        let gate = AsyncSuspensionGate()
+        capture.stopAndWaitFailuresRemaining = 1
+        capture.stopAndWaitHook = { await gate.suspend() }
+        let first = Task { try await controller.stopAndWait() }
+        let second = Task { try await controller.stopAndWait() }
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        var failureCount = 0
+        for waiter in [first, second] {
+            do {
+                try await waiter.value
+            } catch is ScreenCaptureLifecycleError {
+                failureCount += 1
+            }
+        }
+        XCTAssertEqual(failureCount, 2)
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 2)
+        XCTAssertEqual(metricsStore.count, 0)
+
+        capture.stopAndWaitHook = nil
+        try await controller.stopAndWait()
+        await metricsStore.waitForCount(1)
+        XCTAssertEqual(capture.stopAndWaitCount, retirementBaseline + 3)
+        XCTAssertEqual(metricsStore.count, 1)
+    }
+
+    func test_finalizationCompletionAwaitsDelayedMetricsPersistence() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = DelayedPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: store
+        )
+        let completion = expectation(description: "finalization completion")
+        let callbackBeforeStoreReturn = DeterministicValueBox(false)
+        controller.onFinalizationComplete = { callbackBeforeStoreReturn.set(true); completion.fulfill() }
+
+        try await controller.start(mode: .micOnly)
+        controller.stop()
+        await advanceStopScheduler()
+        await store.waitUntilRecordStarted()
+        XCTAssertFalse(callbackBeforeStoreReturn.get())
+        await store.release()
+        await fulfillment(of: [completion], timeout: 1)
+        let recordCount = await store.recordCount
+        XCTAssertEqual(recordCount, 1)
+    }
+
+    func test_sequentialSessionsUseEachCaptureDropBaseline() async throws {
+        let capture = DeterministicCaptureSession()
+        capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 100)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(),
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: store
+        )
+
+        try await controller.start(mode: .micOnly)
+        capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 110)
+        await controller.cancelStart()
+        await store.waitForCount(1)
+
+        try await controller.start(mode: .micOnly)
+        capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 113)
+        await controller.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.map(\.capture.microphoneDroppedBuffers), [10, 3])
+    }
+
+    func test_finalInferenceFailurePersistsTypedFailureAndPublishesSuccessfulPartial() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            partials: [ASRPartial(text: "partial fallback", words: [])],
+            finalizeErrors: [.finalize(0)]
+        ))
+        let partialStarted = expectation(description: "partial inference started")
+        engine.onEvent = { event in
+            if case .process = event { partialStarted.fulfill() }
+        }
+        let metricsStore = DelayedPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: engine,
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+        controller.onFinal = { _ in
+            OutputResult(clipboardWritten: true, insertOutcome: .notAttempted, userMessage: "", permissionEffect: nil)
+        }
+
+        try await controller.start(mode: .micOnly)
+        for index in 0..<2 {
+            capture.emitMicrophone(AudioCaptureFrame(
+                samples: [Float](repeating: 0.25, count: 16_000),
+                sampleRate: 16_000,
+                firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: UInt64(index + 1) * 1_000_000_000)
+            ))
+        }
+        await fulfillment(of: [partialStarted], timeout: 1)
+        controller.stop()
+        await advanceStopScheduler()
+        await metricsStore.waitUntilRecordStarted()
+        let reports = await metricsStore.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .inferenceFailed)
+        XCTAssertTrue(report.output.clipboardWritten)
+        XCTAssertEqual(report.output.insertOutcome, .notAttempted)
+        await metricsStore.release()
+    }
+
+    func test_controllerStoresCompletedOutputAndCmdVAsScheduled() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            finals: [ASRFinalSegment(text: "completed output", words: [])]
+        ))
+        let metricsStore = RecordingPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: engine,
+            captureSession: capture,
+            scheduler: scheduler,
+            metricsStore: metricsStore
+        )
+        controller.onFinal = { _ in
+            OutputResult(clipboardWritten: true, insertOutcome: .cmdVFallback, userMessage: "", permissionEffect: nil)
+        }
+
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        await stopAndAdvance(controller)
+        await metricsStore.waitForCount(1)
+        let reports = await metricsStore.reports(limit: 2)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.outcome, .completed)
+        XCTAssertTrue(report.output.clipboardWritten)
+        XCTAssertEqual(report.output.insertOutcome, .cmdVScheduledUnverified)
+        XCTAssertFalse(report.output.insertCompleted)
+    }
+
     func test_microphoneCaptureStartFailureCleansUpBeforeSurfacing() async throws {
         let capture = DeterministicCaptureSession()
         capture.microphoneStartError = DeterministicCaptureSession.Error.microphoneStart
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
 
         do {
             try await controller.start(mode: .micOnly)
@@ -195,13 +424,17 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
     }
 
     func test_applicationCaptureStartFailureCleansUpBeforeSurfacing() async throws {
         let capture = DeterministicCaptureSession()
         capture.appStartError = DeterministicCaptureSession.Error.appStart
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
         let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
 
         do {
@@ -212,6 +445,157 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
+    }
+
+    func test_missingApplicationSourcePersistsExactlyOneStartFailureReport() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+
+        do {
+            try await controller.start(mode: .micPlusAppAudio)
+            XCTFail("Expected missing source failure")
+        } catch { }
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports[0].outcome, .startFailed)
+        XCTAssertEqual(reports[0].context.captureMode, .micPlusAppAudio)
+    }
+
+    func test_duplicateStopPersistsExactlyOneReport() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        controller.stop()
+        controller.stop()
+        await advanceStopScheduler()
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 10)
+        XCTAssertEqual(reports.count, 1)
+    }
+
+    func testStopThenRestartBeforeTailDrainKeepsReportsAndRejectsStaleMicrophoneCallback() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        let oldCallback = capture.microphoneCallbacks[0]
+        let oldID = capture.microphoneSessionIDs[0]
+        oldCallback(oldID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        controller.stop()
+        try await controller.start(mode: .micOnly)
+        await store.waitForCount(1)
+        let newCallback = capture.microphoneCallbacks[1]
+        let newID = capture.microphoneSessionIDs[1]
+        oldCallback(oldID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        newCallback(newID, AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        await controller.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertNotEqual(reports[0].context.id, reports[1].context.id)
+        XCTAssertEqual(reports.map { $0.audio.microphoneInputSamples }, [1, 1])
+    }
+
+    func testReplacementStartPersistsCancelledOldAndNewReportsExactlyOnce() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        try await controller.start(mode: .micOnly)
+        try await controller.start(mode: .micOnly)
+        await store.waitForCount(1)
+        await controller.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 3)
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertEqual(reports.map(\.outcome), [.cancelled, .cancelled])
+        XCTAssertNotEqual(reports[0].context.id, reports[1].context.id)
+    }
+
+    func testApplicationLossFallbackIsPersistedAndStaleErrorCannotMutateReplacement() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let fallback = expectation(description: "fallback")
+        let controller = TranscriptionController(
+            engine: DeterministicASREngine(), captureSession: capture, scheduler: scheduler, metricsStore: store
+        )
+        controller.onFallbackToMicOnly = { fallback.fulfill() }
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await controller.start(mode: .micPlusAppAudio, audioSource: source)
+        let oldError = capture.errorCallbacks[0]
+        let oldID = capture.appSessionIDs[0]
+        capture.emitAppError(at: 0)
+        await fulfillment(of: [fallback], timeout: 1)
+        oldError(oldID, NSError(domain: "stale", code: 1))
+        capture.emitMicrophone(AudioCaptureFrame(samples: [0.2], sampleRate: 16_000))
+        await stopAndAdvance(controller)
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.capture.applicationLossEvents, 1)
+        XCTAssertEqual(report.audio.fallbackCount, 1)
+    }
+
+    func testFinalTrimLiveDropAndCompositionSnapshotArePersistedTogether() async throws {
+        let capture = DeterministicCaptureSession()
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(
+            engine: LifecycleTestEngine(), captureSession: capture, scheduler: scheduler, metricsStore: store,
+            maxFinalAudioSamples: 64, finalAudioTrimMarginSamples: 16
+        )
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(samples: [0.2], sampleRate: 16_000, firstSampleHostTime: 0))
+        capture.emitMicrophone(AudioCaptureFrame(samples: [Float](repeating: 0.2, count: 81), sampleRate: 16_000))
+        capture.healthSnapshotValue = CaptureHealthMetrics(microphoneDroppedBuffers: 7)
+        await stopAndAdvance(controller)
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertGreaterThan(report.audio.trimmedSamples, 0)
+        XCTAssertEqual(report.capture.microphoneDroppedBuffers, 7)
+        XCTAssertEqual(report.composition.invalidMicrophoneTimestamps, 1)
+    }
+
+    func testReportsPreserveExactProviderModelModeAndBatteryAttribution() async throws {
+        let store = BarrierPipelineMetricsStore()
+        let whisperCapture = DeterministicCaptureSession()
+        let whisper = TranscriptionController(
+            engine: DeterministicASREngine(provider: .whisper), captureSession: whisperCapture, scheduler: scheduler,
+            metricsStore: store, batteryModeSnapshot: true
+        )
+        let whisperSettings = SettingsSnapshot(provider: .whisper, whisperModelID: "whisper-test", language: "en", captureMode: .micOnly, showNotifications: true, autoPaste: false)
+        try await whisper.start(mode: .micOnly, settingsSnapshot: whisperSettings)
+        await whisper.cancelStart()
+        await store.waitForCount(1)
+
+        let parakeetCapture = DeterministicCaptureSession()
+        let parakeet = TranscriptionController(
+            engine: DeterministicASREngine(provider: .parakeet), captureSession: parakeetCapture, scheduler: scheduler,
+            metricsStore: store, batteryModeSnapshot: false
+        )
+        let parakeetSettings = SettingsSnapshot(provider: .parakeet, whisperModelID: "ignored", language: nil, captureMode: .micPlusAppAudio, showNotifications: true, autoPaste: false)
+        let source = AppPickerWindowController.AudioSource(app: nil, display: nil, name: "fake", icon: nil)
+        try await parakeet.start(mode: .micPlusAppAudio, audioSource: source, settingsSnapshot: parakeetSettings)
+        await parakeet.cancelStart()
+        await store.waitForCount(2)
+        let reports = await store.reports(limit: 2)
+        XCTAssertEqual(reports.map { $0.context.provider }, [.whisper, .parakeet])
+        XCTAssertEqual(reports.map { $0.context.modelID }, ["whisper-test", "parakeet"])
+        XCTAssertEqual(reports.map { $0.context.captureMode }, [.micOnly, .micPlusAppAudio])
+        XCTAssertEqual(reports.map { $0.context.batteryMode }, [true, false])
     }
 
     func test_partialFinalAndLifecycleCallbacksSerializeAdversarialInferenceCompletion() async throws {
@@ -245,6 +629,7 @@ final class TranscriptionControllerTests: XCTestCase {
         controller.onFinal = { _ in
             events.set(events.get() + ["final"])
             final.fulfill()
+            return nil
         }
         controller.onFinalizationComplete = { finalizationComplete.fulfill() }
 
@@ -281,7 +666,8 @@ final class TranscriptionControllerTests: XCTestCase {
     func test_startPreparationFailureStopsCaptureAndReportsError() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(prepareError: .prepare))
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
 
         do {
             try await controller.start(mode: .micOnly)
@@ -291,12 +677,16 @@ final class TranscriptionControllerTests: XCTestCase {
         }
         XCTAssertEqual(capture.stopCount, 2)
         XCTAssertEqual(engine.events, [.prepare])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .startFailed)
     }
 
     func test_deterministicSilenceDoesNotInvokeIncrementalOrFinalInference() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine()
-        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let store = BarrierPipelineMetricsStore()
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler, metricsStore: store)
         try await controller.start(mode: .micOnly)
         capture.emitMicrophone(AudioCaptureFrame(
             samples: DeterministicAudioFixtures.silence(count: 24_000),
@@ -307,6 +697,10 @@ final class TranscriptionControllerTests: XCTestCase {
         XCTAssertTrue(engine.processCalls.isEmpty)
         XCTAssertTrue(engine.finalizeCalls.isEmpty)
         XCTAssertEqual(engine.events.filter { $0 == .prepare || $0 == .reset }, [.prepare, .reset])
+        await store.waitForCount(1)
+        let reports = await store.reports(limit: 1)
+        XCTAssertEqual(reports.first?.outcome, .noSpeech)
+        XCTAssertEqual(reports.first?.audio.vadSkips, 1)
     }
 
     func test_whisperUsesIncrementalChunkProcessing() {
@@ -785,6 +1179,111 @@ final class TranscriptionControllerTests: XCTestCase {
             throw NSError(domain: "TranscriptionControllerTests", code: Int(setStatus))
         }
         return sampleBuffer
+    }
+}
+
+private actor AsyncSuspensionGate {
+    private var entered = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            releaseWaiter = continuation
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            enteredWaiter = continuation
+        }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor BarrierPipelineMetricsStore: PipelineMetricsStoring {
+    private var reports: [PipelineSessionReport] = []
+    private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+
+    func record(_ report: PipelineSessionReport) async {
+        reports.append(report)
+        waiters.removeValue(forKey: reports.count)?.resume()
+    }
+
+    func reports(limit: Int) async -> [PipelineSessionReport] { Array(reports.suffix(limit)) }
+    func formattedReport(limit: Int) async -> String { "test" }
+
+    func waitForCount(_ count: Int) async {
+        if reports.count >= count { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters[count] = continuation
+        }
+    }
+}
+
+private actor DelayedPipelineMetricsStore: PipelineMetricsStoring {
+    private var reports: [PipelineSessionReport] = []
+    private var started = false
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    var recordCount: Int { reports.count }
+
+    func record(_ report: PipelineSessionReport) async {
+        reports.append(report)
+        started = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            releaseWaiter = continuation
+        }
+    }
+
+    func reports(limit: Int) async -> [PipelineSessionReport] { Array(reports.suffix(limit)) }
+    func formattedReport(limit: Int) async -> String { "test" }
+
+    func waitUntilRecordStarted() async {
+        if started { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            startedWaiter = continuation
+        }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private final class RecordingPipelineMetricsStore: PipelineMetricsStoring, @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: [PipelineSessionReport]())
+    private var storedReports: [PipelineSessionReport] = []
+
+    var count: Int { lock.withLock { $0.count } }
+
+    func record(_ report: PipelineSessionReport) async {
+        lock.withLock { $0.append(report) }
+    }
+
+    func reports(limit: Int) async -> [PipelineSessionReport] {
+        lock.withLock { Array($0.suffix(limit)) }
+    }
+
+    func formattedReport(limit: Int) async -> String { "test" }
+
+    func waitForCount(_ expected: Int) async {
+        for _ in 0..<100 {
+            if count == expected { return }
+            await Task.yield()
+        }
     }
 }
 

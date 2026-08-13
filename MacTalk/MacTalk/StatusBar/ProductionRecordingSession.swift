@@ -13,7 +13,7 @@ final class ProductionTranscriptionSession: StructuredTranscriptionSession {
         get { controller.onPartial }
         set { controller.onPartial = newValue }
     }
-    var onFinal: (@Sendable @MainActor (String) -> Void)? {
+    var onFinal: (@Sendable @MainActor (String) -> OutputResult?)? {
         get { controller.onFinal }
         set { controller.onFinal = newValue }
     }
@@ -51,7 +51,10 @@ final class ProductionTranscriptionSession: StructuredTranscriptionSession {
     }
 
     func stop() { controller.stop() }
-    func cancelStart() { controller.cancelStart() }
+    func stopAndWait() async throws { try await controller.stopAndWait() }
+    func requestCancelStart() -> SessionCleanup {
+        controller.requestCancelStart()
+    }
     func configure(requestContext: ASRRequestContext) {
         controller.configure(requestContext: requestContext)
     }
@@ -60,6 +63,9 @@ final class ProductionTranscriptionSession: StructuredTranscriptionSession {
 @MainActor
 final class ProductionTranscriptionSessionFactory: TranscriptionSessionFactory {
     func make(engine: any ASREngine) -> any TranscriptionSession {
-        ProductionTranscriptionSession(controller: TranscriptionController(engine: engine))
+        let batteryMode = PerformanceMonitor.currentBatteryMode
+        return ProductionTranscriptionSession(
+            controller: TranscriptionController(engine: engine, batteryModeSnapshot: batteryMode)
+        )
     }
 }

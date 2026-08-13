@@ -39,7 +39,7 @@ final class AudioMixer: Sendable {
         guard buffer.frameLength > 0 else { return [] }
         guard let inputBuffer = Self.makeMonoBuffer(from: buffer),
               let converter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
-            DebugLogger.shared.log(.error(description: "Failed to create audio converter"))
+            DebugLogger.shared.log(.operationFailed)
             return nil
         }
         return Self.convert(inputBuffer: inputBuffer, converter: converter, endOfStream: true)
@@ -87,7 +87,7 @@ final class AudioMixer: Sendable {
 
             if converter == nil || inputFormat?.isEqual(inputBuffer.format) != true {
                 guard let newConverter = AVAudioConverter(from: inputBuffer.format, to: targetFormat) else {
-                    DebugLogger.shared.log(.error(description: "Failed to create audio converter"))
+                    DebugLogger.shared.log(.operationFailed)
                     return nil
                 }
                 converter = newConverter
@@ -139,7 +139,7 @@ final class AudioMixer: Sendable {
             pcmFormat: targetFormat,
             frameCapacity: outputFrameCapacity
         ) else {
-            DebugLogger.shared.log(.error(description: "Failed to create output buffer"))
+            DebugLogger.shared.log(.operationFailed)
             return nil
         }
 
@@ -157,7 +157,7 @@ final class AudioMixer: Sendable {
 
         let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
         guard status != .error, error == nil else {
-            DebugLogger.shared.log(.error(description: error?.localizedDescription ?? "unknown"))
+            DebugLogger.shared.log(.operationFailed)
             return nil
         }
 

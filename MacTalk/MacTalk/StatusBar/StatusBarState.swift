@@ -59,6 +59,8 @@ enum AutoInsertOutcome: Equatable, Sendable {
     case permissionDenied
     case failed
     case skippedTargetChanged
+    /// The owning coordinator rejected this stale or superseded output.
+    case rejected
 }
 
 struct OutputContext: Equatable, Sendable {
@@ -189,8 +191,9 @@ struct StatusBarViewStateReducer {
         let startEnabled = recording.phase == .idle && !blockingDownload
         let stopEnabled: Bool = switch recording.phase {
         case .authorizing, .selectingAudioSource, .awaitingDownloadApproval,
-             .downloadingModel, .resolvingEngine, .starting, .recording: true
-        case .idle, .finalizing: false
+             .downloadingModel, .resolvingEngine, .starting, .recording,
+             .finalizing: true
+        case .idle: false
         }
         return StatusBarViewState(
             recordingPhase: recording.phase,
