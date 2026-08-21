@@ -101,7 +101,8 @@ jobs:
           if-no-files-found: warn
 
   coverage:
-    name: Deterministic coverage (blocking)
+    name: Deterministic coverage (scheduled/manual)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 50
     permissions:

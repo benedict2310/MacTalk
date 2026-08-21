@@ -13,6 +13,27 @@ enum SettingsCaptureMode: String, CaseIterable, Codable, Sendable {
     case micPlusAppAudio
 }
 
+struct MacTeachSettingsSnapshot: Equatable, Sendable {
+    var textHistoryEnabled: Bool
+    /// Nil represents “Forever”.
+    var textRetentionDays: Int?
+    var maximumTextRecords: Int
+    var keepRecordings: Bool
+    var audioRetentionDays: Int
+    var personalVocabularyEnabled: Bool
+    var suggestCorrections: Bool
+
+    static let defaults = MacTeachSettingsSnapshot(
+        textHistoryEnabled: true,
+        textRetentionDays: 30,
+        maximumTextRecords: 500,
+        keepRecordings: false,
+        audioRetentionDays: 7,
+        personalVocabularyEnabled: true,
+        suggestCorrections: true
+    )
+}
+
 struct SettingsSnapshot: Equatable, Sendable {
     var provider: ASRProvider
     var whisperModelID: String
@@ -21,6 +42,25 @@ struct SettingsSnapshot: Equatable, Sendable {
     var captureMode: SettingsCaptureMode
     var showNotifications: Bool
     var autoPaste: Bool
+    var macTeach: MacTeachSettingsSnapshot
+
+    init(
+        provider: ASRProvider,
+        whisperModelID: String,
+        language: String?,
+        captureMode: SettingsCaptureMode,
+        showNotifications: Bool,
+        autoPaste: Bool,
+        macTeach: MacTeachSettingsSnapshot = .defaults
+    ) {
+        self.provider = provider
+        self.whisperModelID = whisperModelID
+        self.language = language
+        self.captureMode = captureMode
+        self.showNotifications = showNotifications
+        self.autoPaste = autoPaste
+        self.macTeach = macTeach
+    }
 
     var whisperModel: ModelSpec? {
         guard provider == .whisper else { return nil }
@@ -67,6 +107,13 @@ final class AppSettings: @unchecked Sendable {
     private static let captureModeKey = "captureMode"
     private static let showNotificationsKey = "showNotifications"
     private static let autoPasteKey = "autoPaste"
+    private static let textHistoryEnabledKey = "macTeach.textHistoryEnabled"
+    private static let textRetentionDaysKey = "macTeach.textRetentionDays"
+    private static let maximumTextRecordsKey = "macTeach.maximumTextRecords"
+    private static let keepRecordingsKey = "macTeach.keepRecordings"
+    private static let audioRetentionDaysKey = "macTeach.audioRetentionDays"
+    private static let personalVocabularyEnabledKey = "macTeach.personalVocabularyEnabled"
+    private static let suggestCorrectionsKey = "macTeach.suggestCorrections"
 
     private static let defaultModelID = "whisper-large-v3-turbo-q5_0"
     private static let defaultLanguage = "en"
@@ -118,6 +165,35 @@ final class AppSettings: @unchecked Sendable {
 
     func setAutoPaste(_ enabled: Bool) {
         update { $0.autoPaste = enabled }
+    }
+
+    func setTextHistoryEnabled(_ enabled: Bool) {
+        update { $0.macTeach.textHistoryEnabled = enabled }
+    }
+
+    func setTextRetention(days: Int?, maximumRecords: Int) {
+        guard days == nil || days! > 0, maximumRecords > 0 else { return }
+        update {
+            $0.macTeach.textRetentionDays = days
+            $0.macTeach.maximumTextRecords = maximumRecords
+        }
+    }
+
+    func setKeepRecordings(_ enabled: Bool) {
+        update { $0.macTeach.keepRecordings = enabled }
+    }
+
+    func setAudioRetentionDays(_ days: Int) {
+        guard days > 0 else { return }
+        update { $0.macTeach.audioRetentionDays = days }
+    }
+
+    func setPersonalVocabularyEnabled(_ enabled: Bool) {
+        update { $0.macTeach.personalVocabularyEnabled = enabled }
+    }
+
+    func setSuggestCorrections(_ enabled: Bool) {
+        update { $0.macTeach.suggestCorrections = enabled }
     }
 
     #if DEBUG
@@ -175,13 +251,36 @@ final class AppSettings: @unchecked Sendable {
         let mode = SettingsCaptureMode(rawValue: defaults.string(forKey: captureModeKey) ?? "") ?? .micOnly
         let showNotifications = defaults.object(forKey: showNotificationsKey) == nil
             ? true : defaults.bool(forKey: showNotificationsKey)
+        let defaultMacTeach = MacTeachSettingsSnapshot.defaults
+        let storedTextRetention = defaults.object(forKey: textRetentionDaysKey) as? Int
+        let macTeach = MacTeachSettingsSnapshot(
+            textHistoryEnabled: defaults.object(forKey: textHistoryEnabledKey) == nil
+                ? defaultMacTeach.textHistoryEnabled : defaults.bool(forKey: textHistoryEnabledKey),
+            textRetentionDays: storedTextRetention == -1
+                ? nil : (storedTextRetention ?? defaultMacTeach.textRetentionDays),
+            maximumTextRecords: positiveInt(
+                defaults.object(forKey: maximumTextRecordsKey) as? Int,
+                fallback: defaultMacTeach.maximumTextRecords
+            ),
+            keepRecordings: defaults.object(forKey: keepRecordingsKey) == nil
+                ? defaultMacTeach.keepRecordings : defaults.bool(forKey: keepRecordingsKey),
+            audioRetentionDays: positiveInt(
+                defaults.object(forKey: audioRetentionDaysKey) as? Int,
+                fallback: defaultMacTeach.audioRetentionDays
+            ),
+            personalVocabularyEnabled: defaults.object(forKey: personalVocabularyEnabledKey) == nil
+                ? defaultMacTeach.personalVocabularyEnabled : defaults.bool(forKey: personalVocabularyEnabledKey),
+            suggestCorrections: defaults.object(forKey: suggestCorrectionsKey) == nil
+                ? defaultMacTeach.suggestCorrections : defaults.bool(forKey: suggestCorrectionsKey)
+        )
         return SettingsSnapshot(
             provider: provider,
             whisperModelID: modelID,
             language: language,
             captureMode: mode,
             showNotifications: showNotifications,
-            autoPaste: defaults.bool(forKey: autoPasteKey)
+            autoPaste: defaults.bool(forKey: autoPasteKey),
+            macTeach: macTeach
         )
     }
 
@@ -192,6 +291,13 @@ final class AppSettings: @unchecked Sendable {
         defaults.set(snapshot.captureMode.rawValue, forKey: captureModeKey)
         defaults.set(snapshot.showNotifications, forKey: showNotificationsKey)
         defaults.set(snapshot.autoPaste, forKey: autoPasteKey)
+        defaults.set(snapshot.macTeach.textHistoryEnabled, forKey: textHistoryEnabledKey)
+        defaults.set(snapshot.macTeach.textRetentionDays ?? -1, forKey: textRetentionDaysKey)
+        defaults.set(snapshot.macTeach.maximumTextRecords, forKey: maximumTextRecordsKey)
+        defaults.set(snapshot.macTeach.keepRecordings, forKey: keepRecordingsKey)
+        defaults.set(snapshot.macTeach.audioRetentionDays, forKey: audioRetentionDaysKey)
+        defaults.set(snapshot.macTeach.personalVocabularyEnabled, forKey: personalVocabularyEnabledKey)
+        defaults.set(snapshot.macTeach.suggestCorrections, forKey: suggestCorrectionsKey)
     }
 
     private static func migrateLegacyKeys(in defaults: UserDefaults) {
@@ -222,6 +328,11 @@ final class AppSettings: @unchecked Sendable {
     private static func validModelID(_ id: String?) -> String {
         guard let id, ModelCatalog.findById(id) != nil else { return defaultModelID }
         return id
+    }
+
+    private static func positiveInt(_ value: Int?, fallback: Int) -> Int {
+        guard let value, value > 0 else { return fallback }
+        return value
     }
 
     static let languageOptions: [String?] = [nil, "en", "es", "fr", "de", "it", "pt", "nl", "ja", "zh"]

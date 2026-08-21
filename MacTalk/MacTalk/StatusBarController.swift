@@ -11,6 +11,7 @@ final class StatusBarController {
     private var settingsController: SettingsWindowController?
     private var appPickerController: AppPickerWindowController?
     private let dependencies: StatusBarDependencies
+    private lazy var macTeachWindows = MacTeachWindowCoordinator(coordinator: dependencies.macTeach)
     private lazy var recording: RecordingSessionCoordinator = {
         let settingsReader = self.dependencies.settings
         let coordinator = RecordingSessionCoordinator(
@@ -20,7 +21,8 @@ final class StatusBarController {
             sessions: dependencies.sessions,
             output: dependencies.output,
             settingsSnapshot: { settingsReader.snapshot },
-            audioSources: dependencies.appAudioSource
+            audioSources: dependencies.appAudioSource,
+            macTeach: dependencies.macTeach
         )
         coordinator.onEvent = { [weak self] event in self?.handle(event) }
         return coordinator
@@ -42,7 +44,6 @@ final class StatusBarController {
     deinit {
         notificationTokens.forEach(NotificationCenter.default.removeObserver)
     }
-
     func show() {
         guard !isShown else { return }
         isShown = true
@@ -80,6 +81,7 @@ final class StatusBarController {
         hudController = nil
         settingsController?.close()
         settingsController = nil
+        macTeachWindows.close()
         notificationTokens.forEach(NotificationCenter.default.removeObserver)
         notificationTokens.removeAll()
         statusItem?.menu = nil
@@ -87,7 +89,6 @@ final class StatusBarController {
         menuPresenter = nil
         isShown = false
     }
-
     @objc func statusBarButtonClicked() {
         guard recording.state.phase == .recording else { return }
         hudController?.showWindow(nil)
@@ -96,7 +97,6 @@ final class StatusBarController {
     @objc func startMicOnly() { handle(.startMicOnly) }
     @objc func startMicPlusApp() { handle(.startMicPlusAppAudio) }
     @objc func stopRecording() { handle(.stop) }
-
     @objc func toggleAutoPaste() {
         let currentlyEnabled = dependencies.permissionFlow.effectiveAutoPaste
         guard !currentlyEnabled else {
@@ -113,7 +113,6 @@ final class StatusBarController {
             render()
         }
     }
-
     @objc func selectModelSpec(_ sender: NSMenuItem) {
         guard let spec = sender.representedObject as? ModelSpec else { return }
         dependencies.settings.setWhisperModelID(spec.id)
@@ -121,13 +120,11 @@ final class StatusBarController {
         dependencies.engine.settingsChanged(to: dependencies.settings.snapshot, recordingActive: recording.state.phase != .idle)
         render()
     }
-
     @objc func selectParakeet() {
         dependencies.settings.setProvider(.parakeet)
         dependencies.engine.settingsChanged(to: dependencies.settings.snapshot, recordingActive: recording.state.phase != .idle)
         render()
     }
-
     @objc func copyPerformanceReport() {
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -136,7 +133,6 @@ final class StatusBarController {
             }
         }
     }
-
     @objc func checkPermissions() {
         StatusBarAlertPresenter.showPermissions(dependencies.permissionFlow.statusReport())
     }
@@ -146,9 +142,10 @@ final class StatusBarController {
         settingsController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-
+    @objc func showHistory() { macTeachWindows.showHistory() }
+    @objc func showPersonalVocabulary() { macTeachWindows.showPersonalVocabulary() }
+    @objc func correctLastTranscription() { macTeachWindows.correctLastTranscription() }
     @objc func showAbout() { StatusBarAlertPresenter.showAbout() }
-
     @objc func quit() { NSApp.terminate(nil) }
 
     private func handle(_ intent: StatusBarIntent) {
@@ -161,6 +158,8 @@ final class StatusBarController {
             recording.toggle(mode: .micOnly)
         case .toggleMicPlusAppAudio:
             recording.toggle(mode: .micPlusAppAudio)
+        case .correctLastTranscription:
+            correctLastTranscription()
         case .stop:
             recording.stop()
         case .toggleAutoPaste:

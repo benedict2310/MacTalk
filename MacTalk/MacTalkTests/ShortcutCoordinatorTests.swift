@@ -8,7 +8,8 @@ final class ShortcutCoordinatorTests: XCTestCase {
         let registrar = HotkeyRegistrarFake()
         let reader = ShortcutReaderFake(configuration: ShortcutConfiguration(
             micOnly: KeyboardShortcut(keyCode: 49, modifierFlags: [.command, .shift]),
-            micPlusAppAudio: KeyboardShortcut(keyCode: 36, modifierFlags: [.command])
+            micPlusAppAudio: KeyboardShortcut(keyCode: 36, modifierFlags: [.command]),
+            correctLast: KeyboardShortcut(keyCode: 8, modifierFlags: [.command, .option])
         ))
         let coordinator = ShortcutCoordinator(registrar: registrar, reader: reader)
         var intents: [StatusBarIntent] = []
@@ -16,10 +17,11 @@ final class ShortcutCoordinatorTests: XCTestCase {
 
         coordinator.reload()
 
-        XCTAssertEqual(registrar.operations, [.unregisterAll, .register(49), .register(36)])
+        XCTAssertEqual(registrar.operations, [.unregisterAll, .register(49), .register(36), .register(8)])
         registrar.invoke(keyCode: 49)
         registrar.invoke(keyCode: 36)
-        XCTAssertEqual(intents, [.toggleMicOnly, .toggleMicPlusAppAudio])
+        registrar.invoke(keyCode: 8)
+        XCTAssertEqual(intents, [.toggleMicOnly, .toggleMicPlusAppAudio, .correctLastTranscription])
         XCTAssertEqual(coordinator.configuration, reader.configuration)
     }
 
@@ -27,7 +29,8 @@ final class ShortcutCoordinatorTests: XCTestCase {
         let registrar = HotkeyRegistrarFake()
         let configuration = ShortcutConfiguration(
             micOnly: KeyboardShortcut(keyCode: 49, modifierFlags: [.command, .shift]),
-            micPlusAppAudio: KeyboardShortcut(keyCode: 36, modifierFlags: [.command])
+            micPlusAppAudio: KeyboardShortcut(keyCode: 36, modifierFlags: [.command]),
+            correctLast: nil
         )
         let coordinator = ShortcutCoordinator(
             registrar: registrar,
@@ -63,6 +66,7 @@ final class ShortcutCoordinatorTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(Data("not-json".utf8), forKey: "startMicOnlyShortcut")
         defaults.set(Data("also-not-json".utf8), forKey: "startMicPlusAppShortcut")
+        defaults.set(Data("also-not-json".utf8), forKey: "correctLastTranscriptionShortcut")
 
         let registrar = HotkeyRegistrarFake()
         let coordinator = ShortcutCoordinator(

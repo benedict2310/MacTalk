@@ -30,6 +30,8 @@ void wt_whisper_free(WTWhisperContextRef _Nullable ctx);
 /// @param lang Language code (e.g., "en", "es") or NULL for auto-detect
 /// @param translate Whether to translate to English
 /// @param noContext Whether to ignore previous context
+/// @param initialPrompt Optional UTF-8 vocabulary prompt, or NULL. The caller
+/// must keep this pointer alive until this synchronous function returns.
 /// @return Malloc'd UTF-8 string with transcript (caller must free), or NULL on error
 char * _Nullable wt_whisper_transcribe(
     WTWhisperContextRef _Nonnull ctx,
@@ -37,7 +39,8 @@ char * _Nullable wt_whisper_transcribe(
     int numSamples,
     const char * _Nullable lang,
     bool translate,
-    bool noContext
+    bool noContext,
+    const char * _Nullable initialPrompt
 );
 
 #ifdef __cplusplus

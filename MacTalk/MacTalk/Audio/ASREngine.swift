@@ -8,6 +8,61 @@
 import Foundation
 @preconcurrency import AVFoundation
 
+/// Provider-neutral priority assigned before a recording starts. Providers may
+/// translate it into their own hinting mechanism, but it never carries decoder
+/// or model-specific state.
+enum ASRVocabularyPriority: Int, Sendable, Equatable, Comparable {
+    case low
+    case normal
+    case high
+
+    static func < (lhs: ASRVocabularyPriority, rhs: ASRVocabularyPriority) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+/// One immutable vocabulary hint from the recording session's vocabulary
+/// snapshot. The identifier is suitable for diagnostics; term text is not.
+struct ASRVocabularyHint: Sendable, Equatable {
+    let id: UUID
+    let writtenForm: String
+    let spokenForm: String?
+    let priority: ASRVocabularyPriority
+}
+
+/// Immutable, session-scoped inputs shared by every inference in one recording.
+/// Provider-specific thresholds and decoder state intentionally do not belong
+/// at this boundary.
+struct ASRRequestContext: Sendable, Equatable {
+    let language: String?
+    let vocabularyHints: [ASRVocabularyHint]
+    let vocabularySnapshotID: UUID?
+
+    init(
+        language: String? = nil,
+        vocabularyHints: [ASRVocabularyHint] = [],
+        vocabularySnapshotID: UUID? = nil
+    ) {
+        self.language = language
+        self.vocabularyHints = vocabularyHints
+        self.vocabularySnapshotID = vocabularySnapshotID
+    }
+}
+
+enum ASRVocabularyHintingUnavailableReason: Sendable, Equatable {
+    /// The provider needs another model artifact which has not yet been added
+    /// to MacTalk's immutable, hash-verified model catalog.
+    case additionalVerifiedResourcesRequired
+}
+
+/// Describes recognition-time support only. Deterministic transcript
+/// replacement remains available independently of this provider capability.
+enum ASRVocabularyHintingCapability: Sendable, Equatable {
+    case initialPrompt
+    case customVocabulary
+    case unavailable(ASRVocabularyHintingUnavailableReason)
+}
+
 enum ASRProvider: String, CaseIterable, Codable, Sendable {
     case whisper
     case parakeet
@@ -32,6 +87,15 @@ enum ASRProvider: String, CaseIterable, Codable, Sendable {
             return false
         }
     }
+
+    var vocabularyHintingCapability: ASRVocabularyHintingCapability {
+        switch self {
+        case .whisper:
+            return .initialPrompt
+        case .parakeet:
+            return .unavailable(.additionalVerifiedResourcesRequired)
+        }
+    }
 }
 
 struct ASRWord: Sendable, Equatable {
@@ -53,15 +117,35 @@ struct ASRFinalSegment: Sendable, Equatable {
 
 protocol ASREngine: Sendable {
     var provider: ASRProvider { get }
+    var vocabularyHintingCapability: ASRVocabularyHintingCapability { get }
 
     func prepare() async throws
     func reset() async
 
     func process(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRPartial?
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment?
+
+    func process(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRPartial?
+    func finalize(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRFinalSegment?
 }
 
 extension ASREngine {
+    var vocabularyHintingCapability: ASRVocabularyHintingCapability {
+        provider.vocabularyHintingCapability
+    }
+
+    /// Compatibility adapter for engines that do not yet provide native
+    /// recognition-time vocabulary support.
+    func process(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRPartial? {
+        try await process(buffer, language: context.language)
+    }
+
+    /// Compatibility adapter preserves existing behavior and makes an
+    /// unavailable hinting resource non-fatal.
+    func finalize(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRFinalSegment? {
+        try await finalize(buffer, language: context.language)
+    }
+
     func process(samples: [Float], language: String?) async throws -> ASRPartial? {
         guard let buffer = Self.makePCMBuffer(samples: samples) else {
             return nil
@@ -69,11 +153,25 @@ extension ASREngine {
         return try await process(buffer, language: language)
     }
 
+    func process(samples: [Float], context: ASRRequestContext) async throws -> ASRPartial? {
+        guard let buffer = Self.makePCMBuffer(samples: samples) else {
+            return nil
+        }
+        return try await process(buffer, context: context)
+    }
+
     func finalize(samples: [Float], language: String?) async throws -> ASRFinalSegment? {
         guard let buffer = Self.makePCMBuffer(samples: samples) else {
             return nil
         }
         return try await finalize(buffer, language: language)
+    }
+
+    func finalize(samples: [Float], context: ASRRequestContext) async throws -> ASRFinalSegment? {
+        guard let buffer = Self.makePCMBuffer(samples: samples) else {
+            return nil
+        }
+        return try await finalize(buffer, context: context)
     }
 
     private static func makePCMBuffer(samples: [Float]) -> AVAudioPCMBuffer? {

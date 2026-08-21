@@ -22,8 +22,15 @@ raise 'workflow must trigger scheduled TSan' unless events.key?('schedule')
 raise 'workflow must support manual dispatch' unless events.key?('workflow_dispatch')
 
 %w[unit coverage tsan appkit lint security documentation].each do |job|
-  raise "missing blocking #{job} job" unless jobs.key?(job)
+  raise "missing required #{job} job" unless jobs.key?(job)
 end
+
+%w[unit lint security documentation].each do |job|
+  raise "#{job} must remain a pull-request blocking job" if jobs.fetch(job).key?('if')
+end
+coverage_condition = jobs.fetch('coverage')['if'].to_s
+raise 'coverage job must be limited to scheduled/manual execution' unless coverage_condition.include?('schedule') && coverage_condition.include?('workflow_dispatch')
+raise 'coverage job must not run for ordinary pull-request or push events' if coverage_condition.include?('pull_request') || coverage_condition.include?('push')
 
 xcode_jobs = %w[unit coverage tsan appkit]
 expected_developer_dir = '/Applications/Xcode_26.0.1.app/Contents/Developer'
@@ -102,6 +109,7 @@ forbidden_unit = %w[real-model hardware-validation appkit HUDWindow SettingsWind
 raise 'unit lane includes an opt-in/non-deterministic test' if forbidden_unit.any? { |word| unit_runs.include?(word) }
 
 coverage_runs = step_runs.call('coverage').join("\n")
+raise 'coverage must not rerun the deterministic allowlist as a normal pull-request gate' if jobs.fetch('coverage')['if'].to_s.empty?
 coverage_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/coverage.sh'))
 coverage_summary_implementation = File.read(File.join(File.dirname(path), '../..', 'scripts/coverage-summary.sh'))
 coverage_runs = "#{coverage_runs}\n#{coverage_implementation}\n#{coverage_summary_implementation}"

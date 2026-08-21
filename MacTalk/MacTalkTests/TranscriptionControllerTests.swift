@@ -98,6 +98,34 @@ final class TranscriptionControllerTests: XCTestCase {
         }, ["prepare", "reset", "process", "finalize"])
     }
 
+    func test_terminalResultPreservesRawAndCleanedPipelineStages() async throws {
+        let capture = DeterministicCaptureSession()
+        let engine = DeterministicASREngine(script: DeterministicASRScript(
+            finals: [ASRFinalSegment(text: "um mac talk", words: [])]
+        ))
+        let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
+        let received = DeterministicValueBox<TerminalTranscription?>(nil)
+        let final = expectation(description: "structured terminal result")
+        controller.onTerminalResult = { result in
+            received.set(result)
+            final.fulfill()
+            return TerminalDeliveryResult(output: nil, historyPersistence: .inserted)
+        }
+
+        try await controller.start(mode: .micOnly)
+        capture.emitMicrophone(AudioCaptureFrame(
+            samples: [Float](repeating: 0.25, count: 16_000),
+            sampleRate: 16_000,
+            firstSampleHostTime: DeterministicAudioFixtures.hostTime(nanoseconds: 1_000_000_000)
+        ))
+        await stopAndAdvance(controller)
+        await fulfillment(of: [final], timeout: 2)
+
+        XCTAssertEqual(received.get()?.rawASRText, "um mac talk")
+        XCTAssertEqual(received.get()?.cleanedText, "Mac talk.")
+        XCTAssertEqual(received.get()?.provider, .whisper)
+    }
+
     func test_finalTranscriptPreservesEarlierPartialsWithoutDuplicatingOverlap() async throws {
         let capture = DeterministicCaptureSession()
         let engine = DeterministicASREngine(script: DeterministicASRScript(
@@ -107,10 +135,18 @@ final class TranscriptionControllerTests: XCTestCase {
             ],
             finals: [ASRFinalSegment(text: "Microphone channel confirmed. Thank you.", words: [])]
         ))
-        let processStarted = expectation(description: "both incremental requests started")
-        processStarted.expectedFulfillmentCount = 2
+        let firstProcessStarted = expectation(description: "first incremental request started")
+        let secondProcessStarted = expectation(description: "second incremental request started")
+        let processCount = DeterministicValueBox(0)
         engine.onEvent = { event in
-            if case .process = event { processStarted.fulfill() }
+            guard case .process = event else { return }
+            let count = processCount.get() + 1
+            processCount.set(count)
+            if count == 1 {
+                firstProcessStarted.fulfill()
+            } else if count == 2 {
+                secondProcessStarted.fulfill()
+            }
         }
         let controller = TranscriptionController(engine: engine, captureSession: capture, scheduler: scheduler)
         let finalExpectation = expectation(description: "reconciled final callback")
@@ -122,7 +158,9 @@ final class TranscriptionControllerTests: XCTestCase {
         }
 
         try await controller.start(mode: .micOnly)
-        for frameIndex in 0..<12 {
+        func emitFrame(frameIndex: Int) async {
+            let delivered = expectation(description: "microphone frame \(frameIndex) delivered")
+            controller.onMicLevel = { _ in delivered.fulfill() }
             capture.emitMicrophone(AudioCaptureFrame(
                 samples: [Float](repeating: 0.25, count: 8_000),
                 sampleRate: 16_000,
@@ -130,13 +168,27 @@ final class TranscriptionControllerTests: XCTestCase {
                     nanoseconds: 1_000_000_000 + UInt64(frameIndex) * 500_000_000
                 )
             ))
+            await fulfillment(of: [delivered], timeout: 1)
         }
-        await fulfillment(of: [processStarted], timeout: 1)
+
+        // The production controller can move from its 3-second chunk to a
+        // 5-second battery chunk asynchronously. Feed enough post-first-chunk
+        // audio for either policy, while each frame waits for actual delivery.
+        for frameIndex in 0..<13 {
+            await emitFrame(frameIndex: frameIndex)
+            if frameIndex == 2 {
+                await fulfillment(of: [firstProcessStarted], timeout: 1)
+            }
+        }
+        await fulfillment(of: [secondProcessStarted], timeout: 1)
+        controller.onMicLevel = nil
 
         await stopAndAdvance(controller)
         await fulfillment(of: [finalExpectation], timeout: 2)
 
-        XCTAssertEqual(engine.processCalls.map { $0.samples.count }, [24_000, 48_000])
+        XCTAssertEqual(engine.processCalls.count, 2)
+        XCTAssertEqual(engine.processCalls.first?.samples.count, 24_000)
+        XCTAssertTrue([48_000, 80_000].contains(engine.processCalls.last?.samples.count ?? 0))
         XCTAssertEqual(
             finalText.get(),
             "Application audio validation. Microphone channel confirmed. Thank you."

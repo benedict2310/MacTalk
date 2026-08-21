@@ -85,6 +85,15 @@ if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
 fi
 cp "$ROOT/LICENSE" "$fixture/LICENSE"
 
+# Lifecycle work requires a durable workflow contract rather than relying on
+# an agent transcript or a broad historical plan.
+rm -f "$fixture/docs/development/AGENT_WORKFLOW.md"
+if MACTALK_DOCS_ROOT="$fixture" "$CHECK" >/dev/null 2>&1; then
+    echo "docs checker accepted a missing agent workflow contract" >&2
+    exit 1
+fi
+cp "$ROOT/docs/development/AGENT_WORKFLOW.md" "$fixture/docs/development/AGENT_WORKFLOW.md"
+
 # A source/config mismatch must fail even when STATUS still contains the old
 # value; this guards against a verifier that only searches for text.
 sed -i.bak 's/macOS: "26.0"/macOS: "14.0"/' "$fixture/project.yml"

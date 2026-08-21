@@ -19,6 +19,17 @@ enum PipelineInsertOutcome: String, Codable, Sendable {
     var completed: Bool { self == .inserted }
 }
 
+enum PipelineHistoryPersistenceOutcome: String, Codable, Sendable {
+    case notAttempted
+    case inserted
+    case alreadyRecorded
+    case skippedHistoryDisabled
+    case skippedCancelled
+    case skippedEmptyTranscript
+    case failedStorageUnavailable
+    case failedDatabase
+}
+
 struct PipelineSessionContext: Codable, Sendable, Equatable {
     let id: UUID
     let provider: ASRProvider
@@ -128,6 +139,7 @@ struct PipelineSessionReport: Codable, Sendable, Equatable {
     let output: PipelineOutputMetrics
     let composition: AudioCompositionMetrics
     let resources: PipelineResourceMetrics
+    var historyPersistence: PipelineHistoryPersistenceOutcome? = nil
 }
 
 // MARK: - Session recorder
@@ -168,6 +180,7 @@ final class PipelineSessionRecorder: @unchecked Sendable {
         var finalFailed: UInt64 = 0
         var pending: UInt64 = 0
         var outputMetrics = PipelineOutputMetrics()
+        var historyPersistence: PipelineHistoryPersistenceOutcome = .notAttempted
         var resources = PipelineResourceMetrics(startResidentMemoryBytes: nil, endResidentMemoryBytes: nil, maxObservedResidentMemoryAtCheckpoints: nil)
         var finished: PipelineSessionReport?
     }
@@ -278,17 +291,31 @@ final class PipelineSessionRecorder: @unchecked Sendable {
     func recordStopRequested() { let t = tick(); state.withLock { mark(&$0.stop, at: t) } }
     func recordFinalPresented() { let t = tick(); state.withLock { mark(&$0.final, at: t) } }
     func recordOutputHandoff(clipboardWritten: Bool, insertOutcome: PipelineInsertOutcome) { let t = tick(); state.withLock { s in mark(&s.output, at: t); s.outputMetrics = PipelineOutputMetrics(clipboardWritten: clipboardWritten, insertOutcome: insertOutcome, insertCompleted: insertOutcome.completed) } }
+    func recordHistoryPersistence(_ outcome: PipelineHistoryPersistenceOutcome) {
+        state.withLock { $0.historyPersistence = outcome }
+        PipelineLog.historyPersistence(outcome)
+    }
     func recordResourceCheckpoint(residentMemoryBytes: UInt64) { state.withLock { s in if s.resources.startResidentMemoryBytes == nil { s.resources.startResidentMemoryBytes = residentMemoryBytes }; s.resources.endResidentMemoryBytes = residentMemoryBytes; s.resources.maxObservedResidentMemoryAtCheckpoints = max(s.resources.maxObservedResidentMemoryAtCheckpoints ?? 0, residentMemoryBytes) } }
 
     func finish(outcome: PipelineSessionOutcome, capture: CaptureHealthMetrics, composition: AudioCompositionMetrics, completedAt: Date = Date()) -> PipelineSessionReport {
-        let t = tick()
+        _ = tick()
         return state.withLock { s in
             if let finished = s.finished { return finished }
+            if s.historyPersistence == .notAttempted {
+                switch outcome {
+                case .noSpeech, .inferenceFailed:
+                    s.historyPersistence = .skippedEmptyTranscript
+                case .cancelled, .startFailed:
+                    s.historyPersistence = .skippedCancelled
+                case .completed:
+                    break
+                }
+            }
             s.capture.microphoneDroppedBuffers &+= capture.microphoneDroppedBuffers
             let inc = PipelineInferenceMetrics(queuedCount: s.incrementalQueued, completedCount: s.incrementalCompleted, succeededCount: s.incrementalSucceeded, failedCount: s.incrementalFailed, audioSamples: s.incrementalAudio, durationMs: s.incrementalCompleted > 0 ? ms(s.incrementalDuration) : nil, realTimeFactor: rtf(duration: s.incrementalDuration, samples: s.incrementalAudio))
             let fin = PipelineInferenceMetrics(queuedCount: s.finalQueued, completedCount: s.finalCompleted, succeededCount: s.finalSucceeded, failedCount: s.finalFailed, audioSamples: s.finalAudio, durationMs: s.finalCompleted > 0 ? ms(s.finalDuration) : nil, realTimeFactor: rtf(duration: s.finalDuration, samples: s.finalAudio))
             let latency = PipelineLatencyMetrics(prepareMs: s.prepareDuration.map(ms), firstAcceptedCaptureMs: s.firstCapture.map { ms(delta($0, s.sessionStart)) }, firstComposedAudioMs: s.firstComposed.map { ms(delta($0, s.sessionStart)) }, firstPartialFromStartMs: s.partial.map { ms(delta($0, s.sessionStart)) }, firstPartialFromComposedAudioMs: relative(s.partial, s.firstComposed), stopToFinalMs: relative(s.final, s.stop), finalOutputHandoffMs: relative(s.output, s.final), totalMs: ms(delta(s.lastNow, s.sessionStart)))
-            let report = PipelineSessionReport(schemaVersion: 1, context: context, outcome: outcome, completedAt: completedAt, latency: latency, audio: s.audio, capture: s.capture, queue: s.queue, incrementalInference: inc, finalInference: fin, output: s.outputMetrics, composition: composition, resources: s.resources)
+            let report = PipelineSessionReport(schemaVersion: 2, context: context, outcome: outcome, completedAt: completedAt, latency: latency, audio: s.audio, capture: s.capture, queue: s.queue, incrementalInference: inc, finalInference: fin, output: s.outputMetrics, composition: composition, resources: s.resources, historyPersistence: s.historyPersistence)
             s.finished = report; return report
         }
     }
@@ -310,6 +337,10 @@ enum PipelineLog {
 
     static func captureRetirementFailed() {
         logger.error("capture_retirement_failed")
+    }
+
+    static func historyPersistence(_ outcome: PipelineHistoryPersistenceOutcome) {
+        logger.info("history_persistence outcome=\(outcome.rawValue, privacy: .public)")
     }
 }
 
@@ -604,9 +635,9 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
     }
 
     private func format(_ reports: [PipelineSessionReport]) -> String {
-        guard !reports.isEmpty else { return "No completed sessions\nSchema version: 1\nObservations: 0" }
+        guard !reports.isEmpty else { return "No completed sessions\nSchema version: 2\nObservations: 0" }
         let groups = Dictionary(grouping: reports) { "\($0.context.provider.rawValue)/\($0.context.modelID)/\($0.context.captureMode.rawValue)" }
-        var lines = ["Pipeline metrics (schema version 1)", "Observations: \(reports.count)", "Location: \(fileURL.path)"]
+        var lines = ["Pipeline metrics (schema version 2)", "Observations: \(reports.count)", "Location: \(fileURL.path)"]
         for key in groups.keys.sorted() {
             let dimensionReports = groups[key]!
             lines.append("Dimension \(key): \(dimensionReports.count) observations")
@@ -630,8 +661,11 @@ actor PipelineMetricsStore: PipelineMetricsStoring {
         let vadSkips = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.vadSkips) }
         let trimmedSamples = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.trimmedSamples) }
         let fallbackCount = reports.reduce(UInt64(0)) { saturatingAdd($0, $1.audio.fallbackCount) }
+        let historyOutcomes = reports.map { ($0.historyPersistence ?? .notAttempted).rawValue }
+            .reduce(into: [:]) { $0[$1, default: 0] += 1 }
         return [
             "Outcomes: " + outcomes.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", "),
+            "History persistence: " + historyOutcomes.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", "),
             "First partial ms p50/p95: \(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.firstPartialFromStartMs }, p: 0.95))",
             "Stop to final ms p50/p95: \(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.5))/\(percentile(reports.compactMap { $0.latency.stopToFinalMs }, p: 0.95))",
             "Incremental RTF p50/p95: \(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.5))/\(percentile(reports.compactMap { $0.incrementalInference.realTimeFactor }, p: 0.95))",

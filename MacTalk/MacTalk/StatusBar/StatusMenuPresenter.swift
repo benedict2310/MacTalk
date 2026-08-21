@@ -12,6 +12,9 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         static let model = "engine.model"
         static let parakeet = "engine.parakeet"
         static let progress = "engine.downloadProgress"
+        static let history = "macteach.history"
+        static let vocabulary = "macteach.vocabulary"
+        static let correctLast = "macteach.correctLast"
         static let performanceReport = "application.performanceReport"
         static let settings = "application.settings"
         static let permissions = "application.permissions"
@@ -29,6 +32,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
     private let parakeetItem: NSMenuItem
     private let whisperItems: [NSMenuItem]
     private let progressItem: NSMenuItem
+    private let correctLastItem: NSMenuItem
 
     init(target: AnyObject, catalog: [ModelSpec] = ModelCatalog.bundled()) {
         self.target = target
@@ -47,6 +51,12 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         }
         progressItem = Self.item(id: ItemID.progress, title: "", action: nil, target: nil)
         progressItem.isHidden = true
+        correctLastItem = Self.item(
+            id: ItemID.correctLast,
+            title: "Correct Last Transcription…",
+            action: #selector(StatusBarController.correctLastTranscription),
+            target: target
+        )
 
         let modelMenu = NSMenu()
         modelMenu.addItem(parakeetItem)
@@ -63,6 +73,10 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         menu.addItem(.separator())
         menu.addItem(modelItem)
         menu.addItem(progressItem)
+        menu.addItem(.separator())
+        menu.addItem(Self.item(id: ItemID.history, title: "History…", action: #selector(StatusBarController.showHistory), target: target))
+        menu.addItem(Self.item(id: ItemID.vocabulary, title: "Personal Vocabulary…", action: #selector(StatusBarController.showPersonalVocabulary), target: target))
+        menu.addItem(correctLastItem)
         menu.addItem(.separator())
         menu.addItem(Self.item(id: ItemID.performanceReport, title: "Copy Performance Report", action: #selector(StatusBarController.copyPerformanceReport), target: target))
         menu.addItem(Self.item(id: ItemID.settings, title: "Settings...", action: #selector(StatusBarController.showSettings), target: target, keyEquivalent: ","))
@@ -85,6 +99,7 @@ final class StatusMenuPresenter: StatusMenuPresenting {
         renderDownload(state.download)
         renderShortcut(micOnlyItem, shortcut: state.shortcuts.micOnly)
         renderShortcut(micPlusAppItem, shortcut: state.shortcuts.micPlusAppAudio)
+        renderShortcut(correctLastItem, shortcut: state.shortcuts.correctLast)
     }
 
     private func renderDownload(_ download: ModelDownloadViewState) {

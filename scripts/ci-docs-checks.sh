@@ -27,7 +27,7 @@ required = [
     "LICENSE", "README.md", "project.yml", "scripts/release-version.env",
     "MacTalk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
     "docs/STATUS.md", "docs/security/MODEL_PROVENANCE.md", "docs/development/ARCHITECTURE.md",
-    "docs/development/SETUP.md", "docs/deployment/RELEASE_WORKFLOW.md",
+    "docs/development/SETUP.md", "docs/development/AGENT_WORKFLOW.md", "docs/deployment/RELEASE_WORKFLOW.md",
     "docs/development/adr/ADR-001-timestamp-aligned-audio-composition.md",
     "docs/development/adr/ADR-002-settings-and-state-ownership.md",
     "docs/development/adr/ADR-003-privacy-logging.md",
@@ -129,6 +129,22 @@ setup_build_match = re.search(r'`build\.sh` sources `scripts/release-version\.en
 if setup_version != version or not setup_build_match or setup_build_match.group(1) != build:
     fail("SETUP release version/build does not match source")
 
+workflow = read("docs/development/AGENT_WORKFLOW.md")
+for required_term in (
+    "Lifecycle contract (required before concurrency implementation)",
+    "one production invariant and its deterministic tests",
+    "Workers report this checkpoint at five minutes and stop at ten minutes",
+    "designated concurrency reviewer",
+    "residual-policy record",
+    "Task.yield()",
+    "may create stress/fairness pressure but is never an ordering oracle",
+    "Coverage is",
+    "scheduled/manual CI evidence",
+    "not a duplicate pull-request gate.",
+):
+    if required_term not in workflow:
+        fail(f"AGENT_WORKFLOW is missing required governance: {required_term}")
+
 for rel in ("docs/development/ARCHITECTURE.md", "docs/development/SETUP.md", "docs/testing/TESTING.md"):
     text = read(rel)
     if re.search(r"macOS 14\.0|Xcode 15\.0|RingBufferTests|WhisperEngineTests|85\.2%|100% coverage", text, re.I):
@@ -148,7 +164,7 @@ for fact in (
         fail(f"MODEL_PROVENANCE is missing active model-security boundary: {fact}")
 
 docs_hub = read("docs/README.md")
-for filename in ("development/SETUP.md", "development/ARCHITECTURE.md", "STATUS.md"):
+for filename in ("development/SETUP.md", "development/ARCHITECTURE.md", "development/AGENT_WORKFLOW.md", "STATUS.md"):
     if not re.search(rf"\([^)]*{re.escape(filename)}\)", docs_hub):
         fail(f"docs/README.md does not link current {filename}")
 if "scripts/coverage.sh" not in docs_hub:

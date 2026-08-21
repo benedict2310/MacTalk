@@ -13,4 +13,11 @@ final class ParakeetEngineTests: XCTestCase {
     func test_providerIsParakeet() {
         XCTAssertEqual(ParakeetEngine().provider, .parakeet)
     }
+
+    func test_vocabularyHintingRequiresVerifiedParakeetResources() {
+        XCTAssertEqual(
+            ParakeetEngine().vocabularyHintingCapability,
+            .unavailable(.additionalVerifiedResourcesRequired)
+        )
+    }
 }

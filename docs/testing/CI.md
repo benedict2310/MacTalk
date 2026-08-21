@@ -1,7 +1,8 @@
 # CI validation policy
 
-The Xcode-dependent pull-request and AppKit lanes (`unit`, `coverage`, and
-`appkit`) run on the GitHub-hosted Apple-Silicon `macos-26` image. The TSan job
+The Xcode-dependent pull-request, scheduled/manual, and AppKit lanes (`unit`,
+`coverage`, and `appkit`) run on the GitHub-hosted Apple-Silicon `macos-26`
+image. The TSan job
 uses the hosted `macos-15` image because the Apple ThreadSanitizer runtime in
 the current `macos-26` image crashes before XCTest. All four lanes select the
 concrete `/Applications/Xcode_26.0.1.app/Contents/Developer` toolchain through
@@ -13,16 +14,18 @@ require no generated diff. SwiftPM resolution is `MacTalk.xcodeproj/project.xcwo
 The lint, security, and documentation checks remain on `macos-15` because they
 do not invoke Xcode.
 
-## Blocking lanes
+## Pull-request and evidence lanes
 
-* **unit** runs `scripts/test-lanes.sh unit`, whose explicit allowlist excludes
-  AppKit/window, TCC, capture hardware, providers, network, and real models.
-* **coverage** reruns that same allowlist, writes an xcresult and JSON/per-file
-  `xccov` reports, and publishes executed/failed/skipped counts plus production
-  target coverage. The test exit status remains blocking; reports and logs are
-  uploaded with `if: always()`.
-* **lint**, **security**, and **documentation** are blocking checks. Their
-  scripts fail on violations; they do not warn-and-pass.
+* **unit** runs `scripts/test-lanes.sh unit` as the sole deterministic XCTest
+  pull-request gate. Its explicit allowlist excludes AppKit/window, TCC, capture
+  hardware, providers, network, and real models.
+* **coverage** is scheduled/manual evidence. It reruns that allowlist, writes an
+  xcresult and JSON/per-file `xccov` reports, and publishes
+  executed/failed/skipped counts plus production target coverage. When invoked,
+  its test exit status fails the run and reports/logs upload with `if: always()`;
+  it is not a duplicate pull-request gate.
+* **lint**, **security**, and **documentation** are blocking pull-request
+  checks. Their scripts fail on violations; they do not warn-and-pass.
 
 AppKit/window checks are a separate manual `appkit` lane. Hardware/TCC and
 real-model checks are explicit local lanes requiring their documented

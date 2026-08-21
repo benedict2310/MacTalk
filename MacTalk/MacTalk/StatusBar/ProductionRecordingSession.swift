@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class ProductionTranscriptionSession: TranscriptionSession {
+final class ProductionTranscriptionSession: StructuredTranscriptionSession {
     private let controller: TranscriptionController
 
     init(controller: TranscriptionController) {
@@ -16,6 +16,10 @@ final class ProductionTranscriptionSession: TranscriptionSession {
     var onFinal: (@Sendable @MainActor (String) -> OutputResult?)? {
         get { controller.onFinal }
         set { controller.onFinal = newValue }
+    }
+    var onTerminalResult: (@Sendable @MainActor (TerminalTranscription) async -> TerminalDeliveryResult?)? {
+        get { controller.onTerminalResult }
+        set { controller.onTerminalResult = newValue }
     }
     var onMicLevel: (@Sendable @MainActor (AudioLevelMonitor.LevelData) -> Void)? {
         get { controller.onMicLevel }
@@ -50,6 +54,9 @@ final class ProductionTranscriptionSession: TranscriptionSession {
     func stopAndWait() async throws { try await controller.stopAndWait() }
     func requestCancelStart() -> SessionCleanup {
         controller.requestCancelStart()
+    }
+    func configure(requestContext: ASRRequestContext) {
+        controller.configure(requestContext: requestContext)
     }
 }
 

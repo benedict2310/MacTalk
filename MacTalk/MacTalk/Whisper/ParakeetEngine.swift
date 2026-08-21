@@ -34,10 +34,22 @@ final class ParakeetEngine: @unchecked Sendable, ASREngine {
         return ASRPartial(text: result.text, words: words)
     }
 
+    func process(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRPartial? {
+        // FluidAudio 0.15.5 exposes custom vocabulary through its CTC-backed
+        // sliding-window stack. MacTalk's verified Parakeet-v3 path uses the
+        // direct AsrManager API, so hints intentionally degrade to ordinary
+        // transcription until those additional artifacts are cataloged.
+        try await process(buffer, language: context.language)
+    }
+
     func finalize(_ buffer: AVAudioPCMBuffer, language: String?) async throws -> ASRFinalSegment? {
         let result = try await core.finalize(buffer: buffer)
         let words = mapWords(from: result)
         return ASRFinalSegment(text: result.text, words: words)
+    }
+
+    func finalize(_ buffer: AVAudioPCMBuffer, context: ASRRequestContext) async throws -> ASRFinalSegment? {
+        try await finalize(buffer, language: context.language)
     }
 
     private func mapWords(from result: ASRResult) -> [ASRWord] {

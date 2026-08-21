@@ -25,6 +25,8 @@ struct SettingsContentView: View {
                 .tabItem { Label("Audio", systemImage: "waveform") }
             ShortcutsTab(vm: vm)
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+            MacTeachSettingsTab(vm: vm)
+                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
             AdvancedTab(vm: vm)
                 .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
             PermissionsTab(vm: vm)
@@ -45,6 +47,12 @@ final class SettingsViewModel: ObservableObject {
     @Published var providerIndex: Int
     @Published var modelIndex: Int
     @Published var languageIndex: Int
+    @Published var saveTextHistory: Bool
+    @Published var textRetentionIndex: Int
+    @Published var keepRecordings: Bool
+    @Published var audioRetentionIndex: Int
+    @Published var personalVocabulary: Bool
+    @Published var suggestCorrections: Bool
     @Published var micStatus: PermissionState = .checking
     @Published var screenStatus: PermissionState = .checking
     @Published var accessibilityStatus: PermissionState = .checking
@@ -55,6 +63,7 @@ final class SettingsViewModel: ObservableObject {
     // Shortcut recorders (AppKit bridge — kept as pass-through)
     var startMicOnlyShortcut: KeyboardShortcut?
     var startMicPlusAppShortcut: KeyboardShortcut?
+    var correctLastTranscriptionShortcut: KeyboardShortcut?
 
     enum PermissionState: String {
         case checking = "Checking…"
@@ -92,9 +101,16 @@ final class SettingsViewModel: ObservableObject {
         providerIndex = ASRProvider.allCases.firstIndex(of: snapshot.provider) ?? 0
         modelIndex = ModelCatalog.bundled().firstIndex { $0.id == snapshot.whisperModelID } ?? 4
         languageIndex = AppSettings.languageOptions.firstIndex(where: { $0 == snapshot.language }) ?? 1
+        saveTextHistory = snapshot.macTeach.textHistoryEnabled
+        textRetentionIndex = Self.textRetentionOptions.firstIndex(of: snapshot.macTeach.textRetentionDays) ?? 3
+        keepRecordings = snapshot.macTeach.keepRecordings
+        audioRetentionIndex = Self.audioRetentionOptions.firstIndex(of: snapshot.macTeach.audioRetentionDays) ?? 1
+        personalVocabulary = snapshot.macTeach.personalVocabularyEnabled
+        suggestCorrections = snapshot.macTeach.suggestCorrections
 
         startMicOnlyShortcut = Self.loadShortcut(forKey: "startMicOnlyShortcut")
         startMicPlusAppShortcut = Self.loadShortcut(forKey: "startMicPlusAppShortcut")
+        correctLastTranscriptionShortcut = Self.loadShortcut(forKey: "correctLastTranscriptionShortcut")
 
         refreshPermissions()
         observeEngine()
@@ -121,6 +137,19 @@ final class SettingsViewModel: ObservableObject {
         if AppSettings.languageOptions.indices.contains(languageIndex) {
             settingsStore.setLanguage(AppSettings.languageOptions[languageIndex])
         }
+        settingsStore.setTextHistoryEnabled(saveTextHistory)
+        if Self.textRetentionOptions.indices.contains(textRetentionIndex) {
+            settingsStore.setTextRetention(
+                days: Self.textRetentionOptions[textRetentionIndex],
+                maximumRecords: settingsStore.snapshot.macTeach.maximumTextRecords
+            )
+        }
+        settingsStore.setKeepRecordings(keepRecordings)
+        if Self.audioRetentionOptions.indices.contains(audioRetentionIndex) {
+            settingsStore.setAudioRetentionDays(Self.audioRetentionOptions[audioRetentionIndex])
+        }
+        settingsStore.setPersonalVocabularyEnabled(personalVocabulary)
+        settingsStore.setSuggestCorrections(suggestCorrections)
     }
 
     /// Persists a user-driven notification preference change and, when enabling,
@@ -253,6 +282,10 @@ final class SettingsViewModel: ObservableObject {
         return try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
     }
 
+    static let textRetentionOptions: [Int?] = [1, 7, 30, 90, nil]
+    static let textRetentionLabels = ["1 day", "7 days", "30 days", "90 days", "Forever"]
+    static let audioRetentionOptions = [1, 7, 30, 90]
+
     func saveShortcut(_ s: KeyboardShortcut?, forKey key: String) {
         if let s, let data = try? JSONEncoder().encode(s) {
             UserDefaults.standard.set(data, forKey: key)
@@ -260,6 +293,48 @@ final class SettingsViewModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: key)
         }
         NotificationCenter.default.post(name: .shortcutsDidChange, object: nil)
+    }
+}
+
+@available(macOS 26.4, *)
+private struct MacTeachSettingsTab: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        Form {
+            Section("History") {
+                Toggle("Save text history", isOn: $vm.saveTextHistory)
+                    .onChange(of: vm.saveTextHistory) { vm.save() }
+                Picker("Keep text for", selection: $vm.textRetentionIndex) {
+                    ForEach(SettingsViewModel.textRetentionLabels.indices, id: \.self) { index in
+                        Text(SettingsViewModel.textRetentionLabels[index])
+                    }
+                }
+                .disabled(!vm.saveTextHistory)
+                .onChange(of: vm.textRetentionIndex) { vm.save() }
+                Toggle("Keep recordings in History", isOn: $vm.keepRecordings)
+                    .onChange(of: vm.keepRecordings) { vm.save() }
+                Picker("Keep recordings for", selection: $vm.audioRetentionIndex) {
+                    ForEach(SettingsViewModel.audioRetentionOptions.indices, id: \.self) { index in
+                        Text("\(SettingsViewModel.audioRetentionOptions[index]) days")
+                    }
+                }
+                .disabled(!vm.keepRecordings)
+                .onChange(of: vm.audioRetentionIndex) { vm.save() }
+                Text("Recordings are never retained unless this is enabled.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Personal Vocabulary") {
+                Toggle("Improve words I teach MacTalk", isOn: $vm.personalVocabulary)
+                    .onChange(of: vm.personalVocabulary) { vm.save() }
+                Toggle("Suggest words after repeated corrections", isOn: $vm.suggestCorrections)
+                    .disabled(!vm.personalVocabulary)
+                    .onChange(of: vm.suggestCorrections) { vm.save() }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -324,6 +399,10 @@ private struct ShortcutsTab: View {
                 ShortcutRow(label: "Start Mic + App", shortcut: vm.startMicPlusAppShortcut) { s in
                     vm.startMicPlusAppShortcut = s
                     vm.saveShortcut(s, forKey: "startMicPlusAppShortcut")
+                }
+                ShortcutRow(label: "Correct Last Transcription", shortcut: vm.correctLastTranscriptionShortcut) { s in
+                    vm.correctLastTranscriptionShortcut = s
+                    vm.saveShortcut(s, forKey: "correctLastTranscriptionShortcut")
                 }
             }
             Text("Click a field and press the desired key combination.\nShortcuts are global and work in the background.")
@@ -549,6 +628,7 @@ private struct LegacySettingsContentView: View {
                     .font(.headline)
                 Text("Start Mic-Only: \(vm.startMicOnlyShortcut?.displayString ?? "⌥Space")")
                 Text("Start Mic + App: \(vm.startMicPlusAppShortcut?.displayString ?? "⌃⌥Space")")
+                Text("Correct Last: \(vm.correctLastTranscriptionShortcut?.displayString ?? "Not set")")
                 Text("Shortcut editing uses the newer settings UI on macOS 26.4+.")
                     .font(.footnote)
                     .foregroundColor(.secondary)
@@ -556,6 +636,34 @@ private struct LegacySettingsContentView: View {
             }
             .padding(16)
             .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+
+            Form {
+                Toggle("Save text history", isOn: $vm.saveTextHistory)
+                    .onChange(of: vm.saveTextHistory) { vm.save() }
+                Picker("Keep text for", selection: $vm.textRetentionIndex) {
+                    ForEach(SettingsViewModel.textRetentionLabels.indices, id: \.self) { index in
+                        Text(SettingsViewModel.textRetentionLabels[index])
+                    }
+                }
+                .disabled(!vm.saveTextHistory)
+                .onChange(of: vm.textRetentionIndex) { vm.save() }
+                Toggle("Keep recordings in History", isOn: $vm.keepRecordings)
+                    .onChange(of: vm.keepRecordings) { vm.save() }
+                Picker("Keep recordings for", selection: $vm.audioRetentionIndex) {
+                    ForEach(SettingsViewModel.audioRetentionOptions.indices, id: \.self) { index in
+                        Text("\(SettingsViewModel.audioRetentionOptions[index]) days")
+                    }
+                }
+                .disabled(!vm.keepRecordings)
+                .onChange(of: vm.audioRetentionIndex) { vm.save() }
+                Toggle("Personal Vocabulary", isOn: $vm.personalVocabulary)
+                    .onChange(of: vm.personalVocabulary) { vm.save() }
+                Toggle("Suggest repeated corrections", isOn: $vm.suggestCorrections)
+                    .disabled(!vm.personalVocabulary)
+                    .onChange(of: vm.suggestCorrections) { vm.save() }
+            }
+            .padding(12)
+            .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
 
             VStack(alignment: .leading, spacing: 12) {
                 permissionRow("Microphone", status: vm.micStatus)

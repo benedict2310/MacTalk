@@ -55,7 +55,8 @@ char * wt_whisper_transcribe(
     int numSamples,
     const char *lang,
     bool translate,
-    bool noContext
+    bool noContext,
+    const char *initialPrompt
 ) {
     if (!ctx || !samples || numSamples <= 0) {
         NSLog(@"[WhisperBridge] Invalid transcription parameters");
@@ -80,6 +81,7 @@ char * wt_whisper_transcribe(
     params.single_segment = false;
     params.translate = translate;
     params.no_context = noContext;
+    params.initial_prompt = initialPrompt && initialPrompt[0] != '\0' ? initialPrompt : nullptr;
 
     // Suppress blank audio output
     params.suppress_blank = true;

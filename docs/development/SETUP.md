@@ -100,25 +100,27 @@ the path, catalog filename, or SHA-256 is invalid; it never repairs or downloads
 
 ## Reproducible validation lanes
 
-Run from the repository root:
+Run the narrowest lane that proves the change; do not run every lane serially by
+default. The complete policy, worker budgets, and lifecycle review protocol are
+in [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md).
 
-```sh
-scripts/ci-docs-checks.sh
-scripts/test-lanes.sh unit
-scripts/test-lanes.sh repeat
-scripts/test-lanes.sh appkit
-scripts/coverage.sh
-scripts/test-lanes.sh tsan
-```
+- **During RED/GREEN:** run the focused XCTest or semantic shell test.
+- **Production change before merge:** run `scripts/test-lanes.sh unit`.
+- **Concurrency, ownership, synchronization, or audio-pipeline change:** also
+  run `scripts/test-lanes.sh tsan` when the runtime is available; hosted CI
+  remains the authoritative compatible TSan environment.
+- **AppKit change:** run `scripts/test-lanes.sh appkit` when the changed UI
+  behavior needs controller/window coverage.
+- **Documentation:** run `scripts/ci-docs-checks.sh`; no app restart is needed.
+- **Coverage:** run `scripts/coverage.sh` for scheduled/manual evidence, not as
+  a duplicate ordinary pull-request validation step.
 
-`unit` is the deterministic blocking lane. `repeat` relaunches it three times.
-`appkit` exercises window/controller tests without requesting TCC. Coverage
-writes `build/coverage/MacTalk.xcresult` and
-`build/coverage/coverage-by-file.txt`. TSan first runs a compiler/runtime smoke,
-verifies an instrumented test binary, then runs its focused concurrency tests;
-a TSan result must not be reported when the Apple runtime is unavailable.
-Hardware/TCC and real-model lanes are explicit and are not selected by these
-commands.
+`repeat` relaunches the deterministic unit lane three times. Coverage writes
+`build/coverage/MacTalk.xcresult` and `build/coverage/coverage-by-file.txt`.
+TSan first runs a compiler/runtime smoke, verifies an instrumented test binary,
+then runs its focused concurrency tests; a TSan result must not be reported when
+the Apple runtime is unavailable. Hardware/TCC and real-model lanes are explicit
+and are not selected by ordinary pull-request validation.
 
 For release/archive setup, use
 [`docs/deployment/RELEASE_WORKFLOW.md`](../deployment/RELEASE_WORKFLOW.md).

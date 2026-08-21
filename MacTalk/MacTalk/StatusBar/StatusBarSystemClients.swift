@@ -244,6 +244,7 @@ struct StatusBarDependencies {
     let download: any (ModelDownloadCoordinating & ModelRequirementDownloading)
     let sessions: any TranscriptionSessionFactory
     let permissionClient: any PermissionClient
+    let macTeach: MacTeachCoordinator?
     let pipelineDiagnostics: any PipelineDiagnosticsClient
 
     init(
@@ -256,6 +257,7 @@ struct StatusBarDependencies {
         download: any (ModelDownloadCoordinating & ModelRequirementDownloading),
         sessions: any TranscriptionSessionFactory,
         permissionClient: any PermissionClient,
+        macTeach: MacTeachCoordinator? = nil,
         pipelineDiagnostics: any PipelineDiagnosticsClient
     ) {
         self.settings = settings
@@ -267,6 +269,7 @@ struct StatusBarDependencies {
         self.download = download
         self.sessions = sessions
         self.permissionClient = permissionClient
+        self.macTeach = macTeach
         self.pipelineDiagnostics = pipelineDiagnostics
     }
 
@@ -296,6 +299,13 @@ struct StatusBarDependencies {
                 }
             }
         )
+        let macTeach: MacTeachCoordinator?
+        do {
+            macTeach = try MacTeachCoordinator.makeDefault()
+        } catch {
+            macTeach = nil
+            PipelineLog.historyPersistence(.failedStorageUnavailable)
+        }
         return StatusBarDependencies(
             settings: settings,
             permissionFlow: permissionFlow,
@@ -306,6 +316,7 @@ struct StatusBarDependencies {
             download: ModelDownloadCoordinator(client: ProductionModelDownloadClient()),
             sessions: ProductionTranscriptionSessionFactory(),
             permissionClient: permissionClient,
+            macTeach: macTeach,
             pipelineDiagnostics: SystemPipelineDiagnosticsClient()
         )
     }

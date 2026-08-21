@@ -28,6 +28,7 @@ enum StatusBarIntent: Equatable, Sendable {
     case startMicPlusAppAudio
     case toggleMicOnly
     case toggleMicPlusAppAudio
+    case correctLastTranscription
     case stop
     case toggleAutoPaste
     case selectModel(ModelSpec)

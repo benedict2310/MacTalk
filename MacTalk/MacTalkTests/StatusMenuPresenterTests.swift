@@ -18,6 +18,10 @@ final class StatusMenuPresenterTests: XCTestCase {
             StatusMenuPresenter.ItemID.model,
             StatusMenuPresenter.ItemID.progress,
             "",
+            StatusMenuPresenter.ItemID.history,
+            StatusMenuPresenter.ItemID.vocabulary,
+            StatusMenuPresenter.ItemID.correctLast,
+            "",
             StatusMenuPresenter.ItemID.performanceReport,
             StatusMenuPresenter.ItemID.settings,
             StatusMenuPresenter.ItemID.permissions,
@@ -28,8 +32,10 @@ final class StatusMenuPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.menu.items[0].action, #selector(StatusBarController.startMicOnly))
         XCTAssertEqual(presenter.menu.items[1].action, #selector(StatusBarController.startMicPlusApp))
         XCTAssertEqual(presenter.menu.items[2].action, #selector(StatusBarController.stopRecording))
+        XCTAssertEqual(presenter.menu.items[9].action, #selector(StatusBarController.showHistory))
+        XCTAssertEqual(presenter.menu.items[10].action, #selector(StatusBarController.showPersonalVocabulary))
+        XCTAssertEqual(presenter.menu.items[11].action, #selector(StatusBarController.correctLastTranscription))
         XCTAssertEqual(presenter.menu.items[4].keyEquivalent, "p")
-        XCTAssertEqual(presenter.menu.items[9].action, #selector(StatusBarController.copyPerformanceReport))
         XCTAssertEqual(
             presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.title,
             "Copy Performance Report"
@@ -38,7 +44,7 @@ final class StatusMenuPresenterTests: XCTestCase {
             presenter.menu.items.first(where: { $0.identifier == .init(StatusMenuPresenter.ItemID.performanceReport) })?.action,
             #selector(StatusBarController.copyPerformanceReport)
         )
-        XCTAssertEqual(presenter.menu.items[10].keyEquivalent, ",")
+        XCTAssertEqual(presenter.menu.items[14].keyEquivalent, ",")
     }
 
     func test_renderUpdatesEnablementChecksAndShortcutTitles() {
@@ -63,12 +69,17 @@ final class StatusMenuPresenterTests: XCTestCase {
             settings: settings,
             permission: permission,
             download: .idle,
-            shortcuts: ShortcutConfiguration(micOnly: shortcut, micPlusAppAudio: nil)
+            shortcuts: ShortcutConfiguration(
+                micOnly: shortcut,
+                micPlusAppAudio: nil,
+                correctLast: KeyboardShortcut(keyCode: 8, modifierFlags: [.command, .option])
+            )
         )
         presenter.render(state)
         XCTAssertFalse(presenter.menu.items[0].isEnabled)
         XCTAssertTrue(presenter.menu.items[2].isEnabled)
         XCTAssertTrue(presenter.menu.items[4].state == .on)
         XCTAssertTrue(presenter.menu.items[0].attributedTitle?.string.contains("⌘M") == true)
+        XCTAssertTrue(presenter.menu.items[11].attributedTitle?.string.contains("⌥⌘C") == true)
     }
 }

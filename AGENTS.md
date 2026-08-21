@@ -57,8 +57,8 @@
 
 ### Testing Guidelines
 - Add/extend XCTest cases under `MacTalk/MacTalkTests/*Tests.swift` (`FeatureNameTests` with `test_caseDescription` methods).
-- Always run tests before handoff; add fixtures for new parsing/formatting scenarios.
-- After any code change, rebuild and test before declaring completion.
+- Follow the risk-based validation ladder in [`docs/development/AGENT_WORKFLOW.md`](docs/development/AGENT_WORKFLOW.md): run focused tests during RED/GREEN, then the relevant suite before handoff. Run `scripts/test-lanes.sh unit` before merging production changes.
+- Add fixtures for new parsing/formatting scenarios. Use deterministic semantic barriers—not `Task.yield()` polling—when a test asserts lifecycle ordering.
 - **Thread Sanitizer:** Use the `MacTalk-TSan` scheme to run tests with Thread Sanitizer enabled:
   ```bash
   xcodebuild test -project MacTalk.xcodeproj -scheme MacTalk-TSan
@@ -71,10 +71,9 @@
 
 ### Agent Notes
 - Use the provided scripts and XcodeGen; avoid adding dependencies or tooling without confirmation.
-- Validate behavior against the freshly built bundle; restart via `./build.sh run` to avoid running stale binaries.
-- After any code change that affects the app, always rebuild with `./build.sh` and restart the app before validating behavior.
-- If you edited code, run `./build.sh run` before handoff; it kills old instances, builds, and relaunches.
-- Per user request: after every edit (code or docs), rebuild and restart so the running app reflects the latest changes.
+- Batch related edits. Run `./build.sh run` once before handoff only for a coherent runtime batch that needs manual app validation; documentation, test-only, and CI-only edits do not require app restart.
+- Run TSan for concurrency, ownership, synchronization, or audio-pipeline changes; use the focused validation matrix in [`docs/development/AGENT_WORKFLOW.md`](docs/development/AGENT_WORKFLOW.md).
+- For lifecycle work, define the contract and use the designated concurrency reviewer before implementation; assign one invariant plus deterministic tests per worker.
 - Keep engine data siloed: when rendering transcription info for an engine (Whisper vs Parakeet), never mix configuration or state from different engines.
 
 ### Project Index (Repo Mapping)

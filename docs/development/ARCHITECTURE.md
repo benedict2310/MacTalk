@@ -55,7 +55,12 @@ not own a concrete Whisper-only API.
 
 State transitions are serialized at their ownership boundary. A provider/model
 change while recording is deferred until idle; a failed app-audio stream
-preserves committed microphone timeline and falls back to mic-only.
+preserves committed microphone timeline and falls back to mic-only. Before
+changing a concurrency-sensitive boundary, define its generation identity,
+linearization point, waiter semantics, resource-retention boundary, and
+adversarial replacement/stop/failure traces in the lifecycle contract required
+by [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md). Generation checks alone do not prove
+exactly-once terminal delivery or cleanup isolation.
 
 ## Audio timeline and concurrency
 
@@ -163,6 +168,12 @@ and 512 KiB. The privacy boundary contains no transcript text, audio samples, ta
 application identity, or raw errors. The status-bar action **Copy
 Performance Report** copies this metadata-only report only on explicit user
 request.
+
+Schema version 2 includes a privacy-safe History persistence outcome. A
+structured terminal callback owns output and the single History attempt;
+recording finalization retains request ownership until that attempt completes.
+Successful inserts publish an in-process History change notification so an
+already-open History window reloads immediately.
 
 The typed `com.mactalk.app` / `pipeline` logger and signposts
 `TranscriptionSession`, `Inference`, `FirstAudio`, `FirstComposedAudio`, and

@@ -135,7 +135,13 @@ manual validation gaps.
 
 For implementation changes, add a focused XCTest, observe the expected red
 result, implement the smallest change, and rerun it green. Shell verifier
-changes likewise need passing and negative-fixture tests. A test count,
+changes likewise need passing and negative-fixture tests. Select the narrowest
+relevant validation lane rather than running every lane: `unit` before merging
+production behavior, TSan for concurrency/ownership/audio synchronization risk,
+and documentation checks for docs-only edits. Coverage is scheduled/manual
+measurement rather than a duplicate ordinary pull-request gate. The complete
+agent workflow and lifecycle-barrier policy is
+[`AGENT_WORKFLOW.md`](../development/AGENT_WORKFLOW.md). A test count,
 coverage percentage, “supported macOS” statement, signing result, or model
 accuracy number is valid only when its command and artifact are named.
 
